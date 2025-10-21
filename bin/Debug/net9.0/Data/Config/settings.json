@@ -1,0 +1,9 @@
+{
+  "windowWidth": 300,
+  "windowHeight": 420,
+  "alwaysOnTop": true,
+  "tickRate": 30,
+  "mazeWidth": 41,
+  "mazeHeight": 31,
+  "defaultSeed": 12345
+}

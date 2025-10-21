@@ -1,0 +1,219 @@
+{
+  "Wanderer": {
+    "description": "A jack-of-all-trades with balanced stats",
+    "color": "#808080",
+    "statModifiers": {
+      "Strength": 0,
+      "Constitution": 0,
+      "Agility": 0,
+      "Dexterity": 0,
+      "Intelligence": 0,
+      "Wisdom": 0,
+      "Charisma": 0
+    },
+    "startingStats": {
+      "Strength": 4,
+      "Constitution": 4,
+      "Agility": 4,
+      "Dexterity": 4,
+      "Intelligence": 4,
+      "Wisdom": 4,
+      "Charisma": 4
+    },
+    "statGrowth": {
+      "Strength": 1,
+      "Constitution": 1,
+      "Agility": 1,
+      "Dexterity": 1,
+      "Intelligence": 1,
+      "Wisdom": 1,
+      "Charisma": 1
+    }
+  },
+  "Warrior": {
+    "description": "A mighty fighter with high strength and constitution",
+    "color": "#B22222",
+    "statModifiers": {
+      "Strength": 2,
+      "Constitution": 1,
+      "Agility": 0,
+      "Dexterity": 0,
+      "Intelligence": -1,
+      "Wisdom": 0,
+      "Charisma": 0
+    },
+    "startingStats": {
+      "Strength": 8,
+      "Constitution": 8,
+      "Agility": 3,
+      "Dexterity": 4,
+      "Intelligence": 1,
+      "Wisdom": 1,
+      "Charisma": 3
+    },
+    "statGrowth": {
+      "Strength": 2,
+      "Constitution": 2,
+      "Agility": 0,
+      "Dexterity": 1,
+      "Intelligence": 0,
+      "Wisdom": 0,
+      "Charisma": 0
+    }
+  },
+  "Mage Apprentice": {
+    "description": "A master of arcane arts with high intelligence",
+    "color": "#4169E1",
+    "statModifiers": {
+      "Strength": -1,
+      "Constitution": 0,
+      "Agility": 0,
+      "Dexterity": 1,
+      "Intelligence": 2,
+      "Wisdom": 1,
+      "Charisma": 0
+    },
+    "startingStats": {
+      "Strength": 1,
+      "Constitution": 3,
+      "Agility": 2,
+      "Dexterity": 2,
+      "Intelligence": 9,
+      "Wisdom": 8,
+      "Charisma": 3
+    },
+    "statGrowth": {
+      "Strength": 0,
+      "Constitution": 1,
+      "Agility": 0,
+      "Dexterity": 0,
+      "Intelligence": 3,
+      "Wisdom": 2,
+      "Charisma": 1
+    }
+  },
+  "Rogue": {
+    "description": "A cunning thief with high agility and dexterity",
+    "color": "#2F4F2F",
+    "statModifiers": {
+      "Strength": 0,
+      "Constitution": -1,
+      "Agility": 2,
+      "Dexterity": 2,
+      "Intelligence": 0,
+      "Wisdom": 0,
+      "Charisma": 0
+    },
+    "startingStats": {
+      "Strength": 2,
+      "Constitution": 3,
+      "Agility": 6,
+      "Dexterity": 8,
+      "Intelligence": 2,
+      "Wisdom": 1,
+      "Charisma": 6
+    },
+    "statGrowth": {
+      "Strength": 0,
+      "Constitution": 1,
+      "Agility": 2,
+      "Dexterity": 2,
+      "Intelligence": 0,
+      "Wisdom": 0,
+      "Charisma": 2
+    }
+  },
+  "Priest": {
+    "description": "A holy servant with high wisdom and healing powers",
+    "color": "#FFD700",
+    "statModifiers": {
+      "Strength": 0,
+      "Constitution": 1,
+      "Agility": 0,
+      "Dexterity": 0,
+      "Intelligence": 0,
+      "Wisdom": 2,
+      "Charisma": 1
+    },
+    "startingStats": {
+      "Strength": 2,
+      "Constitution": 3,
+      "Agility": 2,
+      "Dexterity": 2,
+      "Intelligence": 5,
+      "Wisdom": 6,
+      "Charisma": 8
+    },
+    "statGrowth": {
+      "Strength": 0,
+      "Constitution": 1,
+      "Agility": 0,
+      "Dexterity": 0,
+      "Intelligence": 1,
+      "Wisdom": 2,
+      "Charisma": 3
+    }
+  },
+  "Archer": {
+    "description": "A wilderness expert with balanced physical stats",
+    "color": "#228B22",
+    "statModifiers": {
+      "Strength": 1,
+      "Constitution": 1,
+      "Agility": 1,
+      "Dexterity": 1,
+      "Intelligence": 0,
+      "Wisdom": 1,
+      "Charisma": 0
+    },
+    "startingStats": {
+      "Strength": 3,
+      "Constitution": 4,
+      "Agility": 8,
+      "Dexterity": 6,
+      "Intelligence": 2,
+      "Wisdom": 2,
+      "Charisma": 3
+    },
+    "statGrowth": {
+      "Strength": 1,
+      "Constitution": 1,
+      "Agility": 2,
+      "Dexterity": 2,
+      "Intelligence": 0,
+      "Wisdom": 0,
+      "Charisma": 1
+    }
+  },
+  "Bard": {
+    "description": "A charismatic performer who inspires allies",
+    "color": "#9370DB",
+    "statModifiers": {
+      "Strength": 0,
+      "Constitution": 0,
+      "Agility": 1,
+      "Dexterity": 1,
+      "Intelligence": 0,
+      "Wisdom": 0,
+      "Charisma": 2
+    },
+    "startingStats": {
+      "Strength": 1,
+      "Constitution": 1,
+      "Agility": 2,
+      "Dexterity": 2,
+      "Intelligence": 1,
+      "Wisdom": 1,
+      "Charisma": 2
+    },
+    "statGrowth": {
+      "Strength": 0,
+      "Constitution": 0,
+      "Agility": 1,
+      "Dexterity": 1,
+      "Intelligence": 0,
+      "Wisdom": 0,
+      "Charisma": 2
+    }
+  }
+}

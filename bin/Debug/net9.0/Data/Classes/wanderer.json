@@ -1,0 +1,10 @@
+{
+  "name": "Wanderer",
+  "description": "Balanced explorer with steady progression",
+  "baseHp": 100,
+  "baseAttack": 10,
+  "baseDefense": 5,
+  "hpPerLevel": 10,
+  "attackPerLevel": 2,
+  "defensePerLevel": 1
+}
