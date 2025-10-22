@@ -1,0 +1,42 @@
+bin/
+obj/
+Debug/
+info/
+TestResults/
+out/
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.log
+*.tmp
+*.cache
+*.db
+*.pdb
+*.exe
+*.dll
+*.nupkg
+*.snupkg
+*.pidb
+*.svclog
+*.ipch
+*.aps
+*.ncb
+*.opendb
+
+
+# Avalonia build artifacts
+AppPackages/
+_AppPackages/
+
+
+# Rider IDE
+.idea/
+
+
+# OS-specific
+Thumbs.db
+Desktop.ini
+.DS_Store
