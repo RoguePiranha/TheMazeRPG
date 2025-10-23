@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 namespace TheMazeRPG.Core.Models;
 
 /// <summary>
@@ -40,4 +41,7 @@ public class Enemy
     // Animation state for attack movement
     public float AnimationOffsetX { get; set; }
     public float AnimationOffsetY { get; set; }
+
+    // Temporary data for AI/movement (e.g., velocity)
+    public Dictionary<string, object>? TempData { get; set; }
 }

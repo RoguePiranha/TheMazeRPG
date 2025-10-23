@@ -4,13 +4,21 @@ using System.Linq;
 using TheMazeRPG.Core.Models;
 using TheMazeRPG.Core.Systems;
 
-namespace TheMazeRPG.Core.Services;
+namespace TheMazeRPG.Core.Services
+{
 
 /// <summary>
 /// Manages the current game state and simulation
 /// </summary>
 public class GameState
 {
+
+    // Shared vision cone parameters (used for all entities)
+    public float VisionConeAngleRad { get; set; } = MathF.PI / 2; // 90 degrees
+    public float VisionRange { get; set; } = 7.5f; // default vision range in tiles
+
+    // Attack cone/range are per-attack/class and used only for combat checks
+
     public Hero Hero { get; set; }
     public Maze CurrentMaze { get; set; } = null!;
     public List<Enemy> Enemies { get; set; } = new();
@@ -18,12 +26,17 @@ public class GameState
     public bool HasKey { get; set; }
     public (int x, int y)? StairsLocation { get; set; }
     public List<Projectile> Projectiles { get; set; } = new();
-    
+
+    // Track enemy pursuit persistence
+    private Dictionary<Enemy, int> enemyPursuitTicks = new();
+    private const int PursuitTimeoutTicks = 30; // 3 seconds at 10 ticks/sec
+    private const float AgroRadius = 7.5f; // Extended agro radius for persistence
+
     public int Seed { get; set; }
     public int TickCount { get; private set; }
     public int CurrentFloor { get; private set; } = 1;
     public bool IsRunning { get; set; }
-    
+
     private readonly MazeGenerator _mazeGenerator;
     private readonly MovementSystem _movementSystem;
     private readonly CombatSystem _combatSystem;
@@ -102,7 +115,7 @@ public class GameState
                 // Wander with Perlin noise when not in combat
                 if (TickCount % 2 == 0)
                 {
-                    _movementSystem.MoveEnemyWithNoise(enemy, CurrentMaze, time);
+                    _movementSystem.MoveEnemySmoothRandom(enemy, CurrentMaze);
                 }
             }
             else
@@ -120,23 +133,41 @@ public class GameState
         {
             CheckFeaturesWithKeyLogic();
         }
+        
+        // Auto-switch hero attack randomly during combat
+        if (Hero.InCombat && Hero.Attacks.Count > 1)
+        {
+            // Switch attack every 2 seconds (20 ticks at 10 ticks/sec)
+            if (TickCount % 20 == 0)
+            {
+                int idx = _random.Next(Hero.Attacks.Count);
+                Hero.CurrentAttack = Hero.Attacks[idx];
+            }
+        }
     }
     
     private void CheckCombat()
     {
-        // Find closest enemy for combat that has line of sight
+        // Use directional sight cone for hero to identify enemies
+        float heroFacing = Hero.InCombat && Hero.AttackCooldown == 0 && Hero.CurrentAttack != null
+            ? MathF.Atan2(Hero.AnimationOffsetY, Hero.AnimationOffsetX)
+            : 0f; // Default facing (e.g., right)
+    // Set hero vision range to at least the farthest relevant attack range (enemy or hero), with a tunable minimum
+    float maxEnemyRange = Enemies.Count > 0 ? Enemies.Max(e => e.AttackRange) : 7.5f;
+    float heroAttackRange = Hero.CurrentAttack?.Range ?? 1.0f;
+    float heroSightRange = MathF.Max(MathF.Max(maxEnemyRange, heroAttackRange), VisionRange);
+        var heroVisibleCells = GetDirectionalSightCone(Hero.X, Hero.Y, heroFacing, heroSightRange, VisionConeAngleRad);
         Enemy? targetEnemy = null;
         float closestDistance = float.MaxValue;
-        
         foreach (var enemy in Enemies.Where(e => e.IsAlive))
         {
-            float dx = Hero.X - enemy.X;
-            float dy = Hero.Y - enemy.Y;
-            float distance = MathF.Sqrt(dx * dx + dy * dy);
-            
-            // Only consider enemies within detection range and with line of sight
-            if (distance < 5.0f && HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y))
+            int enemyCellX = (int)MathF.Round(enemy.X);
+            int enemyCellY = (int)MathF.Round(enemy.Y);
+            if (heroVisibleCells.Contains((enemyCellX, enemyCellY)))
             {
+                float dx = Hero.X - enemy.X;
+                float dy = Hero.Y - enemy.Y;
+                float distance = MathF.Sqrt(dx * dx + dy * dy);
                 if (distance < closestDistance)
                 {
                     closestDistance = distance;
@@ -144,8 +175,39 @@ public class GameState
                 }
             }
         }
-        
+        // Fallback: if nothing found in cone, allow close melee-range enemies or persistent pursuers to be targetable
         if (targetEnemy == null)
+        {
+            foreach (var enemy in Enemies.Where(e => e.IsAlive))
+            {
+                float dx = Hero.X - enemy.X;
+                float dy = Hero.Y - enemy.Y;
+                float distance = MathF.Sqrt(dx * dx + dy * dy);
+
+                // Close proximity check (melee overlap) - ensure immediate threats are detected
+                float meleeThreshold = Math.Max(1.5f, enemy.AttackRange);
+                bool isPersistent = enemyPursuitTicks.TryGetValue(enemy, out int t) && t > 0;
+
+                if (distance <= meleeThreshold || (distance < AgroRadius && isPersistent))
+                {
+                    if (distance < closestDistance)
+                    {
+                        closestDistance = distance;
+                        targetEnemy = enemy;
+                    }
+                    // If enemy in sight, reset pursuit
+                    if (HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y) && distance < 5.0f)
+                        enemyPursuitTicks[enemy] = PursuitTimeoutTicks;
+                }
+            }
+        }
+        // Decrement pursuit timers
+        foreach (var enemy in Enemies)
+        {
+            if (enemyPursuitTicks.ContainsKey(enemy) && enemyPursuitTicks[enemy] > 0)
+                enemyPursuitTicks[enemy]--;
+        }
+    if (targetEnemy == null)
         {
             // No enemy in sight - end combat if we were fighting
             if (Hero.InCombat)
@@ -153,8 +215,6 @@ public class GameState
                 Hero.InCombat = false;
                 Hero.AnimationOffsetX = 0;
                 Hero.AnimationOffsetY = 0;
-                
-                // End combat for all enemies
                 foreach (var enemy in Enemies)
                 {
                     enemy.InCombat = false;
@@ -162,34 +222,42 @@ public class GameState
             }
             return;
         }
-        
-        // Enemy found with line of sight
+        else
+        {
+            // Debug: optionally log hero sight info when a target is found
+            // (kept minimal in production)
+            // Console.WriteLine($"HeroSightRange={heroSightRange}, VisibleCells={heroVisibleCells.Count}, Target={targetEnemy?.Type}");
+        }
+        // Enemy found in sight cone
         if (!Hero.InCombat && !targetEnemy.InCombat)
         {
-            // Start new combat
             _combatSystem.StartCombat(Hero, targetEnemy);
         }
-        
         if (Hero.InCombat && targetEnemy.InCombat)
         {
-            // Process ongoing combat (handles attacking and positioning)
             _combatSystem.ProcessCombat(Hero, targetEnemy, Projectiles);
         }
-        
-        // Update all projectiles with wall collision checking
         foreach (var projectile in Projectiles)
         {
             projectile.Update(CurrentMaze);
         }
-        
-        // Remove expired projectiles (including those that hit walls)
         Projectiles.RemoveAll(p => !p.IsActive);
     }
     
     private void CheckFeaturesWithKeyLogic()
     {
+        // Use directional sight cone for hero to identify features
+        float heroFacing = Hero.InCombat && Hero.AttackCooldown == 0 && Hero.CurrentAttack != null
+            ? MathF.Atan2(Hero.AnimationOffsetY, Hero.AnimationOffsetX)
+            : 0f; // Default facing (e.g., right)
+        float heroSightRange = 7.5f;
+        float heroConeRad = MathF.PI / 2; // 90-degree cone
+        var heroVisibleCells = GetDirectionalSightCone(Hero.X, Hero.Y, heroFacing, heroSightRange, heroConeRad);
         foreach (var feature in CurrentMaze.Features.Where(f => !f.IsUsed))
         {
+            int featureCellX = (int)MathF.Round(feature.X);
+            int featureCellY = (int)MathF.Round(feature.Y);
+            if (!heroVisibleCells.Contains((featureCellX, featureCellY))) continue;
             float dx = Hero.X - feature.X;
             float dy = Hero.Y - feature.Y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
@@ -198,7 +266,6 @@ public class GameState
                 if (feature.Type == MazeFeatureType.Chest)
                 {
                     feature.IsUsed = true;
-                    // Chest contains key on each floor
                     HasKey = true;
                     Hero.GainExperience(25);
                 }
@@ -211,7 +278,6 @@ public class GameState
                     }
                     else
                     {
-                        // Remember stairs location for later
                         StairsLocation = (feature.X, feature.Y);
                     }
                 }
@@ -225,7 +291,6 @@ public class GameState
             float distance = MathF.Sqrt(dx * dx + dy * dy);
             if (distance < 0.5f)
             {
-                // Use stairs
                 var stairsFeature = CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.Stairs && !f.IsUsed);
                 if (stairsFeature != null)
                 {
@@ -239,10 +304,11 @@ public class GameState
     private bool HasLineOfSight(float x1, float y1, float x2, float y2)
     {
         // Use Bresenham's line algorithm to check if there's a wall between two points
-        int startX = (int)MathF.Round(x1);
-        int startY = (int)MathF.Round(y1);
-        int endX = (int)MathF.Round(x2);
-        int endY = (int)MathF.Round(y2);
+        // Use Floor to map positions to the containing grid cell (consistent with tile centers)
+        int startX = (int)MathF.Floor(x1);
+        int startY = (int)MathF.Floor(y1);
+        int endX = (int)MathF.Floor(x2);
+        int endY = (int)MathF.Floor(y2);
         
         int dx = Math.Abs(endX - startX);
         int dy = Math.Abs(endY - startY);
@@ -287,6 +353,90 @@ public class GameState
         }
         
         return true; // No walls in the way
+    }
+    
+    /// <summary>
+    /// Returns all grid cells along the line of sight between two points
+    /// </summary>
+    public List<(int x, int y)> GetSightLine(float x1, float y1, float x2, float y2)
+    {
+        var cells = new List<(int x, int y)>();
+        // Map positions to grid cells using Floor to match other systems that use Floor + 0.5 for centers
+        int startX = (int)MathF.Floor(x1);
+        int startY = (int)MathF.Floor(y1);
+        int endX = (int)MathF.Floor(x2);
+        int endY = (int)MathF.Floor(y2);
+        int dx = Math.Abs(endX - startX);
+        int dy = Math.Abs(endY - startY);
+        int sx = startX < endX ? 1 : -1;
+        int sy = startY < endY ? 1 : -1;
+        int err = dx - dy;
+        int currentX = startX;
+        int currentY = startY;
+        while (true)
+        {
+            cells.Add((currentX, currentY));
+            if (currentX == endX && currentY == endY)
+                break;
+            int err2 = 2 * err;
+            if (err2 > -dy)
+            {
+                err -= dy;
+                currentX += sx;
+            }
+            if (err2 < dx)
+            {
+                err += dx;
+                currentY += sy;
+            }
+        }
+        return cells;
+    }
+    
+    /// <summary>
+    /// Returns all grid cells within a cone (directional sightline) from a position
+    /// </summary>
+    public List<(int x, int y)> GetDirectionalSightCone(float originX, float originY, float facingAngleRad, float range, float coneAngleRad)
+    {
+        var visibleCells = new List<(int x, int y)>();
+        // Use tile centers for origin so calculations match other systems (which use Floor(x)+0.5)
+        float originCenterX = MathF.Floor(originX) + 0.5f;
+        float originCenterY = MathF.Floor(originY) + 0.5f;
+        int startX = (int)MathF.Floor(originX);
+        int startY = (int)MathF.Floor(originY);
+        int minX = Math.Max(0, startX - (int)range);
+        int maxX = Math.Min(CurrentMaze.Width - 1, startX + (int)range);
+        int minY = Math.Max(0, startY - (int)range);
+        int maxY = Math.Min(CurrentMaze.Height - 1, startY + (int)range);
+        for (int x = minX; x <= maxX; x++)
+        {
+            for (int y = minY; y <= maxY; y++)
+            {
+                float dx = (x + 0.5f) - originCenterX;
+                float dy = (y + 0.5f) - originCenterY;
+                float dist = MathF.Sqrt(dx * dx + dy * dy);
+                if (dist > range) continue;
+                float cellAngle = MathF.Atan2(dy, dx);
+                float angleDiff = MathF.Abs(NormalizeAngleRad(cellAngle - facingAngleRad));
+                if (angleDiff <= coneAngleRad / 2)
+                {
+                    // Check line of sight to cell
+                    if (HasLineOfSight(originCenterX, originCenterY, x + 0.5f, y + 0.5f))
+                        visibleCells.Add((x, y));
+                }
+            }
+        }
+        return visibleCells;
+    }
+
+    /// <summary>
+    /// Normalize angle to [-PI, PI]
+    /// </summary>
+    private float NormalizeAngleRad(float angle)
+    {
+        while (angle < -MathF.PI) angle += 2 * MathF.PI;
+        while (angle > MathF.PI) angle -= 2 * MathF.PI;
+        return angle;
     }
     
     public void StartNewFloor()
@@ -417,6 +567,52 @@ public class GameState
             Enemies.Add(enemy);
         }
     }
+
+    /// <summary>
+    /// Run a short deterministic simulation for testing (prints events to console)
+    /// </summary>
+    public void RunSimulationTicks(int ticks)
+    {
+        // Create a simple floor and a single enemy for deterministic testing
+        CurrentMaze = _mazeGenerator.Generate(21, 15, 1);
+        Enemies.Clear();
+        var enemy = new Enemy { X = Hero.X + 3, Y = Hero.Y, Hp = 20, MaxHp = 20, Attack = 4, Defense = 1, AttackRange = 1.0f };
+        Enemies.Add(enemy);
+        // Carve a small corridor between hero and enemy so line of sight is clear for the test
+        int startGX = (int)MathF.Round(Hero.X);
+        int endGX = (int)MathF.Round(enemy.X);
+        int gy = (int)MathF.Round(Hero.Y);
+        for (int x = Math.Min(startGX, endGX); x <= Math.Max(startGX, endGX); x++)
+        {
+            if (x >= 0 && x < CurrentMaze.Width && gy >= 0 && gy < CurrentMaze.Height)
+                CurrentMaze.Walls[x, gy] = false;
+        }
+        Console.WriteLine($"Starting simulation: Hero at ({Hero.X},{Hero.Y}), Enemy at ({enemy.X},{enemy.Y})");
+
+        IsRunning = true;
+        for (int i = 0; i < ticks; i++)
+        {
+            Tick();
+            // Log simple status every 10 ticks
+            if (i % 10 == 0)
+            {
+                Console.WriteLine($"Tick {i}: HeroHP={Hero.CurrentHp}/{Hero.MaxHp}, EnemyHP={enemy.Hp}/{enemy.MaxHp}, HeroInCombat={Hero.InCombat}, EnemyInCombat={enemy.InCombat}");
+                // Also print hero sight and current attack for debugging
+                float heroFacing = Hero.InCombat && Hero.AttackCooldown == 0 && Hero.CurrentAttack != null
+                    ? MathF.Atan2(Hero.AnimationOffsetY, Hero.AnimationOffsetX)
+                    : 0f;
+                float maxEnemyRange = Enemies.Count > 0 ? Enemies.Max(e => e.AttackRange) : 7.5f;
+                float heroAttackRange = Hero.CurrentAttack?.Range ?? 1.0f;
+                float heroSightRange = MathF.Max(MathF.Max(maxEnemyRange, heroAttackRange), 3.0f);
+                var visible = GetDirectionalSightCone(Hero.X, Hero.Y, heroFacing, heroSightRange, VisionConeAngleRad);
+                Console.WriteLine($" Debug: heroSightRange={heroSightRange}, visionConeDeg={VisionConeAngleRad * 180.0f / MathF.PI:0.0}, visionRange={VisionRange}, visibleCells={visible.Count}, currentAttack={Hero.CurrentAttack?.Name}");
+            }
+            if (!Hero.IsAlive || !enemy.IsAlive) break;
+        }
+
+        Console.WriteLine("Simulation ended.");
+        IsRunning = false;
+    }
     
     private string GetRandomEnemyType()
     {
@@ -466,4 +662,5 @@ public class GameState
         IsRunning = false;
         StartNewFloor();
     }
+}
 }

@@ -21,67 +21,68 @@ public class MovementSystem
     }
     
     /// <summary>
-    /// Move enemy using Perlin noise for smooth wandering
+    /// Move enemy using inertia-based smooth random walk (no Perlin)
     /// </summary>
-    public void MoveEnemyWithNoise(Enemy enemy, Maze maze, double time)
+    public void MoveEnemySmoothRandom(Enemy enemy, Maze maze)
     {
-        // Sample Perlin noise at current time + unique offset per enemy
-        double noiseX = _noise.Noise(time * 0.1 + enemy.NoiseOffsetX, 0);
-        double noiseY = _noise.Noise(0, time * 0.1 + enemy.NoiseOffsetY);
-        
-        // Use float-based movement for smooth wandering
-        float speed = 0.07f + enemy.Agility * 0.008f; // slightly faster, scales with agility
-        // Normalize noise vector for consistent movement
-        float mag = MathF.Sqrt((float)(noiseX * noiseX + noiseY * noiseY));
-        float dx = mag > 0.01f ? (float)(noiseX / mag) * speed : 0f;
-        float dy = mag > 0.01f ? (float)(noiseY / mag) * speed : 0f;
-        // Add a small random jitter for more natural wandering
-        dx += ((float)_random.NextDouble() - 0.5f) * 0.02f;
-        dy += ((float)_random.NextDouble() - 0.5f) * 0.02f;
-    float tileCenterX = MathF.Floor(enemy.X) + 0.5f;
-    float tileCenterY = MathF.Floor(enemy.Y) + 0.5f;
-    // If enemy is outside middle third, bias movement toward center
-    float biasStrength = 0.08f;
-    if (MathF.Abs(enemy.X - tileCenterX) > 0.17f) dx += (tileCenterX - enemy.X) * biasStrength;
-    if (MathF.Abs(enemy.Y - tileCenterY) > 0.17f) dy += (tileCenterY - enemy.Y) * biasStrength;
-    float newX = enemy.X + dx;
-    float newY = enemy.Y + dy;
-    int gridX = (int)MathF.Round(newX);
-    int gridY = (int)MathF.Round(newY);
-        // Try up to 8 directions if blocked
-        bool moved = false;
-        for (int i = 0; i < 8; i++)
+        // Use persistent velocity with random direction changes
+        if (enemy == null) return;
+        if (enemy.TempData == null) enemy.TempData = new Dictionary<string, object>();
+        float speed = 0.07f + enemy.Agility * 0.008f;
+        // Initialize velocity if not present
+        if (!enemy.TempData.ContainsKey("vx")) enemy.TempData["vx"] = (float)(_random.NextDouble() * 2 - 1) * speed;
+        if (!enemy.TempData.ContainsKey("vy")) enemy.TempData["vy"] = (float)(_random.NextDouble() * 2 - 1) * speed;
+        float vx = (float)enemy.TempData["vx"];
+        float vy = (float)enemy.TempData["vy"];
+        // Occasionally change direction
+        if (_random.NextDouble() < 0.08)
         {
+            float angle = (float)(_random.NextDouble() * MathF.PI * 2);
+            vx = MathF.Cos(angle) * speed;
+            vy = MathF.Sin(angle) * speed;
+        }
+        // Add inertia (smooth changes)
+        vx = vx * 0.85f + ((float)(_random.NextDouble() * 2 - 1) * speed) * 0.15f;
+        vy = vy * 0.85f + ((float)(_random.NextDouble() * 2 - 1) * speed) * 0.15f;
+        // Wall avoidance
+        int lookAheadX = (int)MathF.Round(enemy.X + vx * 2.5f);
+        int lookAheadY = (int)MathF.Round(enemy.Y + vy * 2.5f);
+        if (!IsWalkable(maze, lookAheadX, lookAheadY))
+        {
+            vx = -vx * 0.5f;
+            vy = -vy * 0.5f;
+        }
+        float newX = enemy.X + vx;
+        float newY = enemy.Y + vy;
+        int gridX = (int)MathF.Round(newX);
+        int gridY = (int)MathF.Round(newY);
+        if (IsWalkable(maze, gridX, gridY))
+        {
+            enemy.X = newX;
+            enemy.Y = newY;
+            enemy.TargetX = newX;
+            enemy.TargetY = newY;
+            enemy.TempData["vx"] = vx;
+            enemy.TempData["vy"] = vy;
+        }
+        else
+        {
+            // Try random direction if blocked
+            float angle = (float)(_random.NextDouble() * MathF.PI * 2);
+            vx = MathF.Cos(angle) * speed;
+            vy = MathF.Sin(angle) * speed;
+            newX = enemy.X + vx;
+            newY = enemy.Y + vy;
+            gridX = (int)MathF.Round(newX);
+            gridY = (int)MathF.Round(newY);
             if (IsWalkable(maze, gridX, gridY))
             {
                 enemy.X = newX;
                 enemy.Y = newY;
                 enemy.TargetX = newX;
                 enemy.TargetY = newY;
-                moved = true;
-                break;
-            }
-            // Rotate direction by 45 degrees and try again
-            float angle = MathF.Atan2(dy, dx) + (MathF.PI / 4) * (i + 1);
-            dx = MathF.Cos(angle) * speed;
-            dy = MathF.Sin(angle) * speed;
-            newX = enemy.X + dx;
-            newY = enemy.Y + dy;
-            gridX = (int)MathF.Round(newX);
-            gridY = (int)MathF.Round(newY);
-        }
-        // If all directions blocked, pick a random open neighbor
-        if (!moved)
-        {
-            var dirs = new[] { (1,0), (-1,0), (0,1), (0,-1), (1,1), (-1,1), (1,-1), (-1,-1) };
-            var open = dirs.Where(d => IsWalkable(maze, (int)MathF.Round(enemy.X + d.Item1), (int)MathF.Round(enemy.Y + d.Item2))).ToList();
-            if (open.Count > 0)
-            {
-                var pick = open[_random.Next(open.Count)];
-                enemy.X += pick.Item1 * speed;
-                enemy.Y += pick.Item2 * speed;
-                enemy.TargetX = enemy.X;
-                enemy.TargetY = enemy.Y;
+                enemy.TempData["vx"] = vx;
+                enemy.TempData["vy"] = vy;
             }
         }
     }
@@ -94,9 +95,9 @@ public class MovementSystem
         // Get hero's current attack
         var attack = hero.CurrentAttack ?? new Attack { Name = "Unarmed Strike", Range = 1.0f };
         
-        // Calculate direction to enemy
-        float dx = enemy.TargetX - hero.X;
-        float dy = enemy.TargetY - hero.Y;
+    // Calculate direction to enemy (use actual enemy position, not their planned target)
+    float dx = enemy.X - hero.X;
+    float dy = enemy.Y - hero.Y;
         float distance = MathF.Sqrt(dx * dx + dy * dy);
         
         if (distance < 0.1f) return; // Already at target
@@ -224,8 +225,17 @@ public class MovementSystem
                 float awayDist = MathF.Sqrt(awayDx * awayDx + awayDy * awayDy);
                 if (awayDist > 0.1f)
                 {
-                    enemy.X += (awayDx / awayDist) * speed * 0.5f;
-                    enemy.Y += (awayDy / awayDist) * speed * 0.5f;
+                    // Prevent backing into walls
+                    float backX = enemy.X + (awayDx / awayDist) * speed * 0.5f;
+                    float backY = enemy.Y + (awayDy / awayDist) * speed * 0.5f;
+                    int backGridX = (int)MathF.Round(backX);
+                    int backGridY = (int)MathF.Round(backY);
+                    if (IsWalkable(maze, backGridX, backGridY))
+                    {
+                        enemy.X = backX;
+                        enemy.Y = backY;
+                    }
+                    // else: stay put if wall behind
                 }
             }
         }

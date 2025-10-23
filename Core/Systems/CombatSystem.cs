@@ -44,17 +44,22 @@ public class CombatSystem
         else
         {
             // Check if hero is in range to attack
-            var attack = hero.CurrentAttack ?? new Attack { Name = "Unarmed Strike", Damage = 8, Range = 1.0f };
+            var attack = hero.CurrentAttack ?? new Attack { Name = "Unarmed Strike", Damage = 8, Range = 1.0f, Cooldown = 20, CritChance = 0.05f, Animation = AttackAnimation.Melee };
             float dx = (float)enemy.X - hero.X;
             float dy = (float)enemy.Y - hero.Y;
             float distanceToEnemy = MathF.Sqrt(dx * dx + dy * dy);
-            
+
             // Only attack if within range
             if (distanceToEnemy <= attack.Range)
             {
                 // Hero attacks!
                 PerformHeroAttack(hero, enemy, projectiles);
-                
+
+                // Set cooldown based on attack, Dexterity, and minimum threshold
+                int minCooldown = 8; // Lower minimum for snappier combat
+                int statCooldown = attack.Cooldown - (int)(hero.Dexterity * 0.7f);
+                hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
+
                 // Check if enemy died
                 if (!enemy.IsAlive)
                 {
@@ -64,10 +69,10 @@ public class CombatSystem
                     enemy.InCombat = false;
                     hero.AnimationOffsetX = 0;
                     hero.AnimationOffsetY = 0;
-                    
+
                     // Clear any projectiles targeting this enemy to prevent lingering animations
                     projectiles.Clear();
-                    
+
                     return false;
                 }
             }
@@ -84,16 +89,28 @@ public class CombatSystem
             float enemyDx = hero.X - enemy.TargetX;
             float enemyDy = hero.Y - enemy.TargetY;
             float distanceToHero = MathF.Sqrt(enemyDx * enemyDx + enemyDy * enemyDy);
-            
+
             // Enemy only attacks if within their attack range
             if (distanceToHero <= enemy.AttackRange)
             {
                 // Enemy attacks!
-                int enemyDamage = CalculateDamage(enemy.Attack, hero.Defense);
-                hero.CurrentHp -= enemyDamage;
-                enemy.AttackCooldown = enemy.AttackSpeed;
+                // Stat-driven enemy damage
+                int statEnemyDamage = enemy.Attack
+                    + (int)(enemy.Strength * 1.1f)
+                    + (int)(enemy.Dexterity * 0.4f);
 
-                // Enemy attack animation (simple lunge)
+                // Apply damage, factoring hero defense and Constitution
+                int finalEnemyDamage = CalculateDamage(statEnemyDamage, hero.Defense + (int)(hero.Constitution * 0.7f));
+                hero.CurrentHp -= finalEnemyDamage;
+
+                // Cooldown based on enemy attack speed, Dexterity, and Agility
+                int minEnemyCooldown = 10;
+                int statEnemyCooldown = enemy.AttackSpeed
+                    - (int)(enemy.Dexterity * 0.5f)
+                    - (int)(enemy.Agility * 0.2f);
+                enemy.AttackCooldown = Math.Max(minEnemyCooldown, statEnemyCooldown);
+
+                // Enemy attack animation (stronger lunge)
                 float dx = hero.X - enemy.X;
                 float dy = hero.Y - enemy.Y;
                 float dist = MathF.Sqrt(dx * dx + dy * dy);
@@ -102,8 +119,8 @@ public class CombatSystem
                     dx /= dist;
                     dy /= dist;
                 }
-                enemy.AnimationOffsetX = dx * 0.4f;
-                enemy.AnimationOffsetY = dy * 0.4f;
+                enemy.AnimationOffsetX = dx * 0.6f; // More impactful
+                enemy.AnimationOffsetY = dy * 0.6f;
 
                 // Spawn enemy attack projectile (melee for now)
                 projectiles.Add(new Projectile
@@ -114,10 +131,10 @@ public class CombatSystem
                     CurrentY = enemy.Y,
                     TargetX = hero.X,
                     TargetY = hero.Y,
-                    Speed = 0.4f,
+                    Speed = 0.45f,
                     Type = AttackAnimation.Melee,
                     AttackName = "Enemy Attack",
-                    MaxLifeTime = 15
+                    MaxLifeTime = 18
                 });
 
                 // Check if hero died
@@ -264,23 +281,30 @@ public class CombatSystem
                 break;
         }
         
-        // Calculate damage based on attack and hero stats
-        int baseDamage = attack.Damage + hero.Attack;
-        
-        // Check for critical hit
+        // Stat-driven damage calculation
+        int statDamage = attack.Damage
+            + (int)(hero.Strength * 1.2f)
+            + (int)(hero.Dexterity * 0.5f)
+            + hero.Attack;
+
+        // Check for critical hit (Dexterity boosts crit chance)
+        float critChance = attack.CritChance + hero.Dexterity * 0.005f;
         float critRoll = (float)_random.NextDouble();
-        if (critRoll < attack.CritChance)
+        if (critRoll < critChance)
         {
-            baseDamage = (int)(baseDamage * 1.5f);
+            statDamage = (int)(statDamage * 1.5f);
         }
-        
-        // Apply damage
-        int finalDamage = CalculateDamage(baseDamage, enemy.Defense);
+
+        // Apply damage, factoring enemy defense and Constitution
+        int finalDamage = CalculateDamage(statDamage, enemy.Defense + (int)(enemy.Constitution * 0.7f));
         enemy.Hp -= finalDamage;
-        
-        // Set cooldown based on attack and dexterity
-        int attackCooldown = attack.Cooldown - hero.Dexterity;
-        hero.AttackCooldown = Math.Max(10, attackCooldown);
+
+        // Set cooldown based on attack, Dexterity, and Agility
+        int minCooldown = 8;
+        int statCooldown = attack.Cooldown
+            - (int)(hero.Dexterity * 0.7f)
+            - (int)(hero.Agility * 0.3f);
+        hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
     }
     
     /// <summary>

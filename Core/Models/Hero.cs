@@ -77,13 +77,27 @@ public class Hero
         ExperienceToNext = (int)(ExperienceToNext * 1.5f);
         
         // Stat gains per level (influenced by core stats)
-        int hpGain = 10 + Constitution;
+        int hpGain = 10 + Constitution + (Level % 5 == 0 ? 10 : 0); // Bonus HP every 5 levels
         MaxHp += hpGain;
         CurrentHp = MaxHp; // Full heal on level up
-        
-        Attack += 2 + (Strength / 2);
-        Defense += 1 + (Constitution / 3);
-        
+
+        Attack += 2 + (Strength / 2) + (Level % 3 == 0 ? 2 : 0); // Bonus attack every 3 levels
+        Defense += 1 + (Constitution / 3) + (Level % 4 == 0 ? 2 : 0); // Bonus defense every 4 levels
+
+        // Unlock new attack at milestones
+        if (Level == 5)
+        {
+            Attacks.Add(new Attack { Name = "Power Strike", Damage = 18, Range = 1.2f, Cooldown = 28, Animation = AttackAnimation.Heavy, CritChance = 0.12f, Description = "A heavy blow with bonus crit." });
+        }
+        if (Level == 10)
+        {
+            Attacks.Add(new Attack { Name = "Quick Jab", Damage = 12, Range = 1.0f, Cooldown = 16, Animation = AttackAnimation.Quick, CritChance = 0.18f, Description = "A rapid jab with high crit chance." });
+        }
+        if (Level == 15)
+        {
+            Attacks.Add(new Attack { Name = "Arcane Blast", Damage = 22, Range = 2.0f, Cooldown = 32, Animation = AttackAnimation.Magic, CritChance = 0.10f, Description = "A ranged magic attack." });
+        }
+
         // Increase core stats based on class stat growth
         if (ClassData?.StatGrowth != null)
         {
@@ -113,5 +127,8 @@ public class Hero
             Wisdom += 1;
             Charisma += 1;
         }
+
+        // Satisfying level-up feedback (animation/sound placeholder)
+        // TODO: Trigger level-up animation and sound effect in UI layer
     }
 }
