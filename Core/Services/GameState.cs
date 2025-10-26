@@ -45,6 +45,11 @@ public class GameState
     // Health regeneration tracking (for fractional HP per tick)
     private float _accumulatedHealthRegen = 0f;
     
+    // Resource regeneration tracking (for fractional resource per tick)
+    private float _accumulatedStaminaRegen = 0f;
+    private float _accumulatedManaRegen = 0f;
+    private float _accumulatedFaithRegen = 0f;
+    
     // Store character creation info for restart
     private string _characterName = "Hero";
     private string _className = "Wanderer";
@@ -133,14 +138,43 @@ public class GameState
         
         TickCount++;
         
-        // Regenerate hero resources
-        Hero.CurrentStamina = Math.Min(Hero.MaxStamina, Hero.CurrentStamina + Hero.StaminaRegen);
-        Hero.CurrentMana = Math.Min(Hero.MaxMana, Hero.CurrentMana + Hero.ManaRegen);
-        Hero.CurrentFaith = Math.Min(Hero.MaxFaith, Hero.CurrentFaith + Hero.FaithRegen);
+        // Regenerate hero resources using fractional accumulation
+        // Constitution / 4 = Stamina per second, Intelligence / 4 = Mana per second, Wisdom / 4 = Faith per second
+        // Resources regenerate 30% slower during combat
+        float combatRegenModifier = Hero.InCombat ? 0.7f : 1.0f;
         
-        // Health regeneration (Constitution / 4 = HP per second, at 10 ticks/sec)
-        // Example: 8 Constitution = 2 HP/sec = 0.2 HP/tick
-        float hpPerTick = Hero.Constitution / 40.0f; // Divide by 40 because 10 ticks/sec * 4 Constitution per HP
+        float staminaPerTick = (Hero.Constitution / 40.0f) * combatRegenModifier;
+        float manaPerTick = (Hero.Intelligence / 40.0f) * combatRegenModifier;
+        float faithPerTick = (Hero.Wisdom / 40.0f) * combatRegenModifier;
+        
+        _accumulatedStaminaRegen += staminaPerTick;
+        _accumulatedManaRegen += manaPerTick;
+        _accumulatedFaithRegen += faithPerTick;
+        
+        if (_accumulatedStaminaRegen >= 1.0f)
+        {
+            int staminaToRestore = (int)_accumulatedStaminaRegen;
+            Hero.CurrentStamina = Math.Min(Hero.MaxStamina, Hero.CurrentStamina + staminaToRestore);
+            _accumulatedStaminaRegen -= staminaToRestore;
+        }
+        
+        if (_accumulatedManaRegen >= 1.0f)
+        {
+            int manaToRestore = (int)_accumulatedManaRegen;
+            Hero.CurrentMana = Math.Min(Hero.MaxMana, Hero.CurrentMana + manaToRestore);
+            _accumulatedManaRegen -= manaToRestore;
+        }
+        
+        if (_accumulatedFaithRegen >= 1.0f)
+        {
+            int faithToRestore = (int)_accumulatedFaithRegen;
+            Hero.CurrentFaith = Math.Min(Hero.MaxFaith, Hero.CurrentFaith + faithToRestore);
+            _accumulatedFaithRegen -= faithToRestore;
+        }
+        
+        // Health regeneration (Constitution / 8 = HP per second, at 10 ticks/sec)
+        // Example: 8 Constitution = 1 HP/sec = 0.1 HP/tick (half the original rate)
+        float hpPerTick = Hero.Constitution / 80.0f; // Divide by 80 because 10 ticks/sec * 8 Constitution per HP
         _accumulatedHealthRegen += hpPerTick;
         
         if (_accumulatedHealthRegen >= 1.0f)
@@ -527,14 +561,16 @@ public class GameState
         Hero.MaxMana = 100 + (Hero.Intelligence * 10);
         Hero.MaxFaith = 100 + (Hero.Wisdom * 10);
         
-        // Regen rates scale with attributes
-        Hero.StaminaRegen = 2 + (Hero.Constitution / 5);
-        Hero.ManaRegen = 1 + (Hero.Intelligence / 5);
-        Hero.FaithRegen = 1 + (Hero.Wisdom / 5);
+        // Regen rates scale with attributes (similar to health regen rate)
+        // At 10 ticks/sec, these values give: Stat / 4 = resource per second
+        // Example: 8 Constitution = 2 Stamina/sec, 12 Intelligence = 3 Mana/sec
+        Hero.StaminaRegen = 0; // Will use fractional accumulation
+        Hero.ManaRegen = 0;     // Will use fractional accumulation
+        Hero.FaithRegen = 0;    // Will use fractional accumulation
         
-        // Health regen: 4 Constitution = 1 HP per second (at 10 ticks/sec = 0.1 HP/tick)
+        // Health regen: 8 Constitution = 1 HP per second (at 10 ticks/sec = 0.1 HP/tick)
         // We'll use HealthRegen as HP per 10 ticks for display purposes
-        Hero.HealthRegen = Hero.Constitution / 4;
+        Hero.HealthRegen = Hero.Constitution / 8;
     }
     
     /// <summary>
