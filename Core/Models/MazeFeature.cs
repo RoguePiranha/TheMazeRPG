@@ -16,4 +16,9 @@ public class MazeFeature
     public int Y { get; set; }
     public MazeFeatureType Type { get; set; }
     public bool IsUsed { get; set; }
+    
+    // Chest opening animation state
+    public bool IsOpening { get; set; }
+    public int OpeningTicks { get; set; }
+    public float LightRadius { get; set; }
 }

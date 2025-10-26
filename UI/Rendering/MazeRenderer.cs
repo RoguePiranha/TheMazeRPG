@@ -138,7 +138,7 @@ public class MazeRenderer
                     break;
                     
                 case MazeFeatureType.Chest:
-                    DrawChest(canvas, px, py);
+                    DrawChest(canvas, px, py, feature);
                     break;
             }
         }
@@ -160,8 +160,37 @@ public class MazeRenderer
         canvas.DrawCircle(x, y, 2, paint);
     }
     
-    private void DrawChest(SKCanvas canvas, float x, float y)
+    private void DrawChest(SKCanvas canvas, float x, float y, MazeFeature feature)
     {
+        // Draw light glow if chest is opening
+        if (feature.IsOpening && feature.LightRadius > 0)
+        {
+            using var glowPaint = new SKPaint
+            {
+                IsAntialias = true,
+                Style = SKPaintStyle.Fill
+            };
+            
+            // Draw expanding golden light
+            var colors = new SKColor[]
+            {
+                new SKColor(255, 215, 0, 180), // Gold center
+                new SKColor(255, 215, 0, 100), // Mid
+                new SKColor(255, 215, 0, 0)    // Fade out
+            };
+            var positions = new float[] { 0, 0.5f, 1.0f };
+            
+            glowPaint.Shader = SKShader.CreateRadialGradient(
+                new SKPoint(x, y),
+                feature.LightRadius * CellSize,
+                colors,
+                positions,
+                SKShaderTileMode.Clamp
+            );
+            
+            canvas.DrawCircle(x, y, feature.LightRadius * CellSize, glowPaint);
+        }
+        
         using var paint = new SKPaint
         {
             Color = ChestColor,
@@ -169,7 +198,7 @@ public class MazeRenderer
             IsAntialias = true
         };
         
-        // Draw small diamond
+        // Draw small diamond (chest icon)
         var path = new SKPath();
         path.MoveTo(x, y - 4);
         path.LineTo(x + 4, y);
@@ -842,6 +871,24 @@ public class MazeRenderer
             Style = SKPaintStyle.Fill
         };
         
+        using var staminaPaint = new SKPaint
+        {
+            Color = new SKColor(100, 255, 100), // Green
+            Style = SKPaintStyle.Fill
+        };
+        
+        using var manaPaint = new SKPaint
+        {
+            Color = new SKColor(100, 150, 255), // Blue
+            Style = SKPaintStyle.Fill
+        };
+        
+        using var faithPaint = new SKPaint
+        {
+            Color = new SKColor(255, 215, 100), // Gold
+            Style = SKPaintStyle.Fill
+        };
+        
         // HP Bar
         float barWidth = 200;
         float barHeight = 16;
@@ -855,13 +902,68 @@ public class MazeRenderer
         
         canvas.DrawText($"HP: {gameState.Hero.CurrentHp}/{gameState.Hero.MaxHp}", barX + 5, barY + 12, textPaint);
         
+        // Determine which resource bar to show based on current attack
+        var currentAttack = gameState.Hero.CurrentAttack;
+        float resourceBarY = barY + 22;
+        
+        if (currentAttack != null && currentAttack.IsHeavyAttack)
+        {
+            // Show the resource this attack uses
+            if (currentAttack.StaminaCost > 0)
+            {
+                // Stamina Bar
+                canvas.DrawRect(barX, resourceBarY, barWidth, barHeight, barBgPaint);
+                float staminaPercent = (float)gameState.Hero.CurrentStamina / gameState.Hero.MaxStamina;
+                canvas.DrawRect(barX, resourceBarY, barWidth * staminaPercent, barHeight, staminaPaint);
+                canvas.DrawText($"Stamina: {gameState.Hero.CurrentStamina}/{gameState.Hero.MaxStamina}", barX + 5, resourceBarY + 12, textPaint);
+            }
+            else if (currentAttack.ManaCost > 0)
+            {
+                // Mana Bar
+                canvas.DrawRect(barX, resourceBarY, barWidth, barHeight, barBgPaint);
+                float manaPercent = (float)gameState.Hero.CurrentMana / gameState.Hero.MaxMana;
+                canvas.DrawRect(barX, resourceBarY, barWidth * manaPercent, barHeight, manaPaint);
+                canvas.DrawText($"Mana: {gameState.Hero.CurrentMana}/{gameState.Hero.MaxMana}", barX + 5, resourceBarY + 12, textPaint);
+            }
+            else if (currentAttack.FaithCost > 0)
+            {
+                // Faith Bar
+                canvas.DrawRect(barX, resourceBarY, barWidth, barHeight, barBgPaint);
+                float faithPercent = (float)gameState.Hero.CurrentFaith / gameState.Hero.MaxFaith;
+                canvas.DrawRect(barX, resourceBarY, barWidth * faithPercent, barHeight, faithPaint);
+                canvas.DrawText($"Faith: {gameState.Hero.CurrentFaith}/{gameState.Hero.MaxFaith}", barX + 5, resourceBarY + 12, textPaint);
+            }
+        }
+        else
+        {
+            // Show stamina by default (most common resource)
+            canvas.DrawRect(barX, resourceBarY, barWidth, barHeight, barBgPaint);
+            float staminaPercent = (float)gameState.Hero.CurrentStamina / gameState.Hero.MaxStamina;
+            canvas.DrawRect(barX, resourceBarY, barWidth * staminaPercent, barHeight, staminaPaint);
+            canvas.DrawText($"Stamina: {gameState.Hero.CurrentStamina}/{gameState.Hero.MaxStamina}", barX + 5, resourceBarY + 12, textPaint);
+        }
+        
         // XP Bar
+        float xpBarY = resourceBarY + 22;
         float xpPercent = gameState.Hero.ExperienceToNext > 0 
             ? (float)gameState.Hero.Experience / gameState.Hero.ExperienceToNext 
             : 0;
-        canvas.DrawRect(barX, barY + 25, barWidth, barHeight, barBgPaint);
-        canvas.DrawRect(barX, barY + 25, barWidth * xpPercent, barHeight, xpPaint);
-        canvas.DrawText($"Level {gameState.Hero.Level}", barX + 5, barY + 37, textPaint);
+        canvas.DrawRect(barX, xpBarY, barWidth, barHeight, barBgPaint);
+        canvas.DrawRect(barX, xpBarY, barWidth * xpPercent, barHeight, xpPaint);
+        canvas.DrawText($"Level {gameState.Hero.Level}", barX + 5, xpBarY + 12, textPaint);
+        
+        // Current attack info
+        if (currentAttack != null)
+        {
+            string attackInfo = $"Attack: {currentAttack.Name}";
+            if (currentAttack.IsHeavyAttack)
+            {
+                if (currentAttack.StaminaCost > 0) attackInfo += $" ({currentAttack.StaminaCost} Stamina)";
+                else if (currentAttack.ManaCost > 0) attackInfo += $" ({currentAttack.ManaCost} Mana)";
+                else if (currentAttack.FaithCost > 0) attackInfo += $" ({currentAttack.FaithCost} Faith)";
+            }
+            canvas.DrawText(attackInfo, barX, xpBarY + 30, textPaint);
+        }
         
         // Floor info (bottom)
         string floorText = $"Floor {gameState.CurrentFloor} | ATK: {gameState.Hero.Attack} | DEF: {gameState.Hero.Defense}";

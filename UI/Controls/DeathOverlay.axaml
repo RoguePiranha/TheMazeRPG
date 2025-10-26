@@ -1,0 +1,62 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:controls="using:TheMazeRPG.UI.Controls"
+             mc:Ignorable="d" d:DesignWidth="300" d:DesignHeight="420"
+             x:Class="TheMazeRPG.UI.Controls.DeathOverlay"
+             x:DataType="controls:DeathOverlay">
+    
+    <Grid Background="#CC000000" IsVisible="{Binding ShowOverlay}">
+        <Border Background="#CC1A1A1A"
+                BorderBrush="#FF8B0000"
+                BorderThickness="3"
+                CornerRadius="10"
+                Width="250"
+                Height="180"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                BoxShadow="0 4 16 2 #AA000000">
+            
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="15">
+                <!-- Death message -->
+                <TextBlock Text="{Binding DeathMessage}"
+                           FontSize="24"
+                           FontWeight="Bold"
+                           Foreground="#FFFF4444"
+                           HorizontalAlignment="Center"
+                           TextAlignment="Center"
+                           Margin="10,0" />
+                
+                <!-- Timer message -->
+                <TextBlock Text="{Binding TimerMessage}"
+                           FontSize="14"
+                           Foreground="#FFCCCCCC"
+                           HorizontalAlignment="Center"
+                           TextAlignment="Center" />
+                
+                <!-- Buttons -->
+                <StackPanel Orientation="Horizontal" 
+                           HorizontalAlignment="Center" 
+                           Spacing="10"
+                           Margin="0,10,0,0">
+                    <Button Content="Try Again"
+                            Width="100"
+                            Height="32"
+                            FontSize="13"
+                            Click="TryAgain_Click"
+                            Background="#FF4CAF50"
+                            Foreground="White" />
+                    <Button Content="New Hero"
+                            Width="100"
+                            Height="32"
+                            FontSize="13"
+                            Click="NewHero_Click"
+                            Background="#FF2196F3"
+                            Foreground="White" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </Grid>
+    
+</UserControl>

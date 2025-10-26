@@ -39,39 +39,8 @@ public class MazeGenerator
         // Ensure start and end are clear
         maze.Walls[1, 1] = false; // Start position
         
-        // Place stairs at a far corner
-        int stairsX = width - 2;
-        int stairsY = height - 2;
-        maze.Walls[stairsX, stairsY] = false;
-        
-        maze.Features.Add(new MazeFeature
-        {
-            X = stairsX,
-            Y = stairsY,
-            Type = MazeFeatureType.Stairs
-        });
-        
-        // Add some random treasure chests (1-3 per floor)
-        int chestCount = 1 + floorNumber / 3;
-        var emptyCells = maze.GetEmptyCells();
-        
-        for (int i = 0; i < chestCount && emptyCells.Count > 0; i++)
-        {
-            int idx = _random.Next(emptyCells.Count);
-            var (x, y) = emptyCells[idx];
-            emptyCells.RemoveAt(idx);
-            
-            // Don't place on start or stairs
-            if ((x == 1 && y == 1) || (x == stairsX && y == stairsY))
-                continue;
-                
-            maze.Features.Add(new MazeFeature
-            {
-                X = x,
-                Y = y,
-                Type = MazeFeatureType.Chest
-            });
-        }
+        // Don't place any features here - GameState.StartNewFloor() will handle it
+        // This ensures only 1 chest and 1 stairs per floor
         
         return maze;
     }

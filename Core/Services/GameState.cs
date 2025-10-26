@@ -36,6 +36,19 @@ public class GameState
     public int TickCount { get; private set; }
     public int CurrentFloor { get; private set; } = 1;
     public bool IsRunning { get; set; }
+    
+    // Death state
+    public bool IsHeroDead { get; private set; }
+    public int DeathTimer { get; private set; }
+    private const int AutoRestartTicks = 50; // 5 seconds at 10 ticks/sec
+    
+    // Health regeneration tracking (for fractional HP per tick)
+    private float _accumulatedHealthRegen = 0f;
+    
+    // Store character creation info for restart
+    private string _characterName = "Hero";
+    private string _className = "Wanderer";
+    private string _raceName = "Human";
 
     private readonly MazeGenerator _mazeGenerator;
     private readonly MovementSystem _movementSystem;
@@ -50,6 +63,10 @@ public class GameState
     public GameState(int seed, string characterName, string className, string raceName)
     {
         Seed = seed;
+        _characterName = characterName;
+        _className = className;
+        _raceName = raceName;
+        
         _random = new Random(seed);
         _mazeGenerator = new MazeGenerator(seed);
         _movementSystem = new MovementSystem(seed);
@@ -71,6 +88,14 @@ public class GameState
         // Apply class and race stats
         _characterDataService.ApplyClassAndRace(Hero, className, raceName);
         
+        // Update resource pools based on attributes
+        UpdateHeroResourcePools();
+        
+        // Initialize resources to max
+        Hero.CurrentStamina = Hero.MaxStamina;
+        Hero.CurrentMana = Hero.MaxMana;
+        Hero.CurrentFaith = Hero.MaxFaith;
+        
         // Debug output
         Console.WriteLine($"Character Created: {Hero.Name} - {Hero.Race} {Hero.Class}");
         Console.WriteLine($"Colors - Race: {Hero.RaceColor}, Class: {Hero.ClassColor}");
@@ -85,24 +110,63 @@ public class GameState
     
     public void Tick()
     {
-        if (!IsRunning || !Hero.IsAlive) return;
+        if (!IsRunning) return;
+        
+        // Check if hero died this tick
+        if (!Hero.IsAlive && !IsHeroDead)
+        {
+            IsHeroDead = true;
+            DeathTimer = 0;
+            // Stop the game but keep ticking for the timer
+        }
+        
+        // Handle death timer and auto-restart
+        if (IsHeroDead)
+        {
+            DeathTimer++;
+            if (DeathTimer >= AutoRestartTicks)
+            {
+                RestartGame();
+            }
+            return; // Don't process game logic while dead
+        }
         
         TickCount++;
         
-        // Move hero
-        if (!Hero.InCombat)
+        // Regenerate hero resources
+        Hero.CurrentStamina = Math.Min(Hero.MaxStamina, Hero.CurrentStamina + Hero.StaminaRegen);
+        Hero.CurrentMana = Math.Min(Hero.MaxMana, Hero.CurrentMana + Hero.ManaRegen);
+        Hero.CurrentFaith = Math.Min(Hero.MaxFaith, Hero.CurrentFaith + Hero.FaithRegen);
+        
+        // Health regeneration (Constitution / 4 = HP per second, at 10 ticks/sec)
+        // Example: 8 Constitution = 2 HP/sec = 0.2 HP/tick
+        float hpPerTick = Hero.Constitution / 40.0f; // Divide by 40 because 10 ticks/sec * 4 Constitution per HP
+        _accumulatedHealthRegen += hpPerTick;
+        
+        if (_accumulatedHealthRegen >= 1.0f)
         {
-            // Normal exploration movement
-            _movementSystem.MoveHeroTowardUnexplored(Hero, CurrentMaze);
+            int hpToRestore = (int)_accumulatedHealthRegen;
+            Hero.CurrentHp = Math.Min(Hero.MaxHp, Hero.CurrentHp + hpToRestore);
+            _accumulatedHealthRegen -= hpToRestore;
         }
-        else
+        
+        // Move hero (unless opening chest)
+        if (!Hero.IsOpeningChest)
         {
-            // During combat, find the enemy we're fighting and move toward them
-            var combatEnemy = Enemies.FirstOrDefault(e => e.IsAlive && e.InCombat);
-            if (combatEnemy != null)
+            if (!Hero.InCombat)
             {
-                // Move toward enemy to maintain attack range
-                _movementSystem.MoveHeroTowardEnemy(Hero, combatEnemy, CurrentMaze);
+                // Normal exploration movement
+                _movementSystem.MoveHeroTowardUnexplored(Hero, CurrentMaze);
+            }
+            else
+            {
+                // During combat, find the enemy we're fighting and move toward them
+                var combatEnemy = Enemies.FirstOrDefault(e => e.IsAlive && e.InCombat);
+                if (combatEnemy != null)
+                {
+                    // Move toward enemy to maintain attack range
+                    _movementSystem.MoveHeroTowardEnemy(Hero, combatEnemy, CurrentMaze);
+                }
             }
         }
         
@@ -134,36 +198,70 @@ public class GameState
             CheckFeaturesWithKeyLogic();
         }
         
-        // Auto-switch hero attack randomly during combat
+        // Smart attack rotation during combat - prefer heavy attacks when resources are available
         if (Hero.InCombat && Hero.Attacks.Count > 1)
         {
-            // Switch attack every 2 seconds (20 ticks at 10 ticks/sec)
-            if (TickCount % 20 == 0)
+            // Switch attack every 2 seconds (20 ticks at 10 ticks/sec) OR when we can't afford current attack
+            bool timeToSwitch = TickCount % 20 == 0;
+            bool cantAffordCurrent = Hero.CurrentAttack != null && Hero.CurrentAttack.IsHeavyAttack &&
+                (Hero.CurrentStamina < Hero.CurrentAttack.StaminaCost ||
+                 Hero.CurrentMana < Hero.CurrentAttack.ManaCost ||
+                 Hero.CurrentFaith < Hero.CurrentAttack.FaithCost);
+            
+            if (timeToSwitch || cantAffordCurrent)
             {
-                int idx = _random.Next(Hero.Attacks.Count);
-                Hero.CurrentAttack = Hero.Attacks[idx];
+                // Get heavy attacks that we have resources for
+                var affordableHeavyAttacks = Hero.Attacks.Where(a => 
+                    a.IsHeavyAttack && 
+                    Hero.CurrentStamina >= a.StaminaCost &&
+                    Hero.CurrentMana >= a.ManaCost &&
+                    Hero.CurrentFaith >= a.FaithCost).ToList();
+                
+                // If we have affordable heavy attacks, use one randomly
+                if (affordableHeavyAttacks.Count > 0)
+                {
+                    int idx = _random.Next(affordableHeavyAttacks.Count);
+                    Hero.CurrentAttack = affordableHeavyAttacks[idx];
+                }
+                else
+                {
+                    // Otherwise fall back to light attacks
+                    var lightAttacks = Hero.Attacks.Where(a => !a.IsHeavyAttack).ToList();
+                    if (lightAttacks.Count > 0)
+                    {
+                        int idx = _random.Next(lightAttacks.Count);
+                        Hero.CurrentAttack = lightAttacks[idx];
+                    }
+                }
             }
         }
     }
     
     private void CheckCombat()
     {
-        // Use directional sight cone for hero to identify enemies
-        float heroFacing = Hero.InCombat && Hero.AttackCooldown == 0 && Hero.CurrentAttack != null
-            ? MathF.Atan2(Hero.AnimationOffsetY, Hero.AnimationOffsetX)
-            : 0f; // Default facing (e.g., right)
-    // Set hero vision range to at least the farthest relevant attack range (enemy or hero), with a tunable minimum
-    float maxEnemyRange = Enemies.Count > 0 ? Enemies.Max(e => e.AttackRange) : 7.5f;
-    float heroAttackRange = Hero.CurrentAttack?.Range ?? 1.0f;
-    float heroSightRange = MathF.Max(MathF.Max(maxEnemyRange, heroAttackRange), VisionRange);
-        var heroVisibleCells = GetDirectionalSightCone(Hero.X, Hero.Y, heroFacing, heroSightRange, VisionConeAngleRad);
+        // Check both hero and enemy vision for combat detection
         Enemy? targetEnemy = null;
         float closestDistance = float.MaxValue;
+        
+        // First, check if hero can see any enemies
+        float heroFacing = Hero.InCombat && Hero.AttackCooldown == 0 && Hero.CurrentAttack != null
+            ? MathF.Atan2(Hero.AnimationOffsetY, Hero.AnimationOffsetX)
+            : 0f;
+        float maxEnemyRange = Enemies.Count > 0 ? Enemies.Max(e => e.AttackRange) : 7.5f;
+        float heroAttackRange = Hero.CurrentAttack?.Range ?? 1.0f;
+        float heroSightRange = MathF.Max(MathF.Max(maxEnemyRange, heroAttackRange), VisionRange);
+        var heroVisibleCells = GetDirectionalSightCone(Hero.X, Hero.Y, heroFacing, heroSightRange, VisionConeAngleRad);
+        
         foreach (var enemy in Enemies.Where(e => e.IsAlive))
         {
             int enemyCellX = (int)MathF.Round(enemy.X);
             int enemyCellY = (int)MathF.Round(enemy.Y);
-            if (heroVisibleCells.Contains((enemyCellX, enemyCellY)))
+            bool heroSeesEnemy = heroVisibleCells.Contains((enemyCellX, enemyCellY));
+            
+            // Also check if enemy can see hero (scanning in all directions)
+            bool enemySeesHero = EnemyCanSeeHero(enemy);
+            
+            if (heroSeesEnemy || enemySeesHero)
             {
                 float dx = Hero.X - enemy.X;
                 float dy = Hero.Y - enemy.Y;
@@ -173,6 +271,9 @@ public class GameState
                     closestDistance = distance;
                     targetEnemy = enemy;
                 }
+                // Reset pursuit timer if either can see the other
+                if (HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y))
+                    enemyPursuitTicks[enemy] = PursuitTimeoutTicks;
             }
         }
         // Fallback: if nothing found in cone, allow close melee-range enemies or persistent pursuers to be targetable
@@ -235,7 +336,7 @@ public class GameState
         }
         if (Hero.InCombat && targetEnemy.InCombat)
         {
-            _combatSystem.ProcessCombat(Hero, targetEnemy, Projectiles);
+            _combatSystem.ProcessCombat(Hero, targetEnemy, Projectiles, CurrentMaze);
         }
         foreach (var projectile in Projectiles)
         {
@@ -246,6 +347,36 @@ public class GameState
     
     private void CheckFeaturesWithKeyLogic()
     {
+        // Update chest opening animation
+        foreach (var feature in CurrentMaze.Features.Where(f => f.IsOpening))
+        {
+            feature.OpeningTicks++;
+            // Expand light radius during opening (0 to 2.0)
+            feature.LightRadius = (feature.OpeningTicks / (float)Hero.ChestOpeningDuration) * 2.0f;
+            
+            if (feature.OpeningTicks >= Hero.ChestOpeningDuration)
+            {
+                // Chest fully opened
+                feature.IsOpening = false;
+                feature.IsUsed = true;
+                HasKey = true;
+                Hero.IsOpeningChest = false;
+                Hero.GainExperience(25);
+            }
+        }
+        
+        // If hero is opening a chest, don't check for other features
+        if (Hero.IsOpeningChest)
+        {
+            Hero.ChestOpeningTicks++;
+            if (Hero.ChestOpeningTicks >= Hero.ChestOpeningDuration)
+            {
+                Hero.IsOpeningChest = false;
+                Hero.ChestOpeningTicks = 0;
+            }
+            return;
+        }
+        
         // Use directional sight cone for hero to identify features
         float heroFacing = Hero.InCombat && Hero.AttackCooldown == 0 && Hero.CurrentAttack != null
             ? MathF.Atan2(Hero.AnimationOffsetY, Hero.AnimationOffsetX)
@@ -253,23 +384,34 @@ public class GameState
         float heroSightRange = 7.5f;
         float heroConeRad = MathF.PI / 2; // 90-degree cone
         var heroVisibleCells = GetDirectionalSightCone(Hero.X, Hero.Y, heroFacing, heroSightRange, heroConeRad);
-        foreach (var feature in CurrentMaze.Features.Where(f => !f.IsUsed))
+        
+        // Automatically pick up nearby items (larger pickup radius than interaction)
+        foreach (var feature in CurrentMaze.Features.Where(f => !f.IsUsed && !f.IsOpening).ToList())
         {
-            int featureCellX = (int)MathF.Round(feature.X);
-            int featureCellY = (int)MathF.Round(feature.Y);
-            if (!heroVisibleCells.Contains((featureCellX, featureCellY))) continue;
             float dx = Hero.X - feature.X;
             float dy = Hero.Y - feature.Y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
+            
+            // Auto-pickup radius of 0.7 tiles
+            if (distance < 0.7f && feature.Type == MazeFeatureType.Chest)
+            {
+                // Start chest opening animation
+                Hero.IsOpeningChest = true;
+                Hero.ChestOpeningTicks = 0;
+                feature.IsOpening = true;
+                feature.OpeningTicks = 0;
+                feature.LightRadius = 0f;
+                continue; // Skip to next feature
+            }
+            
+            // For stairs, require closer proximity and key
+            int featureCellX = (int)MathF.Round(feature.X);
+            int featureCellY = (int)MathF.Round(feature.Y);
+            if (!heroVisibleCells.Contains((featureCellX, featureCellY))) continue;
+            
             if (distance < 0.5f)
             {
-                if (feature.Type == MazeFeatureType.Chest)
-                {
-                    feature.IsUsed = true;
-                    HasKey = true;
-                    Hero.GainExperience(25);
-                }
-                else if (feature.Type == MazeFeatureType.Stairs)
+                if (feature.Type == MazeFeatureType.Stairs)
                 {
                     if (HasKey)
                     {
@@ -299,6 +441,25 @@ public class GameState
                 }
             }
         }
+    }
+    
+    /// <summary>
+    /// Returns true if the enemy can see the hero by scanning multiple facing angles
+    /// </summary>
+    private bool EnemyCanSeeHero(Enemy enemy)
+    {
+        int scanSteps = 8; // 8 directions (every 45 degrees)
+        float scanStepRad = 2 * MathF.PI / scanSteps;
+        for (int i = 0; i < scanSteps; i++)
+        {
+            float facing = i * scanStepRad;
+            var visibleCells = GetDirectionalSightCone(enemy.X, enemy.Y, facing, VisionRange, VisionConeAngleRad);
+            int heroCellX = (int)MathF.Round(Hero.X);
+            int heroCellY = (int)MathF.Round(Hero.Y);
+            if (visibleCells.Contains((heroCellX, heroCellY)))
+                return true;
+        }
+        return false;
     }
     
     private bool HasLineOfSight(float x1, float y1, float x2, float y2)
@@ -353,6 +514,27 @@ public class GameState
         }
         
         return true; // No walls in the way
+    }
+    
+    /// <summary>
+    /// Update hero's resource pools based on attributes
+    /// Constitution → MaxStamina, Intelligence → MaxMana, Wisdom → MaxFaith
+    /// </summary>
+    private void UpdateHeroResourcePools()
+    {
+        // Base resource pools + attribute scaling
+        Hero.MaxStamina = 100 + (Hero.Constitution * 10);
+        Hero.MaxMana = 100 + (Hero.Intelligence * 10);
+        Hero.MaxFaith = 100 + (Hero.Wisdom * 10);
+        
+        // Regen rates scale with attributes
+        Hero.StaminaRegen = 2 + (Hero.Constitution / 5);
+        Hero.ManaRegen = 1 + (Hero.Intelligence / 5);
+        Hero.FaithRegen = 1 + (Hero.Wisdom / 5);
+        
+        // Health regen: 4 Constitution = 1 HP per second (at 10 ticks/sec = 0.1 HP/tick)
+        // We'll use HealthRegen as HP per 10 ticks for display purposes
+        Hero.HealthRegen = Hero.Constitution / 4;
     }
     
     /// <summary>
@@ -439,6 +621,68 @@ public class GameState
         return angle;
     }
     
+    /// <summary>
+    /// Restart the game with the same character but a new map seed
+    /// </summary>
+    public void RestartGame()
+    {
+        // Generate new seed for different maze
+        Seed = new Random().Next();
+        
+        // Reset death state
+        IsHeroDead = false;
+        DeathTimer = 0;
+        
+        // Reset game state
+        TickCount = 0;
+        CurrentFloor = 1;
+        HasKey = false;
+        StairsLocation = null;
+        
+        // Recreate systems with new seed
+        var newRandom = new Random(Seed);
+        typeof(GameState).GetField("_random", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .SetValue(this, newRandom);
+        typeof(GameState).GetField("_mazeGenerator", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .SetValue(this, new MazeGenerator(Seed));
+        typeof(GameState).GetField("_movementSystem", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .SetValue(this, new MovementSystem(Seed));
+        typeof(GameState).GetField("_combatSystem", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .SetValue(this, new CombatSystem(Seed));
+        
+        // Recreate hero with same class/race
+        Hero = new Hero 
+        { 
+            Name = _characterName,
+            MaxHp = 100, 
+            CurrentHp = 100, 
+            Attack = 5, 
+            Defense = 5,
+            X = 1,
+            Y = 1
+        };
+        
+        // Apply class and race stats
+        _characterDataService.ApplyClassAndRace(Hero, _className, _raceName);
+        
+        // Update resource pools based on attributes
+        UpdateHeroResourcePools();
+        
+        // Initialize resources to max
+        Hero.CurrentStamina = Hero.MaxStamina;
+        Hero.CurrentMana = Hero.MaxMana;
+        Hero.CurrentFaith = Hero.MaxFaith;
+        
+        // Assign starting attacks based on class
+        Hero.Attacks = AttackFactory.GetStartingAttacks(_className);
+        Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
+        
+        // Start new floor
+        StartNewFloor();
+        
+        IsRunning = true;
+    }
+    
     public void StartNewFloor()
     {
         CurrentFloor++;
@@ -493,25 +737,26 @@ public class GameState
             var bossCell = emptyCells[bossIdx];
             reservedCells.Add(bossCell);
             emptyCells.RemoveAt(bossIdx);
-            // Boss stats: much higher, hero-like movement
+            // Boss stats: stronger than regular enemies but beatable
+            // Roughly 2-3x stronger than regular enemies
             Boss = new Enemy
             {
                 X = bossCell.x,
                 Y = bossCell.y,
-                Level = CurrentFloor + 2,
-                MaxHp = 300 + CurrentFloor * 50,
-                Hp = 300 + CurrentFloor * 50,
-                Attack = 20 + CurrentFloor * 3,
-                Defense = 10 + CurrentFloor * 2,
-                Strength = 5 + CurrentFloor,
-                Constitution = 5 + CurrentFloor,
-                Agility = 4 + CurrentFloor,
-                Dexterity = 3 + CurrentFloor,
+                Level = CurrentFloor + 1,
+                MaxHp = 80 + CurrentFloor * 25,  // Reduced from 300 + 50*floor
+                Hp = 80 + CurrentFloor * 25,
+                Attack = 8 + CurrentFloor * 2,   // Reduced from 20 + 3*floor
+                Defense = 5 + CurrentFloor,       // Reduced from 10 + 2*floor
+                Strength = 3 + CurrentFloor,      // Reduced from 5 + floor
+                Constitution = 3 + CurrentFloor,  // Reduced from 5 + floor
+                Agility = 2 + CurrentFloor,       // Reduced from 4 + floor
+                Dexterity = 2 + CurrentFloor,     // Reduced from 3 + floor
                 NoiseOffsetX = _random.NextDouble() * 100,
                 NoiseOffsetY = _random.NextDouble() * 100,
                 Type = "Boss",
                 Class = "Boss",
-                AttackSpeed = 20,
+                AttackSpeed = 25,                 // Slightly slower (was 20)
                 AttackRange = 1.5f,
                 TargetX = bossCell.x,
                 TargetY = bossCell.y
@@ -596,16 +841,9 @@ public class GameState
             // Log simple status every 10 ticks
             if (i % 10 == 0)
             {
-                Console.WriteLine($"Tick {i}: HeroHP={Hero.CurrentHp}/{Hero.MaxHp}, EnemyHP={enemy.Hp}/{enemy.MaxHp}, HeroInCombat={Hero.InCombat}, EnemyInCombat={enemy.InCombat}");
-                // Also print hero sight and current attack for debugging
-                float heroFacing = Hero.InCombat && Hero.AttackCooldown == 0 && Hero.CurrentAttack != null
-                    ? MathF.Atan2(Hero.AnimationOffsetY, Hero.AnimationOffsetX)
-                    : 0f;
-                float maxEnemyRange = Enemies.Count > 0 ? Enemies.Max(e => e.AttackRange) : 7.5f;
-                float heroAttackRange = Hero.CurrentAttack?.Range ?? 1.0f;
-                float heroSightRange = MathF.Max(MathF.Max(maxEnemyRange, heroAttackRange), 3.0f);
-                var visible = GetDirectionalSightCone(Hero.X, Hero.Y, heroFacing, heroSightRange, VisionConeAngleRad);
-                Console.WriteLine($" Debug: heroSightRange={heroSightRange}, visionConeDeg={VisionConeAngleRad * 180.0f / MathF.PI:0.0}, visionRange={VisionRange}, visibleCells={visible.Count}, currentAttack={Hero.CurrentAttack?.Name}");
+                float distanceToEnemy = MathF.Sqrt((Hero.X - enemy.X) * (Hero.X - enemy.X) + (Hero.Y - enemy.Y) * (Hero.Y - enemy.Y));
+                Console.WriteLine($"Tick {i}: HeroHP={Hero.CurrentHp}/{Hero.MaxHp}, EnemyHP={enemy.Hp}/{enemy.MaxHp}, HeroInCombat={Hero.InCombat}, EnemyInCombat={enemy.InCombat}, Distance={distanceToEnemy:0.00}");
+                Console.WriteLine($" HeroPos=({Hero.X:0.00},{Hero.Y:0.00}), EnemyPos=({enemy.X:0.00},{enemy.Y:0.00}), HeroCD={Hero.AttackCooldown}, EnemyCD={enemy.AttackCooldown}");
             }
             if (!Hero.IsAlive || !enemy.IsAlive) break;
         }

@@ -19,7 +19,7 @@ public class CombatSystem
     /// <summary>
     /// Update combat cooldowns and execute attacks when ready
     /// </summary>
-    public bool ProcessCombat(Hero hero, Enemy enemy, List<Projectile> projectiles)
+    public bool ProcessCombat(Hero hero, Enemy enemy, List<Projectile> projectiles, Maze maze)
     {
         if (!hero.IsAlive || !enemy.IsAlive) 
         {
@@ -50,30 +50,46 @@ public class CombatSystem
             float distanceToEnemy = MathF.Sqrt(dx * dx + dy * dy);
 
             // Only attack if within range
+            // Note: Vision system already ensures LOS for combat initiation
+            // Don't check LOS here - it breaks combat flow around corners
             if (distanceToEnemy <= attack.Range)
             {
-                // Hero attacks!
-                PerformHeroAttack(hero, enemy, projectiles);
-
-                // Set cooldown based on attack, Dexterity, and minimum threshold
-                int minCooldown = 8; // Lower minimum for snappier combat
-                int statCooldown = attack.Cooldown - (int)(hero.Dexterity * 0.7f);
-                hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
-
-                // Check if enemy died
-                if (!enemy.IsAlive)
+                // Check if we have enough resources for this attack
+                bool canAfford = !attack.IsHeavyAttack ||
+                    (hero.CurrentStamina >= attack.StaminaCost &&
+                     hero.CurrentMana >= attack.ManaCost &&
+                     hero.CurrentFaith >= attack.FaithCost);
+                
+                if (canAfford)
                 {
-                    int xpGain = 10 + enemy.MaxHp / 4;
-                    hero.GainExperience(xpGain);
-                    hero.InCombat = false;
-                    enemy.InCombat = false;
-                    hero.AnimationOffsetX = 0;
-                    hero.AnimationOffsetY = 0;
+                    // Hero attacks!
+                    PerformHeroAttack(hero, enemy, projectiles);
 
-                    // Clear any projectiles targeting this enemy to prevent lingering animations
-                    projectiles.Clear();
+                    // Set cooldown based on attack, Dexterity, and minimum threshold
+                    int minCooldown = 8; // Lower minimum for snappier combat
+                    int statCooldown = attack.Cooldown - (int)(hero.Dexterity * 0.7f);
+                    hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
 
-                    return false;
+                    // Check if enemy died
+                    if (!enemy.IsAlive)
+                    {
+                        int xpGain = 10 + enemy.MaxHp / 4;
+                        hero.GainExperience(xpGain);
+                        hero.InCombat = false;
+                        enemy.InCombat = false;
+                        hero.AnimationOffsetX = 0;
+                        hero.AnimationOffsetY = 0;
+
+                        // Clear any projectiles targeting this enemy to prevent lingering animations
+                        projectiles.Clear();
+
+                        return false;
+                    }
+                }
+                else
+                {
+                    // Can't afford attack - reset cooldown to try again soon
+                    hero.AttackCooldown = 5;
                 }
             }
         }
@@ -85,12 +101,14 @@ public class CombatSystem
         }
         else
         {
-            // Check if enemy is in their attack range
-            float enemyDx = hero.X - enemy.TargetX;
-            float enemyDy = hero.Y - enemy.TargetY;
+            // Check if enemy is in their attack range (use actual enemy position, not target)
+            float enemyDx = hero.X - enemy.X;
+            float enemyDy = hero.Y - enemy.Y;
             float distanceToHero = MathF.Sqrt(enemyDx * enemyDx + enemyDy * enemyDy);
 
             // Enemy only attacks if within their attack range
+            // Note: Vision system already ensures LOS for combat initiation
+            // Don't check LOS here - it breaks combat flow around corners
             if (distanceToHero <= enemy.AttackRange)
             {
                 // Enemy attacks!
@@ -160,6 +178,14 @@ public class CombatSystem
     private void PerformHeroAttack(Hero hero, Enemy enemy, List<Projectile> projectiles)
     {
         var attack = hero.CurrentAttack ?? new Attack { Name = "Unarmed Strike", Damage = 8 };
+        
+        // Deduct resources for heavy attacks
+        if (attack.IsHeavyAttack)
+        {
+            hero.CurrentStamina -= attack.StaminaCost;
+            hero.CurrentMana -= attack.ManaCost;
+            hero.CurrentFaith -= attack.FaithCost;
+        }
         
         // Calculate direction to enemy
         float dx = (float)enemy.X - hero.X;
@@ -282,10 +308,26 @@ public class CombatSystem
         }
         
         // Stat-driven damage calculation
-        int statDamage = attack.Damage
-            + (int)(hero.Strength * 1.2f)
-            + (int)(hero.Dexterity * 0.5f)
-            + hero.Attack;
+        // Physical attacks scale with Strength + Dexterity
+        // Magic attacks scale with Intelligence + Wisdom
+        // Faith attacks scale with Wisdom + Charisma
+        int statDamage = attack.Damage + hero.Attack;
+        
+        if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0)
+        {
+            // Magic damage: Intelligence primary, Wisdom secondary
+            statDamage += (int)(hero.Intelligence * 1.5f) + (int)(hero.Wisdom * 0.5f);
+        }
+        else if (attack.FaithCost > 0)
+        {
+            // Faith damage: Wisdom primary, Charisma secondary
+            statDamage += (int)(hero.Wisdom * 1.5f) + (int)(hero.Charisma * 0.5f);
+        }
+        else
+        {
+            // Physical damage: Strength primary, Dexterity secondary
+            statDamage += (int)(hero.Strength * 1.2f) + (int)(hero.Dexterity * 0.5f);
+        }
 
         // Check for critical hit (Dexterity boosts crit chance)
         float critChance = attack.CritChance + hero.Dexterity * 0.005f;
@@ -295,15 +337,24 @@ public class CombatSystem
             statDamage = (int)(statDamage * 1.5f);
         }
 
-        // Apply damage, factoring enemy defense and Constitution
-        int finalDamage = CalculateDamage(statDamage, enemy.Defense + (int)(enemy.Constitution * 0.7f));
+        // Apply damage, factoring enemy defense
+        // Physical defense: Constitution
+        // Magic defense: Constitution + bonus magic resist
+        int enemyDefense = enemy.Defense + (int)(enemy.Constitution * 0.7f);
+        if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0 || attack.FaithCost > 0)
+        {
+            // Add magic resistance (enemies have base 20% magic resist)
+            enemyDefense += (int)(enemyDefense * 0.2f);
+        }
+        int finalDamage = CalculateDamage(statDamage, enemyDefense);
         enemy.Hp -= finalDamage;
 
-        // Set cooldown based on attack, Dexterity, and Agility
+        // Set cooldown based on attack, Dexterity, Agility, and Charisma
         int minCooldown = 8;
         int statCooldown = attack.Cooldown
             - (int)(hero.Dexterity * 0.7f)
-            - (int)(hero.Agility * 0.3f);
+            - (int)(hero.Agility * 0.3f)
+            - (int)(hero.Charisma * 0.2f); // Charisma provides slight cooldown reduction
         hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
     }
     
@@ -326,5 +377,61 @@ public class CombatSystem
         int baseDamage = Math.Max(1, attack - defense / 2);
         int variance = _random.Next(-baseDamage / 4, baseDamage / 4 + 1);
         return Math.Max(1, baseDamage + variance);
+    }
+    
+    /// <summary>
+    /// Check if there's a clear line of sight between two points (no walls blocking)
+    /// </summary>
+    private bool HasLineOfSight(float x1, float y1, float x2, float y2, Maze maze)
+    {
+        // Use Bresenham's line algorithm to check if there's a wall between two points
+        int startX = (int)MathF.Floor(x1);
+        int startY = (int)MathF.Floor(y1);
+        int endX = (int)MathF.Floor(x2);
+        int endY = (int)MathF.Floor(y2);
+        
+        int dx = Math.Abs(endX - startX);
+        int dy = Math.Abs(endY - startY);
+        int sx = startX < endX ? 1 : -1;
+        int sy = startY < endY ? 1 : -1;
+        int err = dx - dy;
+        
+        int currentX = startX;
+        int currentY = startY;
+        
+        while (true)
+        {
+            // Check if current position is a wall
+            if (currentX >= 0 && currentX < maze.Width && 
+                currentY >= 0 && currentY < maze.Height)
+            {
+                if (maze.Walls[currentX, currentY])
+                {
+                    return false; // Wall blocks line of sight
+                }
+            }
+            
+            // Reached the end point
+            if (currentX == endX && currentY == endY)
+            {
+                break;
+            }
+            
+            int err2 = 2 * err;
+            
+            if (err2 > -dy)
+            {
+                err -= dy;
+                currentX += sx;
+            }
+            
+            if (err2 < dx)
+            {
+                err += dx;
+                currentY += sy;
+            }
+        }
+        
+        return true; // No walls in the way
     }
 }

@@ -8,6 +8,7 @@ namespace TheMazeRPG.Views;
 public partial class MainWindow : Window
 {
     private StatsOverlay? _statsOverlay;
+    private UI.Controls.DeathOverlay? _deathOverlay;
     
     public MainWindow()
     {
@@ -28,6 +29,13 @@ public partial class MainWindow : Window
                 if (_statsOverlay != null)
                 {
                     _statsOverlay.SetGameState(viewModel.GameState);
+                }
+                
+                // Connect DeathOverlay to GameState
+                _deathOverlay = this.FindControl<UI.Controls.DeathOverlay>("DeathOverlay");
+                if (_deathOverlay != null)
+                {
+                    _deathOverlay.SetGameState(viewModel.GameState);
                 }
             }
         };

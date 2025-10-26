@@ -102,15 +102,15 @@ public class MovementSystem
         
         if (distance < 0.1f) return; // Already at target
         
-        // Determine desired range based on attack type
-        float desiredRange = attack.Range * 0.85f; // Stay just inside attack range
+        // Determine desired range based on attack type - keep it slightly less than attack range so we're in range
+        float desiredRange = attack.Range * 0.75f; // Stay comfortably inside attack range
         
     // Movement speed scales with Agility
     float baseSpeed = 0.06f;
     float speed = baseSpeed * (1.0f + 0.05f * (hero.Agility - 4));
         
         // If we're too far, use pathfinding to navigate around obstacles
-        if (distance > desiredRange + 0.3f)
+        if (distance > desiredRange)
         {
             // Try to find a path to the enemy
         var path = FindPathToTarget(hero.GridX, hero.GridY, (int)MathF.Round(enemy.X), (int)MathF.Round(enemy.Y), maze);
@@ -190,9 +190,11 @@ public class MovementSystem
 
     var path = FindPathToTarget(startX, startY, heroGridX, heroGridY, maze);
 
-        float desiredRange = enemy.AttackRange * 0.9f;
+        float desiredRange = enemy.AttackRange * 0.75f; // Stay comfortably inside attack range
         float baseSpeed = 0.08f;
         float speed = baseSpeed * (1.0f + enemy.Agility * 0.05f);
+        
+        float distToHero = MathF.Sqrt((targetX - enemy.X) * (targetX - enemy.X) + (targetY - enemy.Y) * (targetY - enemy.Y));
 
         if (path != null && path.Count > 1)
         {
@@ -202,40 +204,61 @@ public class MovementSystem
             float dy = next.y - enemy.Y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
 
-            // Only move if not already in attack range
-            float distToHero = MathF.Sqrt((heroGridX - enemy.X) * (heroGridX - enemy.X) + (heroGridY - enemy.Y) * (heroGridY - enemy.Y));
-            if (distToHero > desiredRange + 0.3f)
+            // Melee enemies: always close the distance if not in range
+            // Ranged enemies: maintain optimal range
+            if (enemy.AttackRange <= 1.5f)
             {
-                if (distance > 0.1f)
+                // Melee - keep moving closer until in range
+                if (distToHero > desiredRange)
                 {
-                    enemy.X += (dx / distance) * speed;
-                    enemy.Y += (dy / distance) * speed;
-                }
-                else
-                {
-                    enemy.X = next.x;
-                    enemy.Y = next.y;
+                    if (distance > 0.1f)
+                    {
+                        enemy.X += (dx / distance) * speed;
+                        enemy.Y += (dy / distance) * speed;
+                    }
+                    else
+                    {
+                        enemy.X = next.x;
+                        enemy.Y = next.y;
+                    }
                 }
             }
-            else if (distToHero < desiredRange - 0.3f && enemy.AttackRange > 1.5f)
+            else
             {
-                // Too close for ranged enemy - back away
-                float awayDx = enemy.X - heroGridX;
-                float awayDy = enemy.Y - heroGridY;
-                float awayDist = MathF.Sqrt(awayDx * awayDx + awayDy * awayDy);
-                if (awayDist > 0.1f)
+                // Ranged - move closer if too far, back away if too close
+                if (distToHero > desiredRange + 0.5f)
                 {
-                    // Prevent backing into walls
-                    float backX = enemy.X + (awayDx / awayDist) * speed * 0.5f;
-                    float backY = enemy.Y + (awayDy / awayDist) * speed * 0.5f;
-                    int backGridX = (int)MathF.Round(backX);
-                    int backGridY = (int)MathF.Round(backY);
-                    if (IsWalkable(maze, backGridX, backGridY))
+                    if (distance > 0.1f)
                     {
-                        enemy.X = backX;
-                        enemy.Y = backY;
+                        enemy.X += (dx / distance) * speed * 0.7f; // Slower for kiting
+                        enemy.Y += (dy / distance) * speed * 0.7f;
                     }
-                    // else: stay put if wall behind
+                    else
+                    {
+                        enemy.X = next.x;
+                        enemy.Y = next.y;
+                    }
+                }
+                else if (distToHero < desiredRange - 0.3f)
+                {
+                    // Too close for ranged enemy - back away (kiting)
+                    float awayDx = enemy.X - targetX;
+                    float awayDy = enemy.Y - targetY;
+                    float awayDist = MathF.Sqrt(awayDx * awayDx + awayDy * awayDy);
+                    if (awayDist > 0.1f)
+                    {
+                        // Prevent backing into walls
+                        float backX = enemy.X + (awayDx / awayDist) * speed * 0.5f;
+                        float backY = enemy.Y + (awayDy / awayDist) * speed * 0.5f;
+                        int backGridX = (int)MathF.Round(backX);
+                        int backGridY = (int)MathF.Round(backY);
+                        if (IsWalkable(maze, backGridX, backGridY))
+                        {
+                            enemy.X = backX;
+                            enemy.Y = backY;
+                        }
+                        // else: stay put if wall behind
+                    }
                 }
             }
         }

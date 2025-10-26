@@ -14,6 +14,12 @@ public class Attack
     public AttackAnimation Animation { get; set; } = AttackAnimation.Melee;
     public string Description { get; set; } = "";
     
+    // Resource costs (0 = free basic attack)
+    public int StaminaCost { get; set; } = 0;
+    public int ManaCost { get; set; } = 0;
+    public int FaithCost { get; set; } = 0;
+    public bool IsHeavyAttack => StaminaCost > 0 || ManaCost > 0 || FaithCost > 0;
+    
     // Special effects
     public float CritChance { get; set; } = 0.0f;
     public float ParryChance { get; set; } = 0.0f;
@@ -29,6 +35,9 @@ public class Attack
             Cooldown = Cooldown,
             Animation = Animation,
             Description = Description,
+            StaminaCost = StaminaCost,
+            ManaCost = ManaCost,
+            FaithCost = FaithCost,
             CritChance = CritChance,
             ParryChance = ParryChance,
             KnockbackDistance = KnockbackDistance

@@ -27,6 +27,11 @@
                            HorizontalAlignment="Stretch"
                            VerticalAlignment="Stretch" />
         
+        <!-- Death Overlay -->
+        <controls:DeathOverlay x:Name="DeathOverlay"
+                              HorizontalAlignment="Stretch"
+                              VerticalAlignment="Stretch" />
+        
         <!-- Stats Button -->
         <Button x:Name="StatsButton"
                 Content="Stats"

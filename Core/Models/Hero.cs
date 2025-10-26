@@ -38,6 +38,18 @@ public class Hero
     public int Experience { get; set; }
     public int ExperienceToNext { get; set; } = 100;
     
+    // Resources for attacks
+    public int CurrentStamina { get; set; }
+    public int MaxStamina { get; set; } = 100;
+    public int CurrentMana { get; set; }
+    public int MaxMana { get; set; } = 100;
+    public int CurrentFaith { get; set; }
+    public int MaxFaith { get; set; } = 100;
+    public int StaminaRegen { get; set; } = 2;  // Per tick
+    public int ManaRegen { get; set; } = 1;      // Per tick
+    public int FaithRegen { get; set; } = 1;     // Per tick
+    public int HealthRegen { get; set; } = 0;    // HP per tick (10 ticks = 1 second)
+    
     // Use floats for smooth sub-grid movement
     public float X { get; set; }
     public float Y { get; set; }
@@ -53,6 +65,11 @@ public class Hero
     public int AttackSpeed { get; set; } = 30; // Ticks between attacks
     public int AttackCooldown { get; set; }
     
+    // Chest opening state
+    public bool IsOpeningChest { get; set; }
+    public int ChestOpeningTicks { get; set; }
+    public const int ChestOpeningDuration = 30; // 3 seconds at 10 ticks/sec
+    
     // Attack system
     public List<Attack> Attacks { get; set; } = new();
     public Attack? CurrentAttack { get; set; }
@@ -63,7 +80,9 @@ public class Hero
     
     public void GainExperience(int amount)
     {
-        Experience += amount;
+        // Charisma boosts experience gains
+        int bonusXP = (int)(amount * (1.0f + Charisma * 0.05f));
+        Experience += bonusXP;
         while (Experience >= ExperienceToNext)
         {
             LevelUp();
