@@ -191,22 +191,112 @@ public class MazeRenderer
             canvas.DrawCircle(x, y, feature.LightRadius * CellSize, glowPaint);
         }
         
-        using var paint = new SKPaint
+        // Calculate opening progress (0 = closed, 1 = fully open)
+        float openProgress = feature.IsOpening ? (feature.OpeningTicks / 30.0f) : 0f;
+        openProgress = Math.Min(openProgress, 1.0f);
+        
+        // Brown chest colors
+        SKColor chestBrown = new SKColor(139, 90, 43);      // Saddle brown
+        SKColor chestDark = new SKColor(101, 67, 33);       // Darker brown
+        SKColor chestLock = new SKColor(218, 165, 32);      // Goldenrod
+        
+        using var chestPaint = new SKPaint
         {
-            Color = ChestColor,
+            Color = chestBrown,
             Style = SKPaintStyle.Fill,
             IsAntialias = true
         };
         
-        // Draw small diamond (chest icon)
-        var path = new SKPath();
-        path.MoveTo(x, y - 4);
-        path.LineTo(x + 4, y);
-        path.LineTo(x, y + 4);
-        path.LineTo(x - 4, y);
-        path.Close();
+        using var chestStroke = new SKPaint
+        {
+            Color = chestDark,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 1.5f,
+            IsAntialias = true
+        };
         
-        canvas.DrawPath(path, paint);
+        // Chest dimensions
+        float chestWidth = 12;
+        float chestHeight = 10;
+        float lidHeight = 5;
+        
+        // Draw chest base (bottom part)
+        SKRect chestBase = new SKRect(x - chestWidth/2, y - chestHeight/2 + lidHeight/2, 
+                                       x + chestWidth/2, y + chestHeight/2);
+        canvas.DrawRect(chestBase, chestPaint);
+        canvas.DrawRect(chestBase, chestStroke);
+        
+        // Draw chest lid (top part) - rotates when opening
+        canvas.Save();
+        
+        // Rotate lid based on opening progress (0 to -90 degrees)
+        float lidAngle = -90f * openProgress;
+        canvas.RotateDegrees(lidAngle, x - chestWidth/2, y - chestHeight/2 + lidHeight/2);
+        
+        SKRect chestLid = new SKRect(x - chestWidth/2, y - chestHeight/2 - lidHeight/2,
+                                      x + chestWidth/2, y - chestHeight/2 + lidHeight/2);
+        canvas.DrawRect(chestLid, chestPaint);
+        canvas.DrawRect(chestLid, chestStroke);
+        
+        canvas.Restore();
+        
+        // Draw lock/clasp on front (fades as chest opens)
+        if (openProgress < 0.5f)
+        {
+            using var lockPaint = new SKPaint
+            {
+                Color = chestLock.WithAlpha((byte)(255 * (1 - openProgress * 2))),
+                Style = SKPaintStyle.Fill,
+                IsAntialias = true
+            };
+            
+            canvas.DrawCircle(x, y - chestHeight/2 + lidHeight/2, 2, lockPaint);
+        }
+        
+        // Draw golden key inside when opening (appears as lid opens)
+        if (openProgress > 0.3f)
+        {
+            float keyAlpha = Math.Min((openProgress - 0.3f) / 0.7f, 1.0f);
+            
+            using var keyPaint = new SKPaint
+            {
+                Color = new SKColor(255, 215, 0, (byte)(255 * keyAlpha)),
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = 2f,
+                IsAntialias = true,
+                StrokeCap = SKStrokeCap.Round
+            };
+            
+            using var keyFillPaint = new SKPaint
+            {
+                Color = new SKColor(255, 215, 0, (byte)(150 * keyAlpha)),
+                Style = SKPaintStyle.Fill,
+                IsAntialias = true
+            };
+            
+            // Key position (floats up as chest opens)
+            float keyX = x;
+            float keyY = y - 2 - (openProgress * 8); // Rises up as it opens
+            
+            // Draw key
+            using var keyPath = new SKPath();
+            
+            // Key bow (circular top)
+            keyPath.AddCircle(keyX, keyY - 4, 3);
+            
+            // Key shaft
+            keyPath.MoveTo(keyX, keyY - 1);
+            keyPath.LineTo(keyX, keyY + 6);
+            
+            // Key teeth
+            keyPath.MoveTo(keyX, keyY + 6);
+            keyPath.LineTo(keyX + 2, keyY + 6);
+            keyPath.MoveTo(keyX, keyY + 4);
+            keyPath.LineTo(keyX + 2, keyY + 4);
+            
+            canvas.DrawPath(keyPath, keyFillPaint);
+            canvas.DrawPath(keyPath, keyPaint);
+        }
     }
     
     private void DrawEnemies(SKCanvas canvas, List<Enemy> enemies)
@@ -853,6 +943,16 @@ public class MazeRenderer
             Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
         };
         
+        using var textOutlinePaint = new SKPaint
+        {
+            Color = SKColors.Black,
+            TextSize = 14,
+            IsAntialias = true,
+            Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 2.5f
+        };
+        
         using var barBgPaint = new SKPaint
         {
             Color = new SKColor(40, 40, 40),
@@ -900,59 +1000,105 @@ public class MazeRenderer
         float hpPercent = (float)gameState.Hero.CurrentHp / gameState.Hero.MaxHp;
         canvas.DrawRect(barX, barY, barWidth * hpPercent, barHeight, hpPaint);
         
-        canvas.DrawText($"HP: {gameState.Hero.CurrentHp}/{gameState.Hero.MaxHp}", barX + 5, barY + 12, textPaint);
+        string hpText = $"HP: {gameState.Hero.CurrentHp}/{gameState.Hero.MaxHp}";
+        canvas.DrawText(hpText, barX + 5, barY + 12, textOutlinePaint);
+        canvas.DrawText(hpText, barX + 5, barY + 12, textPaint);
         
-        // Determine which resource bar to show based on current attack
-        var currentAttack = gameState.Hero.CurrentAttack;
+        // Resource bars - always show all three
         float resourceBarY = barY + 22;
         
-        if (currentAttack != null && currentAttack.IsHeavyAttack)
+        // Stamina Bar (Green)
+        canvas.DrawRect(barX, resourceBarY, barWidth, barHeight, barBgPaint);
+        float staminaPercent = (float)gameState.Hero.CurrentStamina / gameState.Hero.MaxStamina;
+        canvas.DrawRect(barX, resourceBarY, barWidth * staminaPercent, barHeight, staminaPaint);
+        string staminaText = $"Stamina: {gameState.Hero.CurrentStamina}/{gameState.Hero.MaxStamina}";
+        canvas.DrawText(staminaText, barX + 5, resourceBarY + 12, textOutlinePaint);
+        canvas.DrawText(staminaText, barX + 5, resourceBarY + 12, textPaint);
+        
+        // Mana Bar (Blue)
+        float manaBarY = resourceBarY + 18;
+        canvas.DrawRect(barX, manaBarY, barWidth, barHeight, barBgPaint);
+        float manaPercent = (float)gameState.Hero.CurrentMana / gameState.Hero.MaxMana;
+        canvas.DrawRect(barX, manaBarY, barWidth * manaPercent, barHeight, manaPaint);
+        string manaText = $"Mana: {gameState.Hero.CurrentMana}/{gameState.Hero.MaxMana}";
+        canvas.DrawText(manaText, barX + 5, manaBarY + 12, textOutlinePaint);
+        canvas.DrawText(manaText, barX + 5, manaBarY + 12, textPaint);
+        
+        // Faith Bar (Gold)
+        float faithBarY = manaBarY + 18;
+        canvas.DrawRect(barX, faithBarY, barWidth, barHeight, barBgPaint);
+        float faithPercent = (float)gameState.Hero.CurrentFaith / gameState.Hero.MaxFaith;
+        canvas.DrawRect(barX, faithBarY, barWidth * faithPercent, barHeight, faithPaint);
+        string faithText = $"Faith: {gameState.Hero.CurrentFaith}/{gameState.Hero.MaxFaith}";
+        canvas.DrawText(faithText, barX + 5, faithBarY + 12, textOutlinePaint);
+        canvas.DrawText(faithText, barX + 5, faithBarY + 12, textPaint);
+        
+        // Key icon (next to resource bars on the right) - only show if hero has the key
+        if (gameState.HasKey)
         {
-            // Show the resource this attack uses
-            if (currentAttack.StaminaCost > 0)
+            float keyX = barX + barWidth + 15;
+            float keyY = resourceBarY + 20; // Center vertically with resource bars
+            
+            using var keyPaint = new SKPaint
             {
-                // Stamina Bar
-                canvas.DrawRect(barX, resourceBarY, barWidth, barHeight, barBgPaint);
-                float staminaPercent = (float)gameState.Hero.CurrentStamina / gameState.Hero.MaxStamina;
-                canvas.DrawRect(barX, resourceBarY, barWidth * staminaPercent, barHeight, staminaPaint);
-                canvas.DrawText($"Stamina: {gameState.Hero.CurrentStamina}/{gameState.Hero.MaxStamina}", barX + 5, resourceBarY + 12, textPaint);
-            }
-            else if (currentAttack.ManaCost > 0)
+                Color = new SKColor(255, 215, 0), // Gold color
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = 2.5f,
+                IsAntialias = true,
+                StrokeCap = SKStrokeCap.Round,
+                StrokeJoin = SKStrokeJoin.Round
+            };
+            
+            using var keyFillPaint = new SKPaint
             {
-                // Mana Bar
-                canvas.DrawRect(barX, resourceBarY, barWidth, barHeight, barBgPaint);
-                float manaPercent = (float)gameState.Hero.CurrentMana / gameState.Hero.MaxMana;
-                canvas.DrawRect(barX, resourceBarY, barWidth * manaPercent, barHeight, manaPaint);
-                canvas.DrawText($"Mana: {gameState.Hero.CurrentMana}/{gameState.Hero.MaxMana}", barX + 5, resourceBarY + 12, textPaint);
-            }
-            else if (currentAttack.FaithCost > 0)
+                Color = new SKColor(255, 215, 0, 100), // Semi-transparent gold fill
+                Style = SKPaintStyle.Fill,
+                IsAntialias = true
+            };
+            
+            // Draw key icon (simple line-based key shape)
+            using var keyPath = new SKPath();
+            
+            // Key shaft (vertical line)
+            keyPath.MoveTo(keyX, keyY);
+            keyPath.LineTo(keyX, keyY + 15);
+            
+            // Key bow (circular top)
+            keyPath.AddCircle(keyX, keyY, 4);
+            
+            // Key teeth (small notches at bottom)
+            keyPath.MoveTo(keyX, keyY + 15);
+            keyPath.LineTo(keyX + 3, keyY + 15);
+            keyPath.MoveTo(keyX, keyY + 12);
+            keyPath.LineTo(keyX + 3, keyY + 12);
+            
+            canvas.DrawPath(keyPath, keyFillPaint);
+            canvas.DrawPath(keyPath, keyPaint);
+            
+            // "Key" label below icon
+            using var keyLabelPaint = new SKPaint
             {
-                // Faith Bar
-                canvas.DrawRect(barX, resourceBarY, barWidth, barHeight, barBgPaint);
-                float faithPercent = (float)gameState.Hero.CurrentFaith / gameState.Hero.MaxFaith;
-                canvas.DrawRect(barX, resourceBarY, barWidth * faithPercent, barHeight, faithPaint);
-                canvas.DrawText($"Faith: {gameState.Hero.CurrentFaith}/{gameState.Hero.MaxFaith}", barX + 5, resourceBarY + 12, textPaint);
-            }
-        }
-        else
-        {
-            // Show stamina by default (most common resource)
-            canvas.DrawRect(barX, resourceBarY, barWidth, barHeight, barBgPaint);
-            float staminaPercent = (float)gameState.Hero.CurrentStamina / gameState.Hero.MaxStamina;
-            canvas.DrawRect(barX, resourceBarY, barWidth * staminaPercent, barHeight, staminaPaint);
-            canvas.DrawText($"Stamina: {gameState.Hero.CurrentStamina}/{gameState.Hero.MaxStamina}", barX + 5, resourceBarY + 12, textPaint);
+                Color = new SKColor(255, 215, 0),
+                TextSize = 10,
+                IsAntialias = true,
+                Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
+            };
+            canvas.DrawText("Key", keyX - 8, keyY + 25, keyLabelPaint);
         }
         
         // XP Bar
-        float xpBarY = resourceBarY + 22;
+        float xpBarY = faithBarY + 22;
         float xpPercent = gameState.Hero.ExperienceToNext > 0 
             ? (float)gameState.Hero.Experience / gameState.Hero.ExperienceToNext 
             : 0;
         canvas.DrawRect(barX, xpBarY, barWidth, barHeight, barBgPaint);
         canvas.DrawRect(barX, xpBarY, barWidth * xpPercent, barHeight, xpPaint);
-        canvas.DrawText($"Level {gameState.Hero.Level}", barX + 5, xpBarY + 12, textPaint);
+        string levelText = $"Level {gameState.Hero.Level}";
+        canvas.DrawText(levelText, barX + 5, xpBarY + 12, textOutlinePaint);
+        canvas.DrawText(levelText, barX + 5, xpBarY + 12, textPaint);
         
         // Current attack info
+        var currentAttack = gameState.Hero.CurrentAttack;
         if (currentAttack != null)
         {
             string attackInfo = $"Attack: {currentAttack.Name}";
@@ -962,11 +1108,13 @@ public class MazeRenderer
                 else if (currentAttack.ManaCost > 0) attackInfo += $" ({currentAttack.ManaCost} Mana)";
                 else if (currentAttack.FaithCost > 0) attackInfo += $" ({currentAttack.FaithCost} Faith)";
             }
+            canvas.DrawText(attackInfo, barX, xpBarY + 30, textOutlinePaint);
             canvas.DrawText(attackInfo, barX, xpBarY + 30, textPaint);
         }
         
         // Floor info (bottom)
         string floorText = $"Floor {gameState.CurrentFloor} | ATK: {gameState.Hero.Attack} | DEF: {gameState.Hero.Defense}";
+        canvas.DrawText(floorText, 10, viewportHeight - 10, textOutlinePaint);
         canvas.DrawText(floorText, 10, viewportHeight - 10, textPaint);
     }
 }

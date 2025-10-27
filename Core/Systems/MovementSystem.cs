@@ -102,9 +102,31 @@ public class MovementSystem
         
         if (distance < 0.1f) return; // Already at target
         
-        // Determine desired range based on attack type - keep it slightly less than attack range so we're in range
-        float desiredRange = attack.Range * 0.75f; // Stay comfortably inside attack range
-        
+        // Determine desired range based on attack type - aim just inside the attack range
+        // Use a small fixed offset so we don't stop short due to rounding/path granularity
+        float desiredRange = attack.Range - 0.15f;
+        if (desiredRange < 0.5f) desiredRange = MathF.Min(attack.Range * 0.75f, 0.5f); // clamp to reasonable minimum
+
+        // If we're already within the actual attack range, check if we have line of sight
+        // For ranged attacks, keep moving if blocked by walls even if in range
+        // This ensures the hero will navigate around corners to get a clear shot
+        // Use a small buffer (0.05f less than attack range) to ensure we're definitely in range
+        // Exception: for ranged attacks that are too close we'll handle backing away below.
+        if (distance <= attack.Range - 0.05f && !(attack.Range > 1.5f && distance < desiredRange - 0.3f))
+        {
+            // For ranged attacks beyond melee range, verify line of sight before stopping
+            bool isMeleeRange = distance <= 1.5f;
+            bool needsLOS = attack.Range > 1.5f && !isMeleeRange;
+            
+            if (!needsLOS || CheckLineOfSight(hero.X, hero.Y, enemy.X, enemy.Y, maze))
+            {
+                // Mark current cell as explored and stop movement
+                maze.Explored[hero.GridX, hero.GridY] = true;
+                return;
+            }
+            // If we're in range but blocked, continue moving to get LOS
+        }
+
     // Movement speed scales with Agility
     float baseSpeed = 0.06f;
     float speed = baseSpeed * (1.0f + 0.05f * (hero.Agility - 4));
@@ -177,6 +199,43 @@ public class MovementSystem
     }
     
     /// <summary>
+    /// Move hero toward a specific target location (e.g., stairs after getting key)
+    /// </summary>
+    public void MoveHeroTowardTarget(Hero hero, float targetX, float targetY, Maze maze)
+    {
+        // Use pathfinding to navigate around obstacles
+        int targetGridX = (int)MathF.Round(targetX);
+        int targetGridY = (int)MathF.Round(targetY);
+        
+        var path = FindPathToTarget(hero.GridX, hero.GridY, targetGridX, targetGridY, maze);
+        
+        if (path != null && path.Count > 1)
+        {
+            // Move along the path
+            var nextStep = path[1];
+            float dx = nextStep.x - hero.X;
+            float dy = nextStep.y - hero.Y;
+            float distance = MathF.Sqrt(dx * dx + dy * dy);
+            
+            if (distance > 0.1f)
+            {
+                float baseSpeed = 0.08f;
+                float speed = baseSpeed * (1.0f + 0.05f * (hero.Agility - 4));
+                hero.X += (dx / distance) * speed;
+                hero.Y += (dy / distance) * speed;
+            }
+            else
+            {
+                hero.X = nextStep.x;
+                hero.Y = nextStep.y;
+            }
+        }
+        
+        // Mark current cell as explored
+        maze.Explored[hero.GridX, hero.GridY] = true;
+    }
+    
+    /// <summary>
     /// Move enemy toward a target position during combat
     /// </summary>
     public void MoveEnemyTowardTarget(Enemy enemy, float targetX, float targetY, Maze maze)
@@ -190,7 +249,9 @@ public class MovementSystem
 
     var path = FindPathToTarget(startX, startY, heroGridX, heroGridY, maze);
 
-        float desiredRange = enemy.AttackRange * 0.75f; // Stay comfortably inside attack range
+    // Enemy desired range: aim slightly inside their attack range to ensure they close the distance
+    float desiredRange = enemy.AttackRange - 0.15f;
+    if (desiredRange < 0.5f) desiredRange = MathF.Min(enemy.AttackRange * 0.75f, 0.5f);
         float baseSpeed = 0.08f;
         float speed = baseSpeed * (1.0f + enemy.Agility * 0.05f);
         
@@ -397,5 +458,59 @@ public class MovementSystem
             return false;
         
         return !maze.Walls[x, y];
+    }
+    
+    /// <summary>
+    /// Check if there's a clear line of sight between two points (no walls blocking)
+    /// </summary>
+    private bool CheckLineOfSight(float x1, float y1, float x2, float y2, Maze maze)
+    {
+        // Use Bresenham's line algorithm
+        int startX = (int)MathF.Floor(x1);
+        int startY = (int)MathF.Floor(y1);
+        int endX = (int)MathF.Floor(x2);
+        int endY = (int)MathF.Floor(y2);
+        
+        int dx = Math.Abs(endX - startX);
+        int dy = Math.Abs(endY - startY);
+        int sx = startX < endX ? 1 : -1;
+        int sy = startY < endY ? 1 : -1;
+        int err = dx - dy;
+        
+        int currentX = startX;
+        int currentY = startY;
+        
+        while (true)
+        {
+            // Check if current position is a wall
+            if (currentX >= 0 && currentX < maze.Width && 
+                currentY >= 0 && currentY < maze.Height)
+            {
+                if (maze.Walls[currentX, currentY])
+                {
+                    return false; // Wall blocks line of sight
+                }
+            }
+            
+            // Reached the end point
+            if (currentX == endX && currentY == endY)
+            {
+                break;
+            }
+            
+            int e2 = 2 * err;
+            if (e2 > -dy)
+            {
+                err -= dy;
+                currentX += sx;
+            }
+            if (e2 < dx)
+            {
+                err += dx;
+                currentY += sy;
+            }
+        }
+        
+        return true; // Clear line of sight
     }
 }

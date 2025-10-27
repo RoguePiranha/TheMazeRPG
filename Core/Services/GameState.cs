@@ -139,13 +139,13 @@ public class GameState
         TickCount++;
         
         // Regenerate hero resources using fractional accumulation
-        // Constitution / 4 = Stamina per second, Intelligence / 4 = Mana per second, Wisdom / 4 = Faith per second
+        // Constitution / 8 = Stamina per second, Intelligence / 8 = Mana per second, Wisdom / 8 = Faith per second
         // Resources regenerate 30% slower during combat
         float combatRegenModifier = Hero.InCombat ? 0.7f : 1.0f;
         
-        float staminaPerTick = (Hero.Constitution / 40.0f) * combatRegenModifier;
-        float manaPerTick = (Hero.Intelligence / 40.0f) * combatRegenModifier;
-        float faithPerTick = (Hero.Wisdom / 40.0f) * combatRegenModifier;
+        float staminaPerTick = (Hero.Constitution / 80.0f) * combatRegenModifier;
+        float manaPerTick = (Hero.Intelligence / 80.0f) * combatRegenModifier;
+        float faithPerTick = (Hero.Wisdom / 80.0f) * combatRegenModifier;
         
         _accumulatedStaminaRegen += staminaPerTick;
         _accumulatedManaRegen += manaPerTick;
@@ -172,9 +172,9 @@ public class GameState
             _accumulatedFaithRegen -= faithToRestore;
         }
         
-        // Health regeneration (Constitution / 8 = HP per second, at 10 ticks/sec)
-        // Example: 8 Constitution = 1 HP/sec = 0.1 HP/tick (half the original rate)
-        float hpPerTick = Hero.Constitution / 80.0f; // Divide by 80 because 10 ticks/sec * 8 Constitution per HP
+        // Health regeneration (Constitution / 16 = HP per second, at 10 ticks/sec)
+        // Example: 16 Constitution = 1 HP/sec = 0.1 HP/tick (half the original rate)
+        float hpPerTick = Hero.Constitution / 160.0f; // Divide by 160 because 10 ticks/sec * 16 Constitution per HP
         _accumulatedHealthRegen += hpPerTick;
         
         if (_accumulatedHealthRegen >= 1.0f)
@@ -189,8 +189,16 @@ public class GameState
         {
             if (!Hero.InCombat)
             {
-                // Normal exploration movement
-                _movementSystem.MoveHeroTowardUnexplored(Hero, CurrentMaze);
+                // If hero has key and knows where stairs are, path directly to them
+                if (HasKey && StairsLocation.HasValue)
+                {
+                    _movementSystem.MoveHeroTowardTarget(Hero, StairsLocation.Value.x, StairsLocation.Value.y, CurrentMaze);
+                }
+                else
+                {
+                    // Normal exploration movement
+                    _movementSystem.MoveHeroTowardUnexplored(Hero, CurrentMaze);
+                }
             }
             else
             {
@@ -322,8 +330,11 @@ public class GameState
                 // Close proximity check (melee overlap) - ensure immediate threats are detected
                 float meleeThreshold = Math.Max(1.5f, enemy.AttackRange);
                 bool isPersistent = enemyPursuitTicks.TryGetValue(enemy, out int t) && t > 0;
+                
+                // Require line of sight for targeting - prevents targeting through walls
+                bool hasLOS = HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y);
 
-                if (distance <= meleeThreshold || (distance < AgroRadius && isPersistent))
+                if (hasLOS && (distance <= meleeThreshold || (distance < AgroRadius && isPersistent)))
                 {
                     if (distance < closestDistance)
                     {
@@ -331,7 +342,7 @@ public class GameState
                         targetEnemy = enemy;
                     }
                     // If enemy in sight, reset pursuit
-                    if (HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y) && distance < 5.0f)
+                    if (distance < 5.0f)
                         enemyPursuitTicks[enemy] = PursuitTimeoutTicks;
                 }
             }

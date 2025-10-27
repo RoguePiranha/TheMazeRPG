@@ -51,8 +51,14 @@ public class CombatSystem
 
             // Only attack if within range
             // Note: Vision system already ensures LOS for combat initiation
-            // Don't check LOS here - it breaks combat flow around corners
-            if (distanceToEnemy <= attack.Range)
+            // For ranged attacks, require clear line of sight UNLESS enemy is very close (melee overlap)
+            // This allows ranged attackers to shoot at point-blank range even around corners
+            // Melee attacks don't need LOS check - allows fighting around corners
+            bool isMeleeRange = distanceToEnemy <= 1.5f;
+            bool hasLOS = attack.Range <= 1.5f || isMeleeRange || HasLineOfSight(hero.X, hero.Y, enemy.X, enemy.Y, maze);
+            
+            // Add small epsilon for floating point comparison to handle edge cases (e.g., exactly 3.0 distance with 3.0 range)
+            if (distanceToEnemy <= attack.Range + 0.01f && hasLOS)
             {
                 // Check if we have enough resources for this attack
                 bool canAfford = !attack.IsHeavyAttack ||
@@ -63,6 +69,7 @@ public class CombatSystem
                 if (canAfford)
                 {
                     // Hero attacks!
+                    Console.WriteLine($"  → Hero attacks with {attack.Name}! (Distance: {distanceToEnemy:0.2f}, Range: {attack.Range})");
                     PerformHeroAttack(hero, enemy, projectiles);
 
                     // Set cooldown based on attack, Dexterity, and minimum threshold
@@ -73,6 +80,7 @@ public class CombatSystem
                     // Check if enemy died
                     if (!enemy.IsAlive)
                     {
+                        Console.WriteLine($"  ✓ Enemy defeated!");
                         int xpGain = 10 + enemy.MaxHp / 4;
                         hero.GainExperience(xpGain);
                         hero.InCombat = false;
@@ -89,8 +97,20 @@ public class CombatSystem
                 else
                 {
                     // Can't afford attack - reset cooldown to try again soon
+                    Console.WriteLine($"  ✗ Hero can't afford {attack.Name} (Stamina: {hero.CurrentStamina}/{attack.StaminaCost}, Mana: {hero.CurrentMana}/{attack.ManaCost})");
                     hero.AttackCooldown = 5;
                 }
+            }
+            else if (distanceToEnemy <= attack.Range + 0.01f)
+            {
+                // In range but no LOS (ranged attack blocked by wall) - retry soon
+                Console.WriteLine($"  ✗ Hero attack blocked - no line of sight (Distance: {distanceToEnemy:0.2f}, Range: {attack.Range})");
+                hero.AttackCooldown = 5;
+            }
+            else
+            {
+                // Not in range - log for debugging melee issues
+                Console.WriteLine($"  ✗ Hero out of range (Distance: {distanceToEnemy:0.2f}, Range: {attack.Range})");
             }
         }
         
@@ -108,10 +128,17 @@ public class CombatSystem
 
             // Enemy only attacks if within their attack range
             // Note: Vision system already ensures LOS for combat initiation
-            // Don't check LOS here - it breaks combat flow around corners
-            if (distanceToHero <= enemy.AttackRange)
+            // For ranged enemies, require clear line of sight UNLESS hero is very close (melee overlap)
+            // This allows ranged enemies to shoot at point-blank range even around corners
+            // Melee enemies don't need LOS check - allows fighting around corners
+            bool isEnemyMeleeRange = distanceToHero <= 1.5f;
+            bool enemyHasLOS = enemy.AttackRange <= 1.5f || isEnemyMeleeRange || HasLineOfSight(enemy.X, enemy.Y, hero.X, hero.Y, maze);
+            
+            // Add small epsilon for floating point comparison
+            if (distanceToHero <= enemy.AttackRange + 0.01f && enemyHasLOS)
             {
                 // Enemy attacks!
+                Console.WriteLine($"  → Enemy attacks! (Distance: {distanceToHero:0.2f}, Range: {enemy.AttackRange})");
                 // Stat-driven enemy damage
                 int statEnemyDamage = enemy.Attack
                     + (int)(enemy.Strength * 1.1f)
@@ -169,6 +196,11 @@ public class CombatSystem
                     projectiles.Clear();
                     return false;
                 }
+            }
+            else if (distanceToHero <= enemy.AttackRange)
+            {
+                // In range but no LOS (ranged attack blocked by wall) - retry soon
+                enemy.AttackCooldown = 10;
             }
         }
         
@@ -366,8 +398,9 @@ public class CombatSystem
         hero.InCombat = true;
         enemy.InCombat = true;
         
-        // Set initial cooldowns (hero attacks first)
-        hero.AttackCooldown = 0;
+        // Set initial cooldowns - give both combatants a small delay before first attack
+        // This prevents instant attacks on combat start
+        hero.AttackCooldown = 3; // Small delay before hero can attack
         enemy.AttackCooldown = enemy.AttackSpeed / 2;
     }
     
