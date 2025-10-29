@@ -53,6 +53,8 @@ public class Hero
     // Use floats for smooth sub-grid movement
     public float X { get; set; }
     public float Y { get; set; }
+    // Collision radius in tiles (used for hitbox-based interactions)
+    public float Radius { get; set; } = 0.35f;
     
     // Grid position for collision checks
     public int GridX => (int)Math.Round(X);

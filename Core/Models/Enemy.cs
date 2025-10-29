@@ -33,6 +33,8 @@ public class Enemy
     public int AttackSpeed { get; set; } = 40; // Ticks between attacks
     public int AttackCooldown { get; set; }
     public float AttackRange { get; set; } = 1.0f; // How close they need to be to attack
+    // Collision radius in tiles (used for hitbox-based interactions)
+    public float Radius { get; set; } = 0.35f;
     
     // Smooth movement for combat
     public float TargetX { get; set; }

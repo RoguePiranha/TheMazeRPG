@@ -25,65 +25,73 @@ public class MovementSystem
     /// </summary>
     public void MoveEnemySmoothRandom(Enemy enemy, Maze maze)
     {
-        // Use persistent velocity with random direction changes
+        // Waypoint-based wandering using BFS to reduce jitter and wall shuffling
         if (enemy == null) return;
         if (enemy.TempData == null) enemy.TempData = new Dictionary<string, object>();
-        float speed = 0.07f + enemy.Agility * 0.008f;
-        // Initialize velocity if not present
-        if (!enemy.TempData.ContainsKey("vx")) enemy.TempData["vx"] = (float)(_random.NextDouble() * 2 - 1) * speed;
-        if (!enemy.TempData.ContainsKey("vy")) enemy.TempData["vy"] = (float)(_random.NextDouble() * 2 - 1) * speed;
-        float vx = (float)enemy.TempData["vx"];
-        float vy = (float)enemy.TempData["vy"];
-        // Occasionally change direction
-        if (_random.NextDouble() < 0.08)
+
+        int enemyGX = (int)MathF.Round(enemy.X);
+        int enemyGY = (int)MathF.Round(enemy.Y);
+        int recalcIn = enemy.TempData.TryGetValue("wanderRecalc", out var recalcObj) ? (int)recalcObj : 0;
+        int targetX = enemy.TempData.TryGetValue("wanderTargetX", out var txObj) ? (int)txObj : -1;
+        int targetY = enemy.TempData.TryGetValue("wanderTargetY", out var tyObj) ? (int)tyObj : -1;
+
+        bool needNewTarget = recalcIn <= 0 || targetX < 0 || targetY < 0 || !IsWalkable(maze, targetX, targetY);
+        if (needNewTarget)
         {
-            float angle = (float)(_random.NextDouble() * MathF.PI * 2);
-            vx = MathF.Cos(angle) * speed;
-            vy = MathF.Sin(angle) * speed;
-        }
-        // Add inertia (smooth changes)
-        vx = vx * 0.85f + ((float)(_random.NextDouble() * 2 - 1) * speed) * 0.15f;
-        vy = vy * 0.85f + ((float)(_random.NextDouble() * 2 - 1) * speed) * 0.15f;
-        // Wall avoidance
-        int lookAheadX = (int)MathF.Round(enemy.X + vx * 2.5f);
-        int lookAheadY = (int)MathF.Round(enemy.Y + vy * 2.5f);
-        if (!IsWalkable(maze, lookAheadX, lookAheadY))
-        {
-            vx = -vx * 0.5f;
-            vy = -vy * 0.5f;
-        }
-        float newX = enemy.X + vx;
-        float newY = enemy.Y + vy;
-        int gridX = (int)MathF.Round(newX);
-        int gridY = (int)MathF.Round(newY);
-        if (IsWalkable(maze, gridX, gridY))
-        {
-            enemy.X = newX;
-            enemy.Y = newY;
-            enemy.TargetX = newX;
-            enemy.TargetY = newY;
-            enemy.TempData["vx"] = vx;
-            enemy.TempData["vy"] = vy;
+            var cell = FindRandomReachableCell(enemyGX, enemyGY, maze, 4, 10);
+            if (cell.HasValue)
+            {
+                targetX = cell.Value.x;
+                targetY = cell.Value.y;
+                enemy.TempData["wanderTargetX"] = targetX;
+                enemy.TempData["wanderTargetY"] = targetY;
+                enemy.TempData["wanderRecalc"] = _random.Next(60, 180); // 6-18s at 10 tps
+            }
+            else
+            {
+                // fallback: small random nudge area
+                targetX = enemyGX + _random.Next(-2, 3);
+                targetY = enemyGY + _random.Next(-2, 3);
+                enemy.TempData["wanderTargetX"] = targetX;
+                enemy.TempData["wanderTargetY"] = targetY;
+                enemy.TempData["wanderRecalc"] = 40;
+            }
         }
         else
         {
-            // Try random direction if blocked
-            float angle = (float)(_random.NextDouble() * MathF.PI * 2);
-            vx = MathF.Cos(angle) * speed;
-            vy = MathF.Sin(angle) * speed;
-            newX = enemy.X + vx;
-            newY = enemy.Y + vy;
-            gridX = (int)MathF.Round(newX);
-            gridY = (int)MathF.Round(newY);
-            if (IsWalkable(maze, gridX, gridY))
-            {
-                enemy.X = newX;
-                enemy.Y = newY;
-                enemy.TargetX = newX;
-                enemy.TargetY = newY;
-                enemy.TempData["vx"] = vx;
-                enemy.TempData["vy"] = vy;
-            }
+            enemy.TempData["wanderRecalc"] = recalcIn - 1;
+        }
+
+        if (enemyGX == targetX && enemyGY == targetY)
+        {
+            // Arrived; pick a new target soon
+            enemy.TempData["wanderRecalc"] = 0;
+            return;
+        }
+
+        var path = FindPathToTarget(enemyGX, enemyGY, targetX, targetY, maze);
+        if (path == null || path.Count <= 1)
+        {
+            // Can't path; try new target next tick
+            enemy.TempData["wanderRecalc"] = 0;
+            return;
+        }
+
+        var next = path[1];
+        float dx = next.x - enemy.X;
+        float dy = next.y - enemy.Y;
+        float dist = MathF.Sqrt(dx * dx + dy * dy);
+        if (dist > 0.05f)
+        {
+            float baseSpeed = 0.06f;
+            float speed = baseSpeed * (1.0f + enemy.Agility * 0.04f);
+            enemy.X += (dx / dist) * speed;
+            enemy.Y += (dy / dist) * speed;
+        }
+        else
+        {
+            enemy.X = next.x;
+            enemy.Y = next.y;
         }
     }
     
@@ -116,9 +124,11 @@ public class MovementSystem
         {
             // For ranged attacks beyond melee range, verify line of sight before stopping
             bool isMeleeRange = distance <= 1.5f;
-            bool needsLOS = attack.Range > 1.5f && !isMeleeRange;
+            // LOS is priority for all attacks; allow a stop only if LOS is clear or bodies overlap
+            bool overlappingBodies = distance <= (hero.Radius + enemy.Radius + 0.05f);
+            bool needsLOS = true; // always require LOS to stop, except when overlapping
             
-            if (!needsLOS || CheckLineOfSight(hero.X, hero.Y, enemy.X, enemy.Y, maze))
+            if (!needsLOS || overlappingBodies || CheckLineOfSight(hero.X, hero.Y, enemy.X, enemy.Y, maze))
             {
                 // Mark current cell as explored and stop movement
                 maze.Explored[hero.GridX, hero.GridY] = true;
@@ -229,6 +239,13 @@ public class MovementSystem
                 hero.X = nextStep.x;
                 hero.Y = nextStep.y;
             }
+
+            // If we're very close to the final target cell, snap to center to ensure interactions trigger
+            if (MathF.Abs(hero.X - targetGridX) < 0.35f && MathF.Abs(hero.Y - targetGridY) < 0.35f)
+            {
+                hero.X = targetGridX;
+                hero.Y = targetGridY;
+            }
         }
         
         // Mark current cell as explored
@@ -286,13 +303,15 @@ public class MovementSystem
             }
             else
             {
-                // Ranged - move closer if too far, back away if too close
-                if (distToHero > desiredRange + 0.5f)
+                // Ranged - prefer to gain LOS and be just inside range
+                bool hasLOS = CheckLineOfSight(enemy.X, enemy.Y, targetX, targetY, maze);
+                if (!hasLOS || distToHero > desiredRange + 0.4f)
                 {
+                    // Advance to gain LOS or close distance
                     if (distance > 0.1f)
                     {
-                        enemy.X += (dx / distance) * speed * 0.7f; // Slower for kiting
-                        enemy.Y += (dy / distance) * speed * 0.7f;
+                        enemy.X += (dx / distance) * speed * 0.75f;
+                        enemy.Y += (dy / distance) * speed * 0.75f;
                     }
                     else
                     {
@@ -300,17 +319,16 @@ public class MovementSystem
                         enemy.Y = next.y;
                     }
                 }
-                else if (distToHero < desiredRange - 0.3f)
+                else if (distToHero < desiredRange - 0.35f && hasLOS)
                 {
-                    // Too close for ranged enemy - back away (kiting)
+                    // Too close and we can shoot - back away (kiting)
                     float awayDx = enemy.X - targetX;
                     float awayDy = enemy.Y - targetY;
                     float awayDist = MathF.Sqrt(awayDx * awayDx + awayDy * awayDy);
                     if (awayDist > 0.1f)
                     {
-                        // Prevent backing into walls
-                        float backX = enemy.X + (awayDx / awayDist) * speed * 0.5f;
-                        float backY = enemy.Y + (awayDy / awayDist) * speed * 0.5f;
+                        float backX = enemy.X + (awayDx / awayDist) * speed * 0.55f;
+                        float backY = enemy.Y + (awayDy / awayDist) * speed * 0.55f;
                         int backGridX = (int)MathF.Round(backX);
                         int backGridY = (int)MathF.Round(backY);
                         if (IsWalkable(maze, backGridX, backGridY))
@@ -318,9 +336,9 @@ public class MovementSystem
                             enemy.X = backX;
                             enemy.Y = backY;
                         }
-                        // else: stay put if wall behind
                     }
                 }
+                // else: hold position inside sweet spot with LOS
             }
         }
         // Mark current grid cell as explored (optional for AI)
@@ -449,6 +467,35 @@ public class MovementSystem
         }
         
         // No unexplored cells found - just stay put or move randomly
+        return null;
+    }
+    
+    /// <summary>
+    /// Pick a random reachable walkable cell within [minRadius, maxRadius] from the start.
+    /// Uses path existence as a reachability check.
+    /// </summary>
+    private (int x, int y)? FindRandomReachableCell(int startX, int startY, Maze maze, int minRadius, int maxRadius)
+    {
+        if (minRadius < 1) minRadius = 1;
+        if (maxRadius < minRadius) maxRadius = minRadius + 1;
+
+        for (int attempts = 0; attempts < 60; attempts++)
+        {
+            int r = _random.Next(minRadius, Math.Max(minRadius + 1, maxRadius + 1));
+            double theta = _random.NextDouble() * Math.PI * 2.0;
+            int tx = startX + (int)MathF.Round((float)(Math.Cos(theta) * r));
+            int ty = startY + (int)MathF.Round((float)(Math.Sin(theta) * r));
+
+            if (tx < 0 || tx >= maze.Width || ty < 0 || ty >= maze.Height) continue;
+            if (!IsWalkable(maze, tx, ty)) continue;
+
+            var path = FindPathToTarget(startX, startY, tx, ty, maze);
+            if (path != null && path.Count > 1)
+            {
+                return (tx, ty);
+            }
+        }
+
         return null;
     }
     

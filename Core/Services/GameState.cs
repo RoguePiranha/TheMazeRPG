@@ -26,6 +26,7 @@ public class GameState
     public bool HasKey { get; set; }
     public (int x, int y)? StairsLocation { get; set; }
     public List<Projectile> Projectiles { get; set; } = new();
+    public List<HitEffect> HitEffects { get; set; } = new();
 
     // Track enemy pursuit persistence
     private Dictionary<Enemy, int> enemyPursuitTicks = new();
@@ -36,6 +37,10 @@ public class GameState
     public int TickCount { get; private set; }
     public int CurrentFloor { get; private set; } = 1;
     public bool IsRunning { get; set; }
+    
+    // Debug flags (can be toggled via env vars)
+    public bool DebugDrawHitboxes { get; set; }
+    public bool DebugDrawLOS { get; set; }
     
     // Death state
     public bool IsHeroDead { get; private set; }
@@ -111,6 +116,10 @@ public class GameState
         Console.WriteLine($"Attacks assigned: {Hero.Attacks.Count}, Current: {Hero.CurrentAttack?.Name ?? "None"}");
         
         StartNewFloor();
+
+        // Debug flags from environment
+        DebugDrawHitboxes = (Environment.GetEnvironmentVariable("DEBUG_HITBOXES") == "1");
+        DebugDrawLOS = (Environment.GetEnvironmentVariable("DEBUG_LOS") == "1");
     }
     
     public void Tick()
@@ -230,6 +239,9 @@ public class GameState
                 _movementSystem.MoveEnemyTowardTarget(enemy, Hero.X, Hero.Y, CurrentMaze);
             }
         }
+
+        // Resolve hero/enemy physical interactions (hitbox collision)
+        ResolveHeroEnemyCollisions();
         
         // Check for new combat encounters and process existing combat
         CheckCombat();
@@ -281,10 +293,11 @@ public class GameState
     
     private void CheckCombat()
     {
-        // Check both hero and enemy vision for combat detection
-        Enemy? targetEnemy = null;
+        // Gather all enemies that are engaged (either seen by hero, see the hero, or close/persistent)
+        List<Enemy> engagedEnemies = new();
+        Enemy? primaryTarget = null;
         float closestDistance = float.MaxValue;
-        
+
         // First, check if hero can see any enemies
         float heroFacing = Hero.InCombat && Hero.AttackCooldown == 0 && Hero.CurrentAttack != null
             ? MathF.Atan2(Hero.AnimationOffsetY, Hero.AnimationOffsetX)
@@ -298,7 +311,14 @@ public class GameState
         {
             int enemyCellX = (int)MathF.Round(enemy.X);
             int enemyCellY = (int)MathF.Round(enemy.Y);
-            bool heroSeesEnemy = heroVisibleCells.Contains((enemyCellX, enemyCellY));
+            // Hitbox-aware visibility: consider enemy circle against hero's cone
+            bool heroSeesInConeCells = heroVisibleCells.Contains((enemyCellX, enemyCellY));
+            bool heroHitboxCone = HitboxIntersectsCone(Hero.X, Hero.Y, heroFacing, heroSightRange, VisionConeAngleRad,
+                                      enemy.X, enemy.Y, enemy.Radius);
+            // If detected by hitbox+cone, still require LOS unless overlapping bodies
+            bool overlappingBodies = MathF.Sqrt((Hero.X - enemy.X) * (Hero.X - enemy.X) + (Hero.Y - enemy.Y) * (Hero.Y - enemy.Y))
+                                      <= (Hero.Radius + enemy.Radius + 0.05f);
+            bool heroSeesEnemy = heroSeesInConeCells || (heroHitboxCone && (overlappingBodies || HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y)));
             
             // Also check if enemy can see hero (scanning in all directions)
             bool enemySeesHero = EnemyCanSeeHero(enemy);
@@ -308,18 +328,19 @@ public class GameState
                 float dx = Hero.X - enemy.X;
                 float dy = Hero.Y - enemy.Y;
                 float distance = MathF.Sqrt(dx * dx + dy * dy);
+                engagedEnemies.Add(enemy);
                 if (distance < closestDistance)
                 {
                     closestDistance = distance;
-                    targetEnemy = enemy;
+                    primaryTarget = enemy;
                 }
                 // Reset pursuit timer if either can see the other
                 if (HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y))
                     enemyPursuitTicks[enemy] = PursuitTimeoutTicks;
             }
         }
-        // Fallback: if nothing found in cone, allow close melee-range enemies or persistent pursuers to be targetable
-        if (targetEnemy == null)
+        // Fallback: include close melee-range enemies or persistent pursuers even if not in cone
+        if (engagedEnemies.Count == 0)
         {
             foreach (var enemy in Enemies.Where(e => e.IsAlive))
             {
@@ -331,15 +352,18 @@ public class GameState
                 float meleeThreshold = Math.Max(1.5f, enemy.AttackRange);
                 bool isPersistent = enemyPursuitTicks.TryGetValue(enemy, out int t) && t > 0;
                 
-                // Require line of sight for targeting - prevents targeting through walls
-                bool hasLOS = HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y);
+                // If overlapping hitboxes, target regardless of LOS
+                bool overlapping = distance < (Hero.Radius + enemy.Radius + 0.05f);
+                // Require line of sight otherwise - prevents targeting through walls
+                bool hasLOS = overlapping || HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y);
 
                 if (hasLOS && (distance <= meleeThreshold || (distance < AgroRadius && isPersistent)))
                 {
+                    engagedEnemies.Add(enemy);
                     if (distance < closestDistance)
                     {
                         closestDistance = distance;
-                        targetEnemy = enemy;
+                        primaryTarget = enemy;
                     }
                     // If enemy in sight, reset pursuit
                     if (distance < 5.0f)
@@ -353,7 +377,7 @@ public class GameState
             if (enemyPursuitTicks.ContainsKey(enemy) && enemyPursuitTicks[enemy] > 0)
                 enemyPursuitTicks[enemy]--;
         }
-    if (targetEnemy == null)
+        if (engagedEnemies.Count == 0)
         {
             // No enemy in sight - end combat if we were fighting
             if (Hero.InCombat)
@@ -368,26 +392,226 @@ public class GameState
             }
             return;
         }
-        else
+        // Engage combat with all found enemies
+        Hero.InCombat = true;
+        // Ensure enemies are marked in combat and have initial cooldowns
+        foreach (var e in engagedEnemies)
         {
-            // Debug: optionally log hero sight info when a target is found
-            // (kept minimal in production)
-            // Console.WriteLine($"HeroSightRange={heroSightRange}, VisibleCells={heroVisibleCells.Count}, Target={targetEnemy?.Type}");
+            if (!e.InCombat)
+            {
+                e.InCombat = true;
+                // Give them a small initial delay similar to StartCombat, but don't reset hero
+                e.AttackCooldown = Math.Max(e.AttackCooldown, e.AttackSpeed / 2);
+            }
         }
-        // Enemy found in sight cone
-        if (!Hero.InCombat && !targetEnemy.InCombat)
+
+        // Choose the closest as the primary target for the hero's own attack logic
+        var targetEnemy = primaryTarget ?? engagedEnemies[0];
+
+        // If hero just entered combat, align both via StartCombat for the primary
+        if (!Hero.InCombat || !targetEnemy.InCombat) // Hero.InCombat set above; keep safe-init
         {
             _combatSystem.StartCombat(Hero, targetEnemy);
         }
-        if (Hero.InCombat && targetEnemy.InCombat)
+
+        // Process hero vs primary target (includes enemy retaliation for that target)
+        _combatSystem.ProcessCombat(Hero, targetEnemy, Projectiles, CurrentMaze);
+
+        // Process enemy-only attacks for the rest so hero cooldown isn't decremented multiple times
+        foreach (var e in engagedEnemies)
         {
-            _combatSystem.ProcessCombat(Hero, targetEnemy, Projectiles, CurrentMaze);
+            if (e == targetEnemy) continue;
+            _combatSystem.ProcessEnemyOnlyAttack(Hero, e, Projectiles, CurrentMaze);
         }
+
         foreach (var projectile in Projectiles)
         {
             projectile.Update(CurrentMaze);
         }
+        // Apply contact damage from projectiles/hitboxes before removing expired ones
+        ProcessProjectileCollisions();
         Projectiles.RemoveAll(p => !p.IsActive);
+        // Update and prune hit effects
+        UpdateHitEffects();
+    }
+
+    /// <summary>
+    /// Public debug wrapper for LOS checks from renderer/diagnostics.
+    /// </summary>
+    public bool CheckLOS(float x1, float y1, float x2, float y2) => HasLineOfSight(x1, y1, x2, y2);
+
+    /// <summary>
+    /// Resolve projectile contact damage against hero/enemies.
+    /// </summary>
+    private void ProcessProjectileCollisions()
+    {
+        if (Projectiles.Count == 0) return;
+
+        // Compute a dynamic effective radius for certain effects (e.g., expanding rings)
+        float GetEffectiveRadius(Projectile p)
+        {
+            // Base radius from projectile, with special-case growth
+            if (p.Type == AttackAnimation.Magic && p.AttackName.Contains("Arcane Blast"))
+            {
+                // Start small and expand with lifetime (tiles)
+                return 0.25f + p.LifeTime * 0.05f;
+            }
+            return p.Radius;
+        }
+
+        foreach (var p in Projectiles)
+        {
+            if (!p.IsActive || p.ConsumedOnHit) continue;
+
+            float pr = GetEffectiveRadius(p);
+
+            if (p.Team == ProjectileTeam.Hero)
+            {
+                // Check against all living enemies
+                foreach (var enemy in Enemies.Where(e => e.IsAlive))
+                {
+                    float dx = p.CurrentX - enemy.X;
+                    float dy = p.CurrentY - enemy.Y;
+                    float dist = MathF.Sqrt(dx * dx + dy * dy);
+                    if (dist <= (pr + enemy.Radius))
+                    {
+                        enemy.Hp -= Math.Max(1, p.Damage);
+                        // Spawn tiny on-hit flash
+                        HitEffects.Add(new HitEffect
+                        {
+                            X = p.CurrentX,
+                            Y = p.CurrentY,
+                            LifeTime = 0,
+                            MaxLifeTime = 8,
+                            Type = HitEffectType.Impact,
+                            Team = ProjectileTeam.Hero
+                        });
+
+                        // End combat if enemy dies
+                        if (!enemy.IsAlive)
+                        {
+                            Console.WriteLine("  ✓ Enemy defeated by hit!");
+                            int xpGain = 10 + enemy.MaxHp / 4;
+                            Hero.GainExperience(xpGain);
+                            Hero.InCombat = false;
+                            enemy.InCombat = false;
+                            Hero.AnimationOffsetX = 0;
+                            Hero.AnimationOffsetY = 0;
+                            // Do not clear other projectiles; allow other combats to continue
+                        }
+
+                        if (!p.CanHitMultiple)
+                        {
+                            p.ConsumedOnHit = true;
+                            p.LifeTime = p.MaxLifeTime; // deactivate
+                        }
+                        // If multi-hit, keep active for others this tick
+                        break;
+                    }
+                }
+            }
+            else if (p.Team == ProjectileTeam.Enemy)
+            {
+                // Check collision with hero
+                float dx = p.CurrentX - Hero.X;
+                float dy = p.CurrentY - Hero.Y;
+                float dist = MathF.Sqrt(dx * dx + dy * dy);
+                if (dist <= (pr + Hero.Radius))
+                {
+                    Hero.CurrentHp -= Math.Max(1, p.Damage);
+                    // Spawn tiny on-hit flash
+                    HitEffects.Add(new HitEffect
+                    {
+                        X = p.CurrentX,
+                        Y = p.CurrentY,
+                        LifeTime = 0,
+                        MaxLifeTime = 8,
+                        Type = HitEffectType.Impact,
+                        Team = ProjectileTeam.Enemy
+                    });
+
+                    if (!Hero.IsAlive)
+                    {
+                        Hero.CurrentHp = 0;
+                        Hero.InCombat = false;
+                        foreach (var enemy in Enemies) enemy.InCombat = false;
+                        Hero.AnimationOffsetX = 0;
+                        Hero.AnimationOffsetY = 0;
+                        // Do not clear remaining projectiles globally
+                    }
+
+                    if (!p.CanHitMultiple)
+                    {
+                        p.ConsumedOnHit = true;
+                        p.LifeTime = p.MaxLifeTime; // deactivate
+                    }
+                }
+            }
+        }
+    }
+
+    private void UpdateHitEffects()
+    {
+        if (HitEffects.Count == 0) return;
+        foreach (var fx in HitEffects)
+        {
+            fx.LifeTime++;
+        }
+        HitEffects.RemoveAll(fx => !fx.IsActive);
+    }
+
+    /// <summary>
+    /// Prevent hero from walking through enemies; gently separate overlapping bodies.
+    /// </summary>
+    private void ResolveHeroEnemyCollisions()
+    {
+        foreach (var enemy in Enemies.Where(e => e.IsAlive))
+        {
+            float dx = Hero.X - enemy.X;
+            float dy = Hero.Y - enemy.Y;
+            float dist = MathF.Sqrt(dx * dx + dy * dy);
+            float minDist = Hero.Radius + enemy.Radius;
+            if (dist < minDist && dist > 1e-3f)
+            {
+                float push = (minDist - dist) + 0.02f; // small extra gap
+                float nx = dx / dist;
+                float ny = dy / dist;
+                // Push hero out; if enemy not in combat, nudge both a bit
+                Hero.X += nx * push * 0.8f;
+                Hero.Y += ny * push * 0.8f;
+                if (!enemy.InCombat)
+                {
+                    enemy.X -= nx * push * 0.2f;
+                    enemy.Y -= ny * push * 0.2f;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns true if a circle (cx,cy,r) intersects a vision cone from (ox,oy) with facing and range
+    /// </summary>
+    private bool HitboxIntersectsCone(float ox, float oy, float facingRad, float range, float coneRad,
+        float cx, float cy, float radius)
+    {
+        float dx = cx - ox;
+        float dy = cy - oy;
+        float d = MathF.Sqrt(dx * dx + dy * dy);
+        if (d - radius > range) return false; // completely out of range
+
+        // Angle from origin to target center
+        float angle = MathF.Atan2(dy, dx);
+        float angleDiff = MathF.Abs(NormalizeAngleRad(angle - facingRad));
+
+        // Expand the cone by the angular radius of the circle
+        float expand = 0f;
+        if (d > 1e-3f)
+        {
+            float s = MathF.Min(1f, radius / d);
+            expand = MathF.Asin(s);
+        }
+        float halfCone = coneRad / 2f;
+        return angleDiff <= (halfCone + expand);
     }
     
     private void CheckFeaturesWithKeyLogic()
@@ -422,7 +646,8 @@ public class GameState
             return;
         }
         
-        // Use directional sight cone for hero to identify features
+        // Use directional sight cone for hero to identify features (for far awareness),
+        // but do NOT require cone visibility for close interactions like stairs usage.
         float heroFacing = Hero.InCombat && Hero.AttackCooldown == 0 && Hero.CurrentAttack != null
             ? MathF.Atan2(Hero.AnimationOffsetY, Hero.AnimationOffsetX)
             : 0f; // Default facing (e.g., right)
@@ -449,14 +674,11 @@ public class GameState
                 continue; // Skip to next feature
             }
             
-            // For stairs, require closer proximity and key
-            int featureCellX = (int)MathF.Round(feature.X);
-            int featureCellY = (int)MathF.Round(feature.Y);
-            if (!heroVisibleCells.Contains((featureCellX, featureCellY))) continue;
-            
-            if (distance < 0.5f)
+            // For stairs, allow close interaction regardless of cone visibility
+            if (feature.Type == MazeFeatureType.Stairs)
             {
-                if (feature.Type == MazeFeatureType.Stairs)
+                // Close proximity usage (no cone requirement)
+                if (distance < 0.6f)
                 {
                     if (HasKey)
                     {
@@ -467,7 +689,17 @@ public class GameState
                     {
                         StairsLocation = (feature.X, feature.Y);
                     }
+                    continue;
                 }
+                // Far awareness: remember stairs location if in cone OR clear LOS
+                int featureCellX = (int)MathF.Round(feature.X);
+                int featureCellY = (int)MathF.Round(feature.Y);
+                bool inCone = heroVisibleCells.Contains((featureCellX, featureCellY));
+                if (inCone || HasLineOfSight(Hero.X, Hero.Y, feature.X, feature.Y))
+                {
+                    StairsLocation = (feature.X, feature.Y);
+                }
+                continue;
             }
         }
         // If hero has key and remembers stairs, auto move to stairs
@@ -476,7 +708,7 @@ public class GameState
             float dx = Hero.X - StairsLocation.Value.x;
             float dy = Hero.Y - StairsLocation.Value.y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
-            if (distance < 0.5f)
+            if (distance < 0.6f)
             {
                 var stairsFeature = CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.Stairs && !f.IsUsed);
                 if (stairsFeature != null)

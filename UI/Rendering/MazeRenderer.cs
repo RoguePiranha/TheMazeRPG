@@ -61,16 +61,133 @@ public class MazeRenderer
         // Draw enemies
         DrawEnemies(canvas, gameState.Enemies);
         
-        // Draw projectiles (between enemies and hero)
-        DrawProjectiles(canvas, gameState.Projectiles);
+    // Draw projectiles (between enemies and hero)
+    DrawProjectiles(canvas, gameState);
         
-        // Draw hero (always on top)
+        // Draw on-hit flashes above projectiles, below hero
+        DrawHitEffects(canvas, gameState.HitEffects);
+        
+    // Draw hero (always on top)
         DrawHero(canvas, gameState.Hero);
+        
+    // Debug overlays (hitboxes, LOS) if enabled
+    DrawDebugOverlay(canvas, gameState);
         
         canvas.Restore();
         
         // Draw HUD overlay
         DrawHUD(canvas, gameState, viewportWidth, viewportHeight);
+    }
+    
+    private void DrawDebugOverlay(SKCanvas canvas, GameState gameState)
+    {
+        // Early out if nothing is enabled
+        if (!gameState.DebugDrawHitboxes && !gameState.DebugDrawLOS) return;
+
+        // Hitboxes: hero, enemies, projectiles
+        if (gameState.DebugDrawHitboxes)
+        {
+            // Hero
+            DrawDebugCircle(canvas, gameState.Hero.X, gameState.Hero.Y, gameState.Hero.Radius, new SKColor(0, 200, 255, 160));
+            // Enemies
+            foreach (var e in gameState.Enemies)
+            {
+                var col = e.IsAlive ? new SKColor(255, 120, 120, 160) : new SKColor(120, 60, 60, 100);
+                DrawDebugCircle(canvas, e.X, e.Y, e.Radius, col);
+            }
+            // Projectiles
+            foreach (var p in gameState.Projectiles)
+            {
+                var col = p.Team == ProjectileTeam.Hero ? new SKColor(120, 220, 255, 140) : new SKColor(255, 180, 120, 140);
+                DrawDebugCircle(canvas, p.CurrentX, p.CurrentY, p.Radius, col, dashed: true);
+            }
+        }
+
+        // LOS rays: hero-to-enemy lines colored by blockage
+        if (gameState.DebugDrawLOS)
+        {
+            foreach (var e in gameState.Enemies)
+            {
+                bool los = gameState.CheckLOS(gameState.Hero.X, gameState.Hero.Y, e.X, e.Y);
+                DrawDebugLine(canvas, gameState.Hero.X, gameState.Hero.Y, e.X, e.Y, los ? new SKColor(80, 220, 120, 150) : new SKColor(220, 80, 80, 150));
+            }
+        }
+    }
+
+    private void DrawDebugCircle(SKCanvas canvas, float cx, float cy, float radiusTiles, SKColor color, bool dashed = false)
+    {
+        float px = cx * CellSize + CellSize / 2f;
+        float py = cy * CellSize + CellSize / 2f;
+        float r = radiusTiles * CellSize;
+        using var paint = new SKPaint
+        {
+            Color = color,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 2,
+            IsAntialias = true
+        };
+        if (dashed)
+        {
+            paint.PathEffect = SKPathEffect.CreateDash(new float[] { 6, 4 }, 0);
+        }
+        canvas.DrawCircle(px, py, r, paint);
+    }
+
+    private void DrawDebugLine(SKCanvas canvas, float x1, float y1, float x2, float y2, SKColor color)
+    {
+        float p1x = x1 * CellSize + CellSize / 2f;
+        float p1y = y1 * CellSize + CellSize / 2f;
+        float p2x = x2 * CellSize + CellSize / 2f;
+        float p2y = y2 * CellSize + CellSize / 2f;
+        using var paint = new SKPaint
+        {
+            Color = color,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 2,
+            IsAntialias = true
+        };
+        canvas.DrawLine(p1x, p1y, p2x, p2y, paint);
+    }
+
+    private void DrawHitEffects(SKCanvas canvas, List<HitEffect> effects)
+    {
+        foreach (var fx in effects)
+        {
+            float px = fx.X * CellSize + CellSize / 2f;
+            float py = fx.Y * CellSize + CellSize / 2f;
+            float t = Math.Clamp((float)fx.LifeTime / fx.MaxLifeTime, 0f, 1f);
+            byte alpha = (byte)(255 * (1f - t));
+            float radius = 6f + 8f * t;
+
+            // Color by team: hero hits = cyan/white, enemy hits = orange/red
+            SKColor glowColor = fx.Team == ProjectileTeam.Hero
+                ? new SKColor(180, 255, 255, (byte)(alpha * 0.7f))
+                : new SKColor(255, 170, 100, (byte)(alpha * 0.7f));
+            SKColor coreColor = fx.Team == ProjectileTeam.Hero
+                ? new SKColor(230, 255, 255, alpha)
+                : new SKColor(255, 200, 150, alpha);
+
+            using (var glow = new SKPaint
+            {
+                Color = glowColor,
+                Style = SKPaintStyle.Fill,
+                IsAntialias = true,
+                MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 3),
+                BlendMode = SKBlendMode.Screen
+            })
+            {
+                canvas.DrawCircle(px, py, radius, glow);
+            }
+            using (var core = new SKPaint
+            {
+                Color = coreColor,
+                Style = SKPaintStyle.Fill,
+                IsAntialias = true
+            })
+            {
+                canvas.DrawCircle(px, py, Math.Max(2f, radius * 0.35f), core);
+            }
+        }
     }
     
     private void DrawMaze(SKCanvas canvas, Maze maze)
@@ -431,8 +548,9 @@ public class MazeRenderer
         }
     }
     
-    private void DrawProjectiles(SKCanvas canvas, List<Projectile> projectiles)
+    private void DrawProjectiles(SKCanvas canvas, GameState gameState)
     {
+        var projectiles = gameState.Projectiles;
         foreach (var projectile in projectiles)
         {
             float px = projectile.CurrentX * CellSize + CellSize / 2f;
@@ -491,7 +609,8 @@ public class MazeRenderer
                             Color = new SKColor(255, 255, 255, (byte)(alphaVal * 0.8f)),
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true,
-                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 2)
+                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 2),
+                            BlendMode = SKBlendMode.Screen
                         };
                         canvas.DrawCircle(tipX, tipY, 3, gleamPaint);
                     }
@@ -516,7 +635,8 @@ public class MazeRenderer
                             Color = new SKColor(255, 255, 200, (byte)(alphaVal * 0.5f)),
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true,
-                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 4)
+                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 4),
+                            BlendMode = SKBlendMode.Screen
                         };
                         canvas.DrawCircle(px, py, 8, glowPaint);
                     }
@@ -531,7 +651,8 @@ public class MazeRenderer
                             Color = new SKColor(255, 200, 100, alphaVal), // Orange impact
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true,
-                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 3)
+                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 3),
+                            BlendMode = SKBlendMode.Screen
                         };
                         
                         // Expanding impact circle
@@ -668,7 +789,8 @@ public class MazeRenderer
                             Color = new SKColor(50, 200, 50, (byte)(alphaVal * 0.7f)), // Green poison
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true,
-                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 2)
+                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 2),
+                            BlendMode = SKBlendMode.Screen
                         };
                         canvas.DrawCircle(px, py, 3, poisonPaint);
                         
@@ -706,7 +828,8 @@ public class MazeRenderer
                             Color = new SKColor(138, 43, 226, (byte)(alphaVal * 0.5f)), // Purple glow
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true,
-                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 4)
+                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 4),
+                            BlendMode = SKBlendMode.Screen
                         })
                         {
                             canvas.DrawCircle(px, py, 10, magicGlow);
@@ -739,6 +862,69 @@ public class MazeRenderer
                             canvas.DrawCircle(sparkleX, sparkleY, 2, sparklePaint);
                         }
                     }
+                    else if (projectile.AttackName.Contains("Magic Dart"))
+                    {
+                        // Magic Dart - cyan/blue comet with additive glow and tapered trail
+                        float trailDx = px - startPx;
+                        float trailDy = py - startPy;
+                        float len = MathF.Sqrt(trailDx * trailDx + trailDy * trailDy);
+                        float nx = len > 0 ? trailDx / len : 0f;
+                        float ny = len > 0 ? trailDy / len : 0f;
+
+                        using (var glow = new SKPaint
+                        {
+                            Color = new SKColor(100, 255, 255, (byte)(alphaVal * 160)), // Cyan glow
+                            Style = SKPaintStyle.Fill,
+                            IsAntialias = true,
+                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 4),
+                            BlendMode = SKBlendMode.Screen
+                        })
+                        {
+                            canvas.DrawCircle(px, py, 8, glow);
+                        }
+                        using (var core = new SKPaint
+                        {
+                            Color = new SKColor(180, 255, 255, (byte)alphaVal),
+                            Style = SKPaintStyle.Fill,
+                            IsAntialias = true
+                        })
+                        {
+                            canvas.DrawCircle(px, py, 3.5f, core);
+                        }
+                        // Tapered trail dots behind the projectile
+                        for (int i = 1; i <= 4; i++)
+                        {
+                            float t = i * 0.18f;
+                            float tx = px - nx * t * 24f;
+                            float ty = py - ny * t * 24f;
+                            float size = 3.2f - i * 0.5f;
+                            using var trail = new SKPaint
+                            {
+                                Color = new SKColor(120, 240, 255, (byte)(alphaVal * (200 - i * 30) / 255f * 255)),
+                                Style = SKPaintStyle.Fill,
+                                IsAntialias = true,
+                                MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 2),
+                                BlendMode = SKBlendMode.Screen
+                            };
+                            canvas.DrawCircle(tx, ty, size, trail);
+                        }
+                    }
+                    else if (projectile.AttackName.Contains("Arcane Blast"))
+                    {
+                        // Arcane Blast - expanding teal ring (shockwave)
+                        float progress = (float)projectile.LifeTime / projectile.MaxLifeTime;
+                        float radius = 6 + progress * 18f;
+                        using var ring = new SKPaint
+                        {
+                            Color = new SKColor(100, 220, 220, (byte)(alphaVal * 0.8f)),
+                            Style = SKPaintStyle.Stroke,
+                            StrokeWidth = 3,
+                            IsAntialias = true,
+                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 2),
+                            BlendMode = SKBlendMode.Screen
+                        };
+                        canvas.DrawCircle(px, py, radius, ring);
+                    }
                     else if (projectile.AttackName.Contains("Sonic"))
                     {
                         // Sonic Blast - Sound wave rings
@@ -751,7 +937,8 @@ public class MazeRenderer
                                 Color = new SKColor(100, 200, 255, (byte)(alphaVal * 0.5f)),
                                 Style = SKPaintStyle.Stroke,
                                 StrokeWidth = 2,
-                                IsAntialias = true
+                                IsAntialias = true,
+                                BlendMode = SKBlendMode.Screen
                             };
                             canvas.DrawCircle(px, py, waveRadius, wavePaint);
                         }
@@ -761,7 +948,8 @@ public class MazeRenderer
                         {
                             Color = new SKColor(150, 220, 255, alphaVal),
                             Style = SKPaintStyle.Fill,
-                            IsAntialias = true
+                            IsAntialias = true,
+                            BlendMode = SKBlendMode.Screen
                         };
                         canvas.DrawCircle(px, py, 4, notePaint);
                     }
@@ -773,7 +961,8 @@ public class MazeRenderer
                             Color = new SKColor(138, 43, 226, (byte)(alphaVal * 0.5f)),
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true,
-                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 3)
+                            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 3),
+                            BlendMode = SKBlendMode.Screen
                         })
                         {
                             canvas.DrawCircle(px, py, 8, magicGlow);

@@ -54,11 +54,14 @@ public class CombatSystem
             // For ranged attacks, require clear line of sight UNLESS enemy is very close (melee overlap)
             // This allows ranged attackers to shoot at point-blank range even around corners
             // Melee attacks don't need LOS check - allows fighting around corners
-            bool isMeleeRange = distanceToEnemy <= 1.5f;
-            bool hasLOS = attack.Range <= 1.5f || isMeleeRange || HasLineOfSight(hero.X, hero.Y, enemy.X, enemy.Y, maze);
+            // Require LOS for all attacks, except when bodies overlap (corner cases)
+            bool overlappingBodies = distanceToEnemy <= (hero.Radius + enemy.Radius + 0.05f);
+            bool hasLOS = overlappingBodies || HasLineOfSight(hero.X, hero.Y, enemy.X, enemy.Y, maze);
             
+            // Hitbox-aware range check: shrink required distance by enemy radius for contact
+            float effectiveDistance = MathF.Max(0f, distanceToEnemy - enemy.Radius);
             // Add small epsilon for floating point comparison to handle edge cases (e.g., exactly 3.0 distance with 3.0 range)
-            if (distanceToEnemy <= attack.Range + 0.01f && hasLOS)
+            if (effectiveDistance <= attack.Range + 0.01f && hasLOS)
             {
                 // Check if we have enough resources for this attack
                 bool canAfford = !attack.IsHeavyAttack ||
@@ -69,7 +72,7 @@ public class CombatSystem
                 if (canAfford)
                 {
                     // Hero attacks!
-                    Console.WriteLine($"  → Hero attacks with {attack.Name}! (Distance: {distanceToEnemy:0.2f}, Range: {attack.Range})");
+                    Console.WriteLine($"  → Hero attacks with {attack.Name}! (Distance: {distanceToEnemy:F2}, Range: {attack.Range})");
                     PerformHeroAttack(hero, enemy, projectiles);
 
                     // Set cooldown based on attack, Dexterity, and minimum threshold
@@ -101,16 +104,16 @@ public class CombatSystem
                     hero.AttackCooldown = 5;
                 }
             }
-            else if (distanceToEnemy <= attack.Range + 0.01f)
+            else if (effectiveDistance <= attack.Range + 0.01f)
             {
                 // In range but no LOS (ranged attack blocked by wall) - retry soon
-                Console.WriteLine($"  ✗ Hero attack blocked - no line of sight (Distance: {distanceToEnemy:0.2f}, Range: {attack.Range})");
+                Console.WriteLine($"  ✗ Hero attack blocked - no line of sight (Distance: {distanceToEnemy:F2}, Range: {attack.Range})");
                 hero.AttackCooldown = 5;
             }
             else
             {
                 // Not in range - log for debugging melee issues
-                Console.WriteLine($"  ✗ Hero out of range (Distance: {distanceToEnemy:0.2f}, Range: {attack.Range})");
+                Console.WriteLine($"  ✗ Hero out of range (Distance: {distanceToEnemy:F2}, Range: {attack.Range})");
             }
         }
         
@@ -131,22 +134,23 @@ public class CombatSystem
             // For ranged enemies, require clear line of sight UNLESS hero is very close (melee overlap)
             // This allows ranged enemies to shoot at point-blank range even around corners
             // Melee enemies don't need LOS check - allows fighting around corners
-            bool isEnemyMeleeRange = distanceToHero <= 1.5f;
-            bool enemyHasLOS = enemy.AttackRange <= 1.5f || isEnemyMeleeRange || HasLineOfSight(enemy.X, enemy.Y, hero.X, hero.Y, maze);
+            // Require LOS for all attacks, except when bodies overlap (corner cases)
+            bool overlappingVsHero = distanceToHero <= (hero.Radius + enemy.Radius + 0.05f);
+            bool enemyHasLOS = overlappingVsHero || HasLineOfSight(enemy.X, enemy.Y, hero.X, hero.Y, maze);
             
+            // Hitbox-aware range check for enemy attacks
+            float enemyEffectiveDistance = MathF.Max(0f, distanceToHero - hero.Radius);
             // Add small epsilon for floating point comparison
-            if (distanceToHero <= enemy.AttackRange + 0.01f && enemyHasLOS)
+            if (enemyEffectiveDistance <= enemy.AttackRange + 0.01f && enemyHasLOS)
             {
                 // Enemy attacks!
-                Console.WriteLine($"  → Enemy attacks! (Distance: {distanceToHero:0.2f}, Range: {enemy.AttackRange})");
+                Console.WriteLine($"  → Enemy attacks! (Distance: {distanceToHero:F2}, Range: {enemy.AttackRange})");
                 // Stat-driven enemy damage
                 int statEnemyDamage = enemy.Attack
                     + (int)(enemy.Strength * 1.1f)
                     + (int)(enemy.Dexterity * 0.4f);
-
-                // Apply damage, factoring hero defense and Constitution
+                // Calculate final damage, factoring hero defense and Constitution
                 int finalEnemyDamage = CalculateDamage(statEnemyDamage, hero.Defense + (int)(hero.Constitution * 0.7f));
-                hero.CurrentHp -= finalEnemyDamage;
 
                 // Cooldown based on enemy attack speed, Dexterity, and Agility
                 int minEnemyCooldown = 10;
@@ -167,7 +171,7 @@ public class CombatSystem
                 enemy.AnimationOffsetX = dx * 0.6f; // More impactful
                 enemy.AnimationOffsetY = dy * 0.6f;
 
-                // Spawn enemy attack projectile (melee for now)
+                // Spawn enemy attack projectile (melee hitbox)
                 projectiles.Add(new Projectile
                 {
                     StartX = enemy.X,
@@ -179,23 +183,14 @@ public class CombatSystem
                     Speed = 0.45f,
                     Type = AttackAnimation.Melee,
                     AttackName = "Enemy Attack",
-                    MaxLifeTime = 18
+                    MaxLifeTime = 12,
+                    Team = ProjectileTeam.Enemy,
+                    Damage = finalEnemyDamage,
+                    Radius = 0.45f,
+                    CanHitMultiple = false
                 });
 
-                // Check if hero died
-                if (!hero.IsAlive)
-                {
-                    hero.CurrentHp = 0;
-                    hero.InCombat = false;
-                    enemy.InCombat = false;
-                    hero.AnimationOffsetX = 0;
-                    hero.AnimationOffsetY = 0;
-                    enemy.AnimationOffsetX = 0;
-                    enemy.AnimationOffsetY = 0;
-                    // Clear projectiles when combat ends
-                    projectiles.Clear();
-                    return false;
-                }
+                // Hero death will be handled when the projectile hits (if lethal)
             }
             else if (distanceToHero <= enemy.AttackRange)
             {
@@ -229,8 +224,41 @@ public class CombatSystem
             dx /= distance;
             dy /= distance;
         }
-        
-        // Apply attack animation movement and spawn projectiles
+        // Compute damage now, but apply it on projectile contact
+        int statDamage = attack.Damage + hero.Attack;
+        if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0)
+        {
+            // Magic damage scaling
+            statDamage += (int)(hero.Intelligence * 1.5f) + (int)(hero.Wisdom * 0.5f);
+        }
+        else if (attack.FaithCost > 0)
+        {
+            // Faith damage scaling
+            statDamage += (int)(hero.Wisdom * 1.5f) + (int)(hero.Charisma * 0.5f);
+        }
+        else
+        {
+            // Physical damage scaling
+            statDamage += (int)(hero.Strength * 1.2f) + (int)(hero.Dexterity * 0.5f);
+        }
+
+        // Critical hit chance
+        float critChance = attack.CritChance + hero.Dexterity * 0.005f;
+        float critRoll = (float)_random.NextDouble();
+        if (critRoll < critChance)
+        {
+            statDamage = (int)(statDamage * 1.5f);
+        }
+
+        // Compute target's defense (apply magic resist for spells)
+        int enemyDefense = enemy.Defense + (int)(enemy.Constitution * 0.7f);
+        if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0 || attack.FaithCost > 0)
+        {
+            enemyDefense += (int)(enemyDefense * 0.2f); // base 20% magic resist
+        }
+        int finalDamage = CalculateDamage(statDamage, enemyDefense);
+
+        // Apply attack animation movement and spawn damage-carrying projectiles/hitboxes
         switch (attack.Animation)
         {
             case AttackAnimation.Melee:
@@ -250,7 +278,11 @@ public class CombatSystem
                     Speed = 0.4f,
                     Type = AttackAnimation.Melee,
                     AttackName = attack.Name,
-                    MaxLifeTime = 15
+                    MaxLifeTime = 12,
+                    Team = ProjectileTeam.Hero,
+                    Damage = Math.Max(1, finalDamage),
+                    Radius = 0.45f,
+                    CanHitMultiple = false
                 });
                 break;
                 
@@ -271,7 +303,11 @@ public class CombatSystem
                     Speed = 0.5f,
                     Type = AttackAnimation.Ranged,
                     AttackName = attack.Name,
-                    MaxLifeTime = 25
+                    MaxLifeTime = 25,
+                    Team = ProjectileTeam.Hero,
+                    Damage = Math.Max(1, finalDamage),
+                    Radius = 0.22f,
+                    CanHitMultiple = false
                 });
                 break;
                 
@@ -292,7 +328,11 @@ public class CombatSystem
                     Speed = 0.3f,
                     Type = AttackAnimation.Heavy,
                     AttackName = attack.Name,
-                    MaxLifeTime = 20
+                    MaxLifeTime = 14,
+                    Team = ProjectileTeam.Hero,
+                    Damage = Math.Max(1, (int)(finalDamage * 1.15f)),
+                    Radius = 0.55f,
+                    CanHitMultiple = false
                 });
                 break;
                 
@@ -313,7 +353,11 @@ public class CombatSystem
                     Speed = 0.6f,
                     Type = AttackAnimation.Quick,
                     AttackName = attack.Name,
-                    MaxLifeTime = 10
+                    MaxLifeTime = 10,
+                    Team = ProjectileTeam.Hero,
+                    Damage = Math.Max(1, finalDamage),
+                    Radius = 0.4f,
+                    CanHitMultiple = false
                 });
                 break;
                 
@@ -334,53 +378,15 @@ public class CombatSystem
                     TargetY = (float)enemy.Y,
                     Speed = 0.35f,
                     Type = AttackAnimation.Magic,
-                    MaxLifeTime = 30
+                    MaxLifeTime = 30,
+                    Team = ProjectileTeam.Hero,
+                    Damage = Math.Max(1, finalDamage),
+                    Radius = attack.Name.Contains("Arcane Blast") ? 0.35f : 0.25f,
+                    CanHitMultiple = attack.Name.Contains("Arcane Blast") // treat blast as AoE ring that can hit multiple once
                 });
                 break;
         }
         
-        // Stat-driven damage calculation
-        // Physical attacks scale with Strength + Dexterity
-        // Magic attacks scale with Intelligence + Wisdom
-        // Faith attacks scale with Wisdom + Charisma
-        int statDamage = attack.Damage + hero.Attack;
-        
-        if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0)
-        {
-            // Magic damage: Intelligence primary, Wisdom secondary
-            statDamage += (int)(hero.Intelligence * 1.5f) + (int)(hero.Wisdom * 0.5f);
-        }
-        else if (attack.FaithCost > 0)
-        {
-            // Faith damage: Wisdom primary, Charisma secondary
-            statDamage += (int)(hero.Wisdom * 1.5f) + (int)(hero.Charisma * 0.5f);
-        }
-        else
-        {
-            // Physical damage: Strength primary, Dexterity secondary
-            statDamage += (int)(hero.Strength * 1.2f) + (int)(hero.Dexterity * 0.5f);
-        }
-
-        // Check for critical hit (Dexterity boosts crit chance)
-        float critChance = attack.CritChance + hero.Dexterity * 0.005f;
-        float critRoll = (float)_random.NextDouble();
-        if (critRoll < critChance)
-        {
-            statDamage = (int)(statDamage * 1.5f);
-        }
-
-        // Apply damage, factoring enemy defense
-        // Physical defense: Constitution
-        // Magic defense: Constitution + bonus magic resist
-        int enemyDefense = enemy.Defense + (int)(enemy.Constitution * 0.7f);
-        if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0 || attack.FaithCost > 0)
-        {
-            // Add magic resistance (enemies have base 20% magic resist)
-            enemyDefense += (int)(enemyDefense * 0.2f);
-        }
-        int finalDamage = CalculateDamage(statDamage, enemyDefense);
-        enemy.Hp -= finalDamage;
-
         // Set cooldown based on attack, Dexterity, Agility, and Charisma
         int minCooldown = 8;
         int statCooldown = attack.Cooldown
@@ -410,6 +416,74 @@ public class CombatSystem
         int baseDamage = Math.Max(1, attack - defense / 2);
         int variance = _random.Next(-baseDamage / 4, baseDamage / 4 + 1);
         return Math.Max(1, baseDamage + variance);
+    }
+
+    /// <summary>
+    /// Process only the enemy's side of combat (cooldown + attack), leaving hero's cooldown untouched.
+    /// </summary>
+    public void ProcessEnemyOnlyAttack(Hero hero, Enemy enemy, List<Projectile> projectiles, Maze maze)
+    {
+        if (!hero.IsAlive || !enemy.IsAlive) return;
+        if (!enemy.InCombat) return;
+
+        if (enemy.AttackCooldown > 0)
+        {
+            enemy.AttackCooldown--;
+            return;
+        }
+
+        float enemyDx = hero.X - enemy.X;
+        float enemyDy = hero.Y - enemy.Y;
+        float distanceToHero = MathF.Sqrt(enemyDx * enemyDx + enemyDy * enemyDy);
+
+    // Require LOS for all attacks, except when bodies overlap (corner cases)
+    bool overlappingVsHero = distanceToHero <= (hero.Radius + enemy.Radius + 0.05f);
+    bool enemyHasLOS = overlappingVsHero || HasLineOfSight(enemy.X, enemy.Y, hero.X, hero.Y, maze);
+        float enemyEffectiveDistance = MathF.Max(0f, distanceToHero - hero.Radius);
+        if (enemyEffectiveDistance <= enemy.AttackRange + 0.01f && enemyHasLOS)
+        {
+            int statEnemyDamage = enemy.Attack
+                + (int)(enemy.Strength * 1.1f)
+                + (int)(enemy.Dexterity * 0.4f);
+            int finalEnemyDamage = CalculateDamage(statEnemyDamage, hero.Defense + (int)(hero.Constitution * 0.7f));
+
+            // Enemy attack animation (lunge)
+            float dx = hero.X - enemy.X;
+            float dy = hero.Y - enemy.Y;
+            float dist = MathF.Sqrt(dx * dx + dy * dy);
+            if (dist > 0) { dx /= dist; dy /= dist; }
+            enemy.AnimationOffsetX = dx * 0.6f;
+            enemy.AnimationOffsetY = dy * 0.6f;
+
+            // Spawn enemy melee hitbox projectile
+            projectiles.Add(new Projectile
+            {
+                StartX = enemy.X,
+                StartY = enemy.Y,
+                CurrentX = enemy.X,
+                CurrentY = enemy.Y,
+                TargetX = hero.X,
+                TargetY = hero.Y,
+                Speed = 0.45f,
+                Type = AttackAnimation.Melee,
+                AttackName = "Enemy Attack",
+                MaxLifeTime = 12,
+                Team = ProjectileTeam.Enemy,
+                Damage = finalEnemyDamage,
+                Radius = 0.45f,
+                CanHitMultiple = false
+            });
+
+            int minEnemyCooldown = 10;
+            int statEnemyCooldown = enemy.AttackSpeed
+                - (int)(enemy.Dexterity * 0.5f)
+                - (int)(enemy.Agility * 0.2f);
+            enemy.AttackCooldown = Math.Max(minEnemyCooldown, statEnemyCooldown);
+        }
+        else if (enemyEffectiveDistance <= enemy.AttackRange + 0.01f)
+        {
+            enemy.AttackCooldown = 10; // retry soon when blocked by LOS
+        }
     }
     
     /// <summary>

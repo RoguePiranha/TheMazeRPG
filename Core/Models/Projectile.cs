@@ -16,6 +16,15 @@ public class Projectile
     public float Speed { get; set; } = 0.3f;
     public AttackAnimation Type { get; set; }
     public string AttackName { get; set; } = ""; // To differentiate sword from dagger
+    // Combat fields
+    public ProjectileTeam Team { get; set; } = ProjectileTeam.Neutral;
+    public int Damage { get; set; } = 0;
+    // Collision radius in tiles for contact damage
+    public float Radius { get; set; } = 0.2f;
+    // Whether this projectile can hit multiple targets across its lifetime
+    public bool CanHitMultiple { get; set; } = false;
+    // Internal: has already dealt its single-target hit
+    public bool ConsumedOnHit { get; set; } = false;
     public int LifeTime { get; set; } = 0;
     public int MaxLifeTime { get; set; } = 30;
     public bool IsActive => LifeTime < MaxLifeTime && !HitWall;
@@ -65,4 +74,11 @@ public class Projectile
             CurrentY = newY;
         }
     }
+}
+
+public enum ProjectileTeam
+{
+    Neutral,
+    Hero,
+    Enemy
 }
