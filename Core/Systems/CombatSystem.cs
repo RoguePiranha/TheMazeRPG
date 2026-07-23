@@ -476,11 +476,12 @@ public class CombatSystem
     /// </summary>
     private bool HasLineOfSight(float x1, float y1, float x2, float y2, Maze maze)
     {
-        // Use Bresenham's line algorithm to check if there's a wall between two points
-        int startX = (int)MathF.Floor(x1);
-        int startY = (int)MathF.Floor(y1);
-        int endX = (int)MathF.Floor(x2);
-        int endY = (int)MathF.Floor(y2);
+        // Use Bresenham's line algorithm. Round maps a position to its containing cell
+        // (integer coords = cell centers), consistent with entity GridX/movement.
+        int startX = (int)MathF.Round(x1);
+        int startY = (int)MathF.Round(y1);
+        int endX = (int)MathF.Round(x2);
+        int endY = (int)MathF.Round(y2);
         
         int dx = Math.Abs(endX - startX);
         int dy = Math.Abs(endY - startY);

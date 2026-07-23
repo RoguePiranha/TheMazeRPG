@@ -7,6 +7,8 @@ namespace TheMazeRPG.Core.Models;
 /// </summary>
 public class Attack
 {
+    /// <summary>Stable identifier for behavior/visual lookups (preferred over matching on Name).</summary>
+    public string Id { get; set; } = "";
     public string Name { get; set; } = "Strike";
     public int Damage { get; set; }
     public float Range { get; set; } = 1.0f; // How close to be to use this attack
@@ -29,6 +31,7 @@ public class Attack
     {
         return new Attack
         {
+            Id = Id,
             Name = Name,
             Damage = Damage,
             Range = Range,

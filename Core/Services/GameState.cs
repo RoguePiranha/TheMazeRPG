@@ -767,12 +767,13 @@ public class GameState
     
     private bool HasLineOfSight(float x1, float y1, float x2, float y2)
     {
-        // Use Bresenham's line algorithm to check if there's a wall between two points
-        // Use Floor to map positions to the containing grid cell (consistent with tile centers)
-        int startX = (int)MathF.Floor(x1);
-        int startY = (int)MathF.Floor(y1);
-        int endX = (int)MathF.Floor(x2);
-        int endY = (int)MathF.Floor(y2);
+        // Use Bresenham's line algorithm to check if there's a wall between two points.
+        // Round maps a position to its containing cell (integer coords = cell centers),
+        // consistent with entity GridX/GridY, movement, and spawns.
+        int startX = (int)MathF.Round(x1);
+        int startY = (int)MathF.Round(y1);
+        int endX = (int)MathF.Round(x2);
+        int endY = (int)MathF.Round(y2);
         
         int dx = Math.Abs(endX - startX);
         int dy = Math.Abs(endY - startY);
@@ -848,11 +849,11 @@ public class GameState
     public List<(int x, int y)> GetSightLine(float x1, float y1, float x2, float y2)
     {
         var cells = new List<(int x, int y)>();
-        // Map positions to grid cells using Floor to match other systems that use Floor + 0.5 for centers
-        int startX = (int)MathF.Floor(x1);
-        int startY = (int)MathF.Floor(y1);
-        int endX = (int)MathF.Floor(x2);
-        int endY = (int)MathF.Floor(y2);
+        // Round maps a position to its containing cell (integer coords = cell centers).
+        int startX = (int)MathF.Round(x1);
+        int startY = (int)MathF.Round(y1);
+        int endX = (int)MathF.Round(x2);
+        int endY = (int)MathF.Round(y2);
         int dx = Math.Abs(endX - startX);
         int dy = Math.Abs(endY - startY);
         int sx = startX < endX ? 1 : -1;
@@ -886,11 +887,10 @@ public class GameState
     public List<(int x, int y)> GetDirectionalSightCone(float originX, float originY, float facingAngleRad, float range, float coneAngleRad)
     {
         var visibleCells = new List<(int x, int y)>();
-        // Use tile centers for origin so calculations match other systems (which use Floor(x)+0.5)
-        float originCenterX = MathF.Floor(originX) + 0.5f;
-        float originCenterY = MathF.Floor(originY) + 0.5f;
-        int startX = (int)MathF.Floor(originX);
-        int startY = (int)MathF.Floor(originY);
+        // Integer coords are cell centers. Measure the cone from the entity's actual
+        // position to each candidate cell's center (its integer coordinate).
+        int startX = (int)MathF.Round(originX);
+        int startY = (int)MathF.Round(originY);
         int minX = Math.Max(0, startX - (int)range);
         int maxX = Math.Min(CurrentMaze.Width - 1, startX + (int)range);
         int minY = Math.Max(0, startY - (int)range);
@@ -899,16 +899,16 @@ public class GameState
         {
             for (int y = minY; y <= maxY; y++)
             {
-                float dx = (x + 0.5f) - originCenterX;
-                float dy = (y + 0.5f) - originCenterY;
+                float dx = x - originX;
+                float dy = y - originY;
                 float dist = MathF.Sqrt(dx * dx + dy * dy);
                 if (dist > range) continue;
                 float cellAngle = MathF.Atan2(dy, dx);
                 float angleDiff = MathF.Abs(NormalizeAngleRad(cellAngle - facingAngleRad));
                 if (angleDiff <= coneAngleRad / 2)
                 {
-                    // Check line of sight to cell
-                    if (HasLineOfSight(originCenterX, originCenterY, x + 0.5f, y + 0.5f))
+                    // Check line of sight to the cell center
+                    if (HasLineOfSight(originX, originY, x, y))
                         visibleCells.Add((x, y));
                 }
             }
