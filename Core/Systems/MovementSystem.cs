@@ -187,20 +187,33 @@ public class MovementSystem
         }
         else if (distance < desiredRange - 0.3f && attack.Range > 1.5f)
         {
-            // Too close for ranged - back away slowly
+            // Too close for ranged. Normalize direction toward the enemy.
             dx /= distance;
             dy /= distance;
-            
-            float newX = hero.X - dx * speed * 0.5f;
-            float newY = hero.Y - dy * speed * 0.5f;
-            
-            int gridX = (int)MathF.Round(newX);
-            int gridY = (int)MathF.Round(newY);
-            
-            if (IsWalkable(maze, gridX, gridY))
+
+            if (!CheckLineOfSight(hero.X, hero.Y, enemy.X, enemy.Y, maze))
             {
-                hero.X = newX;
-                hero.Y = newY;
+                // No clean shot (e.g. kited back against a wall) - close in to regain
+                // line of sight rather than staying pinned with no line to the target.
+                float newX = hero.X + dx * speed;
+                float newY = hero.Y + dy * speed;
+                if (IsWalkable(maze, (int)MathF.Round(newX), (int)MathF.Round(newY)))
+                {
+                    hero.X = newX;
+                    hero.Y = newY;
+                }
+            }
+            else
+            {
+                // Kite backward, but only if the new spot keeps a walkable cell AND line of sight.
+                float newX = hero.X - dx * speed * 0.5f;
+                float newY = hero.Y - dy * speed * 0.5f;
+                if (IsWalkable(maze, (int)MathF.Round(newX), (int)MathF.Round(newY))
+                    && CheckLineOfSight(newX, newY, enemy.X, enemy.Y, maze))
+                {
+                    hero.X = newX;
+                    hero.Y = newY;
+                }
             }
         }
         

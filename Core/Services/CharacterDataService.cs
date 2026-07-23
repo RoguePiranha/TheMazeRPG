@@ -25,32 +25,28 @@ public class CharacterDataService
         try
         {
             var classesPath = Path.Combine("Data", "Classes", "classes.json");
-            System.Console.WriteLine($"Attempting to load classes from: {classesPath}");
-            System.Console.WriteLine($"File exists: {File.Exists(classesPath)}");
-            
+            GameLog.Debug($"Attempting to load classes from: {classesPath} (exists: {File.Exists(classesPath)})");
+
             if (File.Exists(classesPath))
             {
                 var json = File.ReadAllText(classesPath);
-                System.Console.WriteLine($"JSON content length: {json.Length}");
-                
                 var options = new JsonSerializerOptions
                 {
                     PropertyNameCaseInsensitive = true
                 };
-                
-                _classes = JsonSerializer.Deserialize<Dictionary<string, CharacterClass>>(json, options) 
+
+                _classes = JsonSerializer.Deserialize<Dictionary<string, CharacterClass>>(json, options)
                     ?? new Dictionary<string, CharacterClass>();
-                System.Console.WriteLine($"Loaded {_classes.Count} classes");
+                GameLog.Debug($"Loaded {_classes.Count} classes");
             }
             else
             {
-                System.Console.WriteLine("Classes file not found!");
+                Console.WriteLine("WARNING: classes.json not found!");
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error loading classes: {ex.Message}");
-            System.Console.WriteLine($"Stack trace: {ex.StackTrace}");
         }
     }
     
@@ -59,50 +55,43 @@ public class CharacterDataService
         try
         {
             var racesPath = Path.Combine("Data", "Races", "races.json");
-            System.Console.WriteLine($"Attempting to load races from: {racesPath}");
-            System.Console.WriteLine($"File exists: {File.Exists(racesPath)}");
-            
+            GameLog.Debug($"Attempting to load races from: {racesPath} (exists: {File.Exists(racesPath)})");
+
             if (File.Exists(racesPath))
             {
                 var json = File.ReadAllText(racesPath);
-                System.Console.WriteLine($"JSON content length: {json.Length}");
-                
                 var options = new JsonSerializerOptions
                 {
                     PropertyNameCaseInsensitive = true
                 };
-                
-                _races = JsonSerializer.Deserialize<Dictionary<string, CharacterRace>>(json, options) 
+
+                _races = JsonSerializer.Deserialize<Dictionary<string, CharacterRace>>(json, options)
                     ?? new Dictionary<string, CharacterRace>();
-                System.Console.WriteLine($"Loaded {_races.Count} races");
+                GameLog.Debug($"Loaded {_races.Count} races");
             }
             else
             {
-                System.Console.WriteLine("Races file not found!");
+                Console.WriteLine("WARNING: races.json not found!");
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error loading races: {ex.Message}");
-            System.Console.WriteLine($"Stack trace: {ex.StackTrace}");
         }
     }
     
     public void ApplyClassAndRace(Hero hero, string className, string raceName)
     {
-        System.Console.WriteLine($"ApplyClassAndRace called: {className}, {raceName}");
-        System.Console.WriteLine($"Classes loaded: {_classes.Count}, Races loaded: {_races.Count}");
-        
+        GameLog.Debug($"ApplyClassAndRace called: {className}, {raceName} (classes: {_classes.Count}, races: {_races.Count})");
+
         if (!_classes.ContainsKey(className))
         {
-            System.Console.WriteLine($"WARNING: Class '{className}' not found in loaded classes!");
-            System.Console.WriteLine($"Available classes: {string.Join(", ", _classes.Keys)}");
+            Console.WriteLine($"WARNING: Class '{className}' not found. Available: {string.Join(", ", _classes.Keys)}");
         }
-        
+
         if (!_races.ContainsKey(raceName))
         {
-            System.Console.WriteLine($"WARNING: Race '{raceName}' not found in loaded races!");
-            System.Console.WriteLine($"Available races: {string.Join(", ", _races.Keys)}");
+            Console.WriteLine($"WARNING: Race '{raceName}' not found. Available: {string.Join(", ", _races.Keys)}");
         }
         
         if (!_classes.ContainsKey(className) || !_races.ContainsKey(raceName))
@@ -117,7 +106,7 @@ public class CharacterDataService
         hero.RaceColor = race.Color;
         hero.ClassData = characterClass; // Store class data for stat growth
         
-        System.Console.WriteLine($"Applied colors - Class: {hero.ClassColor}, Race: {hero.RaceColor}");
+        GameLog.Debug($"Applied colors - Class: {hero.ClassColor}, Race: {hero.RaceColor}");
         
         // Apply starting stats from class
         if (characterClass.StartingStats.TryGetValue("Strength", out var str))

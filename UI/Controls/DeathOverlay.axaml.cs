@@ -83,11 +83,7 @@ public partial class DeathOverlay : UserControl, INotifyPropertyChanged
         {
             ShowOverlay = true;
             DeathMessage = $"{_gameState.Hero.Name} died!";
-            
-            // Calculate remaining time
-            int remainingTicks = 50 - _gameState.DeathTimer; // 50 ticks = 5 seconds
-            float remainingSeconds = remainingTicks / 10f;
-            TimerMessage = $"Restarting in {remainingSeconds:F1}s...";
+            TimerMessage = $"Restarting in {_gameState.DeathCountdownSeconds:F1}s...";
         }
         else
         {

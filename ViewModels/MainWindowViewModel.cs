@@ -24,8 +24,9 @@ public partial class MainWindowViewModel : ViewModelBase
         _gameState = new GameState(seed, characterName, className, raceName);
         _gameState.IsRunning = true;
         
-        // Create a 30 FPS tick loop
-        _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(1000.0 / 30));
+        // Simulation tick loop at the configured rate (Data/Config/settings.json)
+        int tickRate = Math.Max(1, GameSettings.Current.TickRate);
+        _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(1000.0 / tickRate));
         _cts = new CancellationTokenSource();
         
         // Start the simulation loop

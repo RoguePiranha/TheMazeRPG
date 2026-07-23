@@ -70,7 +70,7 @@ public class Hero
     // Chest opening state
     public bool IsOpeningChest { get; set; }
     public int ChestOpeningTicks { get; set; }
-    public const int ChestOpeningDuration = 30; // 3 seconds at 10 ticks/sec
+    public int ChestOpeningDuration { get; set; } = 90; // ticks; set by GameState from the tick rate
     
     // Attack system
     public List<Attack> Attacks { get; set; } = new();
@@ -95,7 +95,8 @@ public class Hero
     {
         Level++;
         Experience -= ExperienceToNext;
-        ExperienceToNext = (int)(ExperienceToNext * 1.5f);
+        // Quadratic XP curve per Levels and Stats.xlsx: XP to reach level L = 100 * L^2.
+        ExperienceToNext = 100 * Level * Level;
         
         // Stat gains per level (influenced by core stats)
         int hpGain = 10 + Constitution + (Level % 5 == 0 ? 10 : 0); // Bonus HP every 5 levels

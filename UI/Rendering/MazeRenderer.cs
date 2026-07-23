@@ -308,9 +308,8 @@ public class MazeRenderer
             canvas.DrawCircle(x, y, feature.LightRadius * CellSize, glowPaint);
         }
         
-        // Calculate opening progress (0 = closed, 1 = fully open)
-        float openProgress = feature.IsOpening ? (feature.OpeningTicks / 30.0f) : 0f;
-        openProgress = Math.Min(openProgress, 1.0f);
+        // Opening progress (0 = closed, 1 = fully open), computed by GameState from the tick rate
+        float openProgress = feature.OpenProgress;
         
         // Brown chest colors
         SKColor chestBrown = new SKColor(139, 90, 43);      // Saddle brown

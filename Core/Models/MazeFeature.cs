@@ -21,4 +21,5 @@ public class MazeFeature
     public bool IsOpening { get; set; }
     public int OpeningTicks { get; set; }
     public float LightRadius { get; set; }
+    public float OpenProgress { get; set; } // 0..1, set by GameState from the tick-rate-derived duration
 }

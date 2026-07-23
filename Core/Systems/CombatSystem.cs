@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using TheMazeRPG.Core.Models;
+using TheMazeRPG.Core.Services;
 
 namespace TheMazeRPG.Core.Systems;
 
@@ -71,8 +72,7 @@ public class CombatSystem
                 
                 if (canAfford)
                 {
-                    // Hero attacks!
-                    Console.WriteLine($"  → Hero attacks with {attack.Name}! (Distance: {distanceToEnemy:F2}, Range: {attack.Range})");
+                    GameLog.Debug($"  → Hero attacks with {attack.Name}! (Distance: {distanceToEnemy:F2}, Range: {attack.Range})");
                     PerformHeroAttack(hero, enemy, projectiles);
 
                     // Set cooldown based on attack, Dexterity, and minimum threshold
@@ -80,40 +80,25 @@ public class CombatSystem
                     int statCooldown = attack.Cooldown - (int)(hero.Dexterity * 0.7f);
                     hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
 
-                    // Check if enemy died
-                    if (!enemy.IsAlive)
-                    {
-                        Console.WriteLine($"  ✓ Enemy defeated!");
-                        int xpGain = 10 + enemy.MaxHp / 4;
-                        hero.GainExperience(xpGain);
-                        hero.InCombat = false;
-                        enemy.InCombat = false;
-                        hero.AnimationOffsetX = 0;
-                        hero.AnimationOffsetY = 0;
-
-                        // Clear any projectiles targeting this enemy to prevent lingering animations
-                        projectiles.Clear();
-
-                        return false;
-                    }
+                    // Damage is applied on projectile contact in GameState.ProcessProjectileCollisions,
+                    // which also awards XP and ends combat on a kill. No synchronous kill check here.
                 }
                 else
                 {
                     // Can't afford attack - reset cooldown to try again soon
-                    Console.WriteLine($"  ✗ Hero can't afford {attack.Name} (Stamina: {hero.CurrentStamina}/{attack.StaminaCost}, Mana: {hero.CurrentMana}/{attack.ManaCost})");
+                    GameLog.Debug($"  ✗ Hero can't afford {attack.Name} (Stamina: {hero.CurrentStamina}/{attack.StaminaCost}, Mana: {hero.CurrentMana}/{attack.ManaCost})");
                     hero.AttackCooldown = 5;
                 }
             }
             else if (effectiveDistance <= attack.Range + 0.01f)
             {
                 // In range but no LOS (ranged attack blocked by wall) - retry soon
-                Console.WriteLine($"  ✗ Hero attack blocked - no line of sight (Distance: {distanceToEnemy:F2}, Range: {attack.Range})");
+                GameLog.Debug($"  ✗ Hero attack blocked - no line of sight (Distance: {distanceToEnemy:F2}, Range: {attack.Range})");
                 hero.AttackCooldown = 5;
             }
             else
             {
-                // Not in range - log for debugging melee issues
-                Console.WriteLine($"  ✗ Hero out of range (Distance: {distanceToEnemy:F2}, Range: {attack.Range})");
+                GameLog.Debug($"  ✗ Hero out of range (Distance: {distanceToEnemy:F2}, Range: {attack.Range})");
             }
         }
         
@@ -144,7 +129,7 @@ public class CombatSystem
             if (enemyEffectiveDistance <= enemy.AttackRange + 0.01f && enemyHasLOS)
             {
                 // Enemy attacks!
-                Console.WriteLine($"  → Enemy attacks! (Distance: {distanceToHero:F2}, Range: {enemy.AttackRange})");
+                GameLog.Debug($"  → Enemy attacks! (Distance: {distanceToHero:F2}, Range: {enemy.AttackRange})");
                 // Stat-driven enemy damage
                 int statEnemyDamage = enemy.Attack
                     + (int)(enemy.Strength * 1.1f)

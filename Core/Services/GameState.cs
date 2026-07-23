@@ -30,12 +30,20 @@ public class GameState
 
     // Track enemy pursuit persistence
     private Dictionary<Enemy, int> enemyPursuitTicks = new();
-    private const int PursuitTimeoutTicks = 30; // 3 seconds at 10 ticks/sec
     private const float AgroRadius = 7.5f; // Extended agro radius for persistence
+
+    // Timing derived from the authoritative tick rate (see GameSettings) so real-time
+    // durations stay correct regardless of ticks/sec.
+    private readonly int _ticksPerSecond;
+    private readonly int _pursuitTimeoutTicks;   // ~3s pursuit persistence
+    private readonly int _autoRestartTicks;      // ~5s until auto-restart after death
+    private readonly int _chestOpeningTicks;     // ~3s to open a chest
+    private readonly int _combatStartWindupTicks; // ~0.3s wind-up before first attack on engage
+    private readonly int _attackSwitchTicks;     // ~2s between smart attack-rotation switches
 
     public int Seed { get; set; }
     public int TickCount { get; private set; }
-    public int CurrentFloor { get; private set; } = 1;
+    public int CurrentFloor { get; private set; } = 0;
     public bool IsRunning { get; set; }
     
     // Debug flags (can be toggled via env vars)
@@ -45,8 +53,11 @@ public class GameState
     // Death state
     public bool IsHeroDead { get; private set; }
     public int DeathTimer { get; private set; }
-    private const int AutoRestartTicks = 50; // 5 seconds at 10 ticks/sec
-    
+
+    /// <summary>Seconds remaining before auto-restart (for UI display).</summary>
+    public float DeathCountdownSeconds =>
+        MathF.Max(0f, (_autoRestartTicks - DeathTimer) / (float)_ticksPerSecond);
+
     // Health regeneration tracking (for fractional HP per tick)
     private float _accumulatedHealthRegen = 0f;
     
@@ -60,11 +71,12 @@ public class GameState
     private string _className = "Wanderer";
     private string _raceName = "Human";
 
-    private readonly MazeGenerator _mazeGenerator;
-    private readonly MovementSystem _movementSystem;
-    private readonly CombatSystem _combatSystem;
+    // Not readonly: RestartGame reseeds these with a fresh seed.
+    private MazeGenerator _mazeGenerator;
+    private MovementSystem _movementSystem;
+    private CombatSystem _combatSystem;
     private readonly CharacterDataService _characterDataService;
-    private readonly Random _random;
+    private Random _random;
     
     public GameState(int seed) : this(seed, "Hero", "Wanderer", "Human")
     {
@@ -76,7 +88,15 @@ public class GameState
         _characterName = characterName;
         _className = className;
         _raceName = raceName;
-        
+
+        // Derive all real-time durations from the authoritative tick rate.
+        _ticksPerSecond = Math.Max(1, GameSettings.Current.TickRate);
+        _pursuitTimeoutTicks = GameSettings.Current.SecondsToTicks(3f);
+        _autoRestartTicks = GameSettings.Current.SecondsToTicks(5f);
+        _chestOpeningTicks = GameSettings.Current.SecondsToTicks(3f);
+        _combatStartWindupTicks = GameSettings.Current.SecondsToTicks(0.3f);
+        _attackSwitchTicks = GameSettings.Current.SecondsToTicks(2f);
+
         _random = new Random(seed);
         _mazeGenerator = new MazeGenerator(seed);
         _movementSystem = new MovementSystem(seed);
@@ -97,24 +117,24 @@ public class GameState
         
         // Apply class and race stats
         _characterDataService.ApplyClassAndRace(Hero, className, raceName);
-        
+
         // Update resource pools based on attributes
         UpdateHeroResourcePools();
-        
+
         // Initialize resources to max
         Hero.CurrentStamina = Hero.MaxStamina;
         Hero.CurrentMana = Hero.MaxMana;
         Hero.CurrentFaith = Hero.MaxFaith;
-        
-        // Debug output
+        Hero.ChestOpeningDuration = _chestOpeningTicks;
+
         Console.WriteLine($"Character Created: {Hero.Name} - {Hero.Race} {Hero.Class}");
-        Console.WriteLine($"Colors - Race: {Hero.RaceColor}, Class: {Hero.ClassColor}");
-        
+        GameLog.Debug($"Colors - Race: {Hero.RaceColor}, Class: {Hero.ClassColor}");
+
         // Assign starting attacks based on class
         Hero.Attacks = AttackFactory.GetStartingAttacks(className);
         Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
-        Console.WriteLine($"Attacks assigned: {Hero.Attacks.Count}, Current: {Hero.CurrentAttack?.Name ?? "None"}");
-        
+        GameLog.Debug($"Attacks assigned: {Hero.Attacks.Count}, Current: {Hero.CurrentAttack?.Name ?? "None"}");
+
         StartNewFloor();
 
         // Debug flags from environment
@@ -138,7 +158,7 @@ public class GameState
         if (IsHeroDead)
         {
             DeathTimer++;
-            if (DeathTimer >= AutoRestartTicks)
+            if (DeathTimer >= _autoRestartTicks)
             {
                 RestartGame();
             }
@@ -147,14 +167,16 @@ public class GameState
         
         TickCount++;
         
-        // Regenerate hero resources using fractional accumulation
-        // Constitution / 8 = Stamina per second, Intelligence / 8 = Mana per second, Wisdom / 8 = Faith per second
-        // Resources regenerate 30% slower during combat
+        // Regenerate hero resources using fractional accumulation.
+        // Per-second rates: Constitution/8 stamina, Intelligence/8 mana, Wisdom/8 faith.
+        // Divide by ticks/sec so the real-time rate is correct at any tick rate.
+        // Resources regenerate 30% slower during combat.
         float combatRegenModifier = Hero.InCombat ? 0.7f : 1.0f;
-        
-        float staminaPerTick = (Hero.Constitution / 80.0f) * combatRegenModifier;
-        float manaPerTick = (Hero.Intelligence / 80.0f) * combatRegenModifier;
-        float faithPerTick = (Hero.Wisdom / 80.0f) * combatRegenModifier;
+        float regenPerSecondDivisor = 8f * _ticksPerSecond;
+
+        float staminaPerTick = (Hero.Constitution / regenPerSecondDivisor) * combatRegenModifier;
+        float manaPerTick = (Hero.Intelligence / regenPerSecondDivisor) * combatRegenModifier;
+        float faithPerTick = (Hero.Wisdom / regenPerSecondDivisor) * combatRegenModifier;
         
         _accumulatedStaminaRegen += staminaPerTick;
         _accumulatedManaRegen += manaPerTick;
@@ -181,9 +203,8 @@ public class GameState
             _accumulatedFaithRegen -= faithToRestore;
         }
         
-        // Health regeneration (Constitution / 16 = HP per second, at 10 ticks/sec)
-        // Example: 16 Constitution = 1 HP/sec = 0.1 HP/tick (half the original rate)
-        float hpPerTick = Hero.Constitution / 160.0f; // Divide by 160 because 10 ticks/sec * 16 Constitution per HP
+        // Health regeneration: Constitution/16 HP per second (e.g. 16 Constitution = 1 HP/sec).
+        float hpPerTick = Hero.Constitution / (16f * _ticksPerSecond);
         _accumulatedHealthRegen += hpPerTick;
         
         if (_accumulatedHealthRegen >= 1.0f)
@@ -222,12 +243,11 @@ public class GameState
         }
         
         // Move enemies
-        double time = TickCount / 10.0;
         foreach (var enemy in Enemies.Where(e => e.IsAlive))
         {
             if (!enemy.InCombat)
             {
-                // Wander with Perlin noise when not in combat
+                // Idle wander (BFS waypoint) when not in combat, throttled for a calmer pace
                 if (TickCount % 2 == 0)
                 {
                     _movementSystem.MoveEnemySmoothRandom(enemy, CurrentMaze);
@@ -255,8 +275,8 @@ public class GameState
         // Smart attack rotation during combat - prefer heavy attacks when resources are available
         if (Hero.InCombat && Hero.Attacks.Count > 1)
         {
-            // Switch attack every 2 seconds (20 ticks at 10 ticks/sec) OR when we can't afford current attack
-            bool timeToSwitch = TickCount % 20 == 0;
+            // Switch attack every ~2 seconds OR when we can't afford the current attack
+            bool timeToSwitch = TickCount % _attackSwitchTicks == 0;
             bool cantAffordCurrent = Hero.CurrentAttack != null && Hero.CurrentAttack.IsHeavyAttack &&
                 (Hero.CurrentStamina < Hero.CurrentAttack.StaminaCost ||
                  Hero.CurrentMana < Hero.CurrentAttack.ManaCost ||
@@ -336,7 +356,7 @@ public class GameState
                 }
                 // Reset pursuit timer if either can see the other
                 if (HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y))
-                    enemyPursuitTicks[enemy] = PursuitTimeoutTicks;
+                    enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
             }
         }
         // Fallback: include close melee-range enemies or persistent pursuers even if not in cone
@@ -367,7 +387,7 @@ public class GameState
                     }
                     // If enemy in sight, reset pursuit
                     if (distance < 5.0f)
-                        enemyPursuitTicks[enemy] = PursuitTimeoutTicks;
+                        enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
                 }
             }
         }
@@ -392,7 +412,9 @@ public class GameState
             }
             return;
         }
-        // Engage combat with all found enemies
+        // Engage combat with all found enemies. Capture prior state BEFORE flipping the
+        // flag so we can detect the transition into combat.
+        bool heroWasInCombat = Hero.InCombat;
         Hero.InCombat = true;
         // Ensure enemies are marked in combat and have initial cooldowns
         foreach (var e in engagedEnemies)
@@ -408,10 +430,12 @@ public class GameState
         // Choose the closest as the primary target for the hero's own attack logic
         var targetEnemy = primaryTarget ?? engagedEnemies[0];
 
-        // If hero just entered combat, align both via StartCombat for the primary
-        if (!Hero.InCombat || !targetEnemy.InCombat) // Hero.InCombat set above; keep safe-init
+        // On the transition INTO combat, apply a short wind-up so ranged/casters can't
+        // land a free instant hit the moment they spot an enemy.
+        if (!heroWasInCombat)
         {
             _combatSystem.StartCombat(Hero, targetEnemy);
+            Hero.AttackCooldown = Math.Max(Hero.AttackCooldown, _combatStartWindupTicks);
         }
 
         // Process hero vs primary target (includes enemy retaliation for that target)
@@ -490,7 +514,7 @@ public class GameState
                         // End combat if enemy dies
                         if (!enemy.IsAlive)
                         {
-                            Console.WriteLine("  ✓ Enemy defeated by hit!");
+                            GameLog.Debug("  ✓ Enemy defeated by hit!");
                             int xpGain = 10 + enemy.MaxHp / 4;
                             Hero.GainExperience(xpGain);
                             Hero.InCombat = false;
@@ -620,9 +644,11 @@ public class GameState
         foreach (var feature in CurrentMaze.Features.Where(f => f.IsOpening))
         {
             feature.OpeningTicks++;
+            // Normalized 0..1 open progress (renderer uses this instead of a hardcoded duration)
+            feature.OpenProgress = Math.Min(1f, feature.OpeningTicks / (float)Hero.ChestOpeningDuration);
             // Expand light radius during opening (0 to 2.0)
-            feature.LightRadius = (feature.OpeningTicks / (float)Hero.ChestOpeningDuration) * 2.0f;
-            
+            feature.LightRadius = feature.OpenProgress * 2.0f;
+
             if (feature.OpeningTicks >= Hero.ChestOpeningDuration)
             {
                 // Chest fully opened
@@ -912,23 +938,18 @@ public class GameState
         IsHeroDead = false;
         DeathTimer = 0;
         
-        // Reset game state
+        // Reset game state (StartNewFloor increments CurrentFloor to 1 for the first floor)
         TickCount = 0;
-        CurrentFloor = 1;
+        CurrentFloor = 0;
         HasKey = false;
         StairsLocation = null;
-        
-        // Recreate systems with new seed
-        var newRandom = new Random(Seed);
-        typeof(GameState).GetField("_random", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
-            .SetValue(this, newRandom);
-        typeof(GameState).GetField("_mazeGenerator", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
-            .SetValue(this, new MazeGenerator(Seed));
-        typeof(GameState).GetField("_movementSystem", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
-            .SetValue(this, new MovementSystem(Seed));
-        typeof(GameState).GetField("_combatSystem", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
-            .SetValue(this, new CombatSystem(Seed));
-        
+
+        // Recreate systems with the new seed
+        _random = new Random(Seed);
+        _mazeGenerator = new MazeGenerator(Seed);
+        _movementSystem = new MovementSystem(Seed);
+        _combatSystem = new CombatSystem(Seed);
+
         // Recreate hero with same class/race
         Hero = new Hero 
         { 
@@ -951,11 +972,12 @@ public class GameState
         Hero.CurrentStamina = Hero.MaxStamina;
         Hero.CurrentMana = Hero.MaxMana;
         Hero.CurrentFaith = Hero.MaxFaith;
-        
+        Hero.ChestOpeningDuration = _chestOpeningTicks;
+
         // Assign starting attacks based on class
         Hero.Attacks = AttackFactory.GetStartingAttacks(_className);
         Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
-        
+
         // Start new floor
         StartNewFloor();
         
@@ -989,14 +1011,11 @@ public class GameState
         HasKey = false;
         StairsLocation = null;
         int enemyCount = 3 + CurrentFloor;
-        // Reserve one cell for boss, one for chest, one for stairs
-        var reservedCells = new List<(int x, int y)>();
         // Place stairs
         if (emptyCells.Count > 0)
         {
             int stairsIdx = _random.Next(emptyCells.Count);
             var stairsCell = emptyCells[stairsIdx];
-            reservedCells.Add(stairsCell);
             emptyCells.RemoveAt(stairsIdx);
             CurrentMaze.Features.Add(new MazeFeature { X = stairsCell.x, Y = stairsCell.y, Type = MazeFeatureType.Stairs });
         }
@@ -1005,7 +1024,6 @@ public class GameState
         {
             int chestIdx = _random.Next(emptyCells.Count);
             var chestCell = emptyCells[chestIdx];
-            reservedCells.Add(chestCell);
             emptyCells.RemoveAt(chestIdx);
             CurrentMaze.Features.Add(new MazeFeature { X = chestCell.x, Y = chestCell.y, Type = MazeFeatureType.Chest });
         }
@@ -1014,7 +1032,6 @@ public class GameState
         {
             int bossIdx = _random.Next(emptyCells.Count);
             var bossCell = emptyCells[bossIdx];
-            reservedCells.Add(bossCell);
             emptyCells.RemoveAt(bossIdx);
             // Boss stats: stronger than regular enemies but beatable
             // Roughly 2-3x stronger than regular enemies
@@ -1141,43 +1158,6 @@ public class GameState
     {
         var classes = new[] { "Brute", "Striker", "Archer", "Caster" };
         return classes[_random.Next(classes.Length)];
-    }
-    
-    private int GetAttackSpeedForType(string type)
-    {
-        return type switch
-        {
-            "Bat" => 20,      // Fast attacks
-            "Goblin" => 35,   // Medium attacks
-            "Slime" => 50,    // Slow attacks
-            "Skeleton" => 30, // Medium-fast attacks
-            _ => 40
-        };
-    }
-    
-    public void Reset()
-    {
-        TickCount = 0;
-        CurrentFloor = 0;
-        Hero = new Hero 
-        { 
-            Name = "Hero",
-            Class = "Wanderer",
-            Strength = 2,
-            Constitution = 2,
-            Agility = 2,
-            Dexterity = 1,
-            Intelligence = 1,
-            Wisdom = 1,
-            Charisma = 1,
-            MaxHp = 100, 
-            CurrentHp = 100, 
-            Attack = 10, 
-            Defense = 5 
-        };
-        Enemies.Clear();
-        IsRunning = false;
-        StartNewFloor();
     }
 }
 }
