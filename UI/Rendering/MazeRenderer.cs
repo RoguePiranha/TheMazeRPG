@@ -20,7 +20,9 @@ public class MazeRenderer
     
     private float _cameraX = 0;
     private float _cameraY = 0;
-    
+    private readonly Random _shakeRandom = new();
+
+
     // Color palette
     private static readonly SKColor BackgroundColor = new(26, 26, 26);
     private static readonly SKColor WallColor = new(128, 128, 128);
@@ -63,18 +65,36 @@ public class MazeRenderer
             return;
         
         canvas.Clear(BackgroundColor);
-        
+
         // Smooth camera lerp to follow hero
         float targetCameraX = gameState.Hero.X * CellSize;
         float targetCameraY = gameState.Hero.Y * CellSize;
-        
+
         _cameraX += (targetCameraX - _cameraX) * CameraLerpSpeed;
         _cameraY += (targetCameraY - _cameraY) * CameraLerpSpeed;
-        
-        // Center camera on viewport
-        float offsetX = viewportWidth / 2f - _cameraX;
-        float offsetY = viewportHeight / 2f - _cameraY;
-        
+
+        // Clamp the CENTERING POINT (not the lerp state itself) to the maze bounds, so the
+        // viewport never scrolls past the edge into empty void. Clamping the lerp state instead
+        // would make the camera "stick" at the edge and jump when the hero moves back inward.
+        float mazePxW = gameState.CurrentMaze.Width * CellSize;
+        float mazePxH = gameState.CurrentMaze.Height * CellSize;
+        float centerX = mazePxW > viewportWidth
+            ? Math.Clamp(_cameraX, viewportWidth / 2f, mazePxW - viewportWidth / 2f)
+            : mazePxW / 2f;
+        float centerY = mazePxH > viewportHeight
+            ? Math.Clamp(_cameraY, viewportHeight / 2f, mazePxH - viewportHeight / 2f)
+            : mazePxH / 2f;
+
+        // Center camera on viewport, with a small random jitter while ScreenShake is active
+        float shakeX = 0f, shakeY = 0f;
+        if (gameState.ScreenShake > 0f)
+        {
+            shakeX = ((float)_shakeRandom.NextDouble() - 0.5f) * 2f * gameState.ScreenShake;
+            shakeY = ((float)_shakeRandom.NextDouble() - 0.5f) * 2f * gameState.ScreenShake;
+        }
+        float offsetX = viewportWidth / 2f - centerX + shakeX;
+        float offsetY = viewportHeight / 2f - centerY + shakeY;
+
         canvas.Save();
         canvas.Translate(offsetX, offsetY);
         
@@ -100,9 +120,36 @@ public class MazeRenderer
     DrawDebugOverlay(canvas, gameState);
         
         canvas.Restore();
-        
+
+        // Low-health vignette (screen space, drawn before the HUD text/bars)
+        DrawLowHealthVignette(canvas, gameState.Hero, viewportWidth, viewportHeight);
+
         // Draw HUD overlay
         DrawHUD(canvas, gameState, viewportWidth, viewportHeight);
+    }
+
+    /// <summary>Red radial vignette that creeps in as the hero's HP drops below 50%.</summary>
+    private void DrawLowHealthVignette(SKCanvas canvas, Hero hero, int viewportWidth, int viewportHeight)
+    {
+        float hpRatio = hero.MaxHp > 0 ? Math.Clamp((float)hero.CurrentHp / hero.MaxHp, 0f, 1f) : 0f;
+        if (hpRatio >= 0.5f) return;
+
+        float t = 1f - (hpRatio / 0.5f); // 0 at half HP, 1 at zero HP
+        byte alpha = (byte)(t * 160);
+        float cx = viewportWidth / 2f;
+        float cy = viewportHeight / 2f;
+        float r = MathF.Sqrt(viewportWidth * viewportWidth + viewportHeight * viewportHeight) / 2f;
+
+        using var vignettePaint = new SKPaint
+        {
+            Shader = SKShader.CreateRadialGradient(
+                new SKPoint(cx, cy),
+                r * 0.75f,
+                new[] { new SKColor(80, 0, 0, 0), new SKColor(80, 0, 0, alpha) },
+                new[] { 0.45f, 1f },
+                SKShaderTileMode.Clamp)
+        };
+        canvas.DrawRect(0, 0, viewportWidth, viewportHeight, vignettePaint);
     }
     
     private void DrawDebugOverlay(SKCanvas canvas, GameState gameState)

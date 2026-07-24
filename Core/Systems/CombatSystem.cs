@@ -367,7 +367,13 @@ public class CombatSystem
             statDamage += (int)(enemy.Strength * 1.2f) + (int)(enemy.Dexterity * 0.5f);
 
         int finalDamage = CalculateDamage(statDamage, hero.Defense + (int)(hero.EffectiveConstitution * 0.7f));
-        if (enemy.IsBoss) finalDamage = (int)(finalDamage * 1.35f); // bosses always hit above regulars
+        if (enemy.IsBoss)
+        {
+            // Bosses hit above regulars AND never fall below a level-scaled floor, so even a
+            // low-damage support-class boss stays consistently threatening (casters still spike higher).
+            finalDamage = (int)(finalDamage * 1.35f);
+            finalDamage = Math.Max(finalDamage, 12 + enemy.Level * 2);
+        }
 
         // Lunge animation toward the hero.
         float dx = hero.X - enemy.X;

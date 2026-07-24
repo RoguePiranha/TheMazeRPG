@@ -49,6 +49,9 @@ public class GameState
     // Debug flags (can be toggled via env vars)
     public bool DebugDrawHitboxes { get; set; }
     public bool DebugDrawLOS { get; set; }
+
+    /// <summary>Current screen-shake magnitude in pixels (renderer applies as camera jitter, then it decays each tick).</summary>
+    public float ScreenShake { get; private set; }
     
     // Death state
     public bool IsHeroDead { get; private set; }
@@ -147,7 +150,14 @@ public class GameState
     public void Tick()
     {
         if (!IsRunning) return;
-        
+
+        // Decay screen shake regardless of death/combat state so it always settles.
+        if (ScreenShake > 0f)
+        {
+            ScreenShake *= 0.8f;
+            if (ScreenShake < 0.1f) ScreenShake = 0f;
+        }
+
         // Check if hero died this tick
         if (!Hero.IsAlive && !IsHeroDead)
         {
@@ -557,6 +567,8 @@ public class GameState
                 if (dist <= (pr + Hero.Radius))
                 {
                     Hero.CurrentHp -= Math.Max(1, p.Damage);
+                    // Screen shake scales with the hit's severity relative to max HP, capped modestly.
+                    ScreenShake = MathF.Max(ScreenShake, MathF.Min(5f, (p.Damage / (float)Hero.MaxHp) * 45f));
                     // Spawn tiny on-hit flash
                     HitEffects.Add(new HitEffect
                     {

@@ -139,7 +139,7 @@ sealed class Program
                     ? (int)(e.Intelligence * 1.2f) + (int)(e.Wisdom * 0.5f)
                     : (int)(e.Strength * 1.2f) + (int)(e.Dexterity * 0.5f);
                 int est = System.Math.Max(1, stat - heroDef / 2); // pre-variance (+-25%)
-                if (e.IsBoss) est = (int)(est * 1.35f);
+                if (e.IsBoss) est = System.Math.Max((int)(est * 1.35f), 12 + e.Level * 2);
                 string tag = e == gs.Boss ? "BOSS " : "     ";
                 Console.WriteLine($"  {tag}L{e.Level,2} {e.Race,-10} {e.Class,-16} {atk?.Name,-14} ~{est,2} dmg  HP {e.MaxHp}");
             }
