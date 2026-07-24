@@ -1,5 +1,6 @@
 ﻿using Avalonia;
 using System;
+using System.Linq;
 using TheMazeRPG.Core.Models;
 using TheMazeRPG.Core.Services;
 
@@ -25,6 +26,20 @@ sealed class Program
         if (Environment.GetEnvironmentVariable("TEST_COMBINE") == "1")
         {
             RunCombineDemo();
+            return;
+        }
+
+        // If TEST_LOOT is set, exercise loot drops + auto-equip and exit
+        if (Environment.GetEnvironmentVariable("TEST_LOOT") == "1")
+        {
+            RunLootDemo();
+            return;
+        }
+
+        // If TEST_BALANCE is set, dump enemy damage per floor and exit
+        if (Environment.GetEnvironmentVariable("TEST_BALANCE") == "1")
+        {
+            RunBalanceDemo();
             return;
         }
 
@@ -82,6 +97,53 @@ sealed class Program
         foreach (var cls in new[] { "Warrior", "Mage Apprentice", "Rogue", "Archer", "Bard", "Priest", "Wanderer" })
             foreach (var a in AttackFactory.GetStartingAttacks(cls))
                 Console.WriteLine($"  {cls,-16} {a.Name,-22} ({a.Id,-22}) -> {AttackVisuals.For(a)}");
+    }
+
+    // Debug/test entrypoint: if TEST_LOOT=1 is set, simulate chest loot + auto-equip and exit
+    public static void RunLootDemo()
+    {
+        var gs = new GameState(1, "Looter", "Warrior", "Human");
+        Console.WriteLine($"=== Loot / equip demo (Warrior, hotbar capacity {gs.Hero.HotbarCapacity}) ===");
+        Console.WriteLine($"Start attacks: [{string.Join(", ", gs.Hero.Attacks.Select(a => a.Name))}]");
+        for (int floor = 1; floor <= 6; floor++)
+        {
+            var loot = LootService.Roll(floor, new Random(floor * 7));
+            gs.AcquireLoot(loot);
+            string attacks = string.Join(", ", gs.Hero.Attacks.Select(a => a.Name));
+            string inventory = gs.Hero.Inventory.Count > 0
+                ? string.Join(", ", gs.Hero.Inventory.Select(c => c.Name))
+                : "(empty)";
+            Console.WriteLine($"Floor {floor}: found {loot.Name} ({loot.Rarity} {loot.Kind})");
+            Console.WriteLine($"   equipped attacks: [{attacks}]");
+            Console.WriteLine($"   inventory:        [{inventory}]");
+        }
+    }
+
+    // Debug/test entrypoint: if TEST_BALANCE=1 is set, dump enemy damage per floor vs a fresh hero
+    public static void RunBalanceDemo()
+    {
+        var gs = new GameState(42, "Hero", "Wanderer", "Human");
+        // Hero mitigation matches CombatSystem: attacker stat damage minus defense/2.
+        int heroDef = gs.Hero.Defense + (int)(gs.Hero.EffectiveConstitution * 0.7f);
+        Console.WriteLine($"=== Enemy damage vs a fresh Wanderer (100 HP, defense {heroDef}) ===");
+        foreach (int targetFloor in new[] { 1, 3, 5, 8 })
+        {
+            while (gs.CurrentFloor < targetFloor) gs.StartNewFloor();
+            Console.WriteLine($"--- Floor {gs.CurrentFloor} ---");
+            foreach (var e in gs.Enemies.OrderByDescending(x => x == gs.Boss))
+            {
+                var atk = e.CurrentAttack;
+                int stat = (atk?.Damage ?? 6) + e.Attack;
+                bool magic = atk != null && (atk.Animation == AttackAnimation.Magic || atk.ManaCost > 0);
+                stat += magic
+                    ? (int)(e.Intelligence * 1.2f) + (int)(e.Wisdom * 0.5f)
+                    : (int)(e.Strength * 1.2f) + (int)(e.Dexterity * 0.5f);
+                int est = System.Math.Max(1, stat - heroDef / 2); // pre-variance (+-25%)
+                if (e.IsBoss) est = (int)(est * 1.35f);
+                string tag = e == gs.Boss ? "BOSS " : "     ";
+                Console.WriteLine($"  {tag}L{e.Level,2} {e.Race,-10} {e.Class,-16} {atk?.Name,-14} ~{est,2} dmg  HP {e.MaxHp}");
+            }
+        }
     }
 
     // Avalonia configuration, don't remove; also used by visual designer.

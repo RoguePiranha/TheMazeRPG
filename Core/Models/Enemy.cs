@@ -13,20 +13,30 @@ public class Enemy
     public int Attack { get; set; }
     public int Defense { get; set; }
     public int Level { get; set; } = 1;
-    
-    // Stats
+
+    // Stats. These store the enemy's RACE-EFFECTIVE, class-and-level-grown values
+    // (race effectiveness is baked in at generation by EnemyFactory), so combat formulas
+    // use them directly.
     public int Strength { get; set; } = 1;
     public int Constitution { get; set; } = 1;
     public int Agility { get; set; } = 1;
     public int Dexterity { get; set; } = 1;
-    
+    public int Intelligence { get; set; } = 1;
+    public int Wisdom { get; set; } = 1;
+    public int Charisma { get; set; } = 1;
+
     // For Perlin-based movement
     public double NoiseOffsetX { get; set; }
     public double NoiseOffsetY { get; set; }
-    
+
     public bool IsAlive => Hp > 0;
     public string Type { get; set; } = "Slime";
-    public string Class { get; set; } = "Brute"; // Enemy class type
+    public string Class { get; set; } = "Warrior"; // Character class (Warrior/Mage/Rogue/...) — drives gear, stats, shape
+    public string Race { get; set; } = "Human";
+    public bool IsBoss { get; set; }
+
+    // The enemy's equipped/primary attack (from its class loadout); drives damage scaling + visual.
+    public Attack? CurrentAttack { get; set; }
     
     // Combat state
     public bool InCombat { get; set; }

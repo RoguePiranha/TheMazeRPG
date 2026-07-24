@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Media;
+using TheMazeRPG.Core.Models;
 using TheMazeRPG.Core.Services;
 using System.Collections.Generic;
 
@@ -283,7 +284,30 @@ public class StatsOverlay : Control
                 statLabelBrush);
             context.DrawText(noAttacksText, new Point(invX, invY));
         }
-        
+
+        // Inventory (found gear not equipped), rarity color-coded
+        if (_gameState?.Hero?.Inventory is { Count: > 0 } inventory)
+        {
+            invY += 18;
+            var invHeader = new FormattedText(
+                "INVENTORY",
+                System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                headerFont, 18, headerBrush);
+            context.DrawText(invHeader, new Point(invX, invY));
+            invY += 30;
+            foreach (var item in inventory)
+            {
+                var itemText = new FormattedText(
+                    $"  {item.Name} ({item.Rarity})",
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight,
+                    normalFont, 13, new SolidColorBrush(RarityColor(item.Rarity)));
+                context.DrawText(itemText, new Point(invX, invY));
+                invY += 20;
+            }
+        }
+
         // Footer hint
         var hintText = new FormattedText(
             "Press [Tab] to close",
@@ -363,7 +387,19 @@ public class StatsOverlay : Control
             _ => (1f, 0f)
         };
     }
-    
+
+    // Item rarity colors (Game Idea.md): Common→Mythic.
+    private static Color RarityColor(Rarity rarity) => rarity switch
+    {
+        Rarity.Common => Color.FromRgb(220, 220, 220),
+        Rarity.Uncommon => Color.FromRgb(120, 220, 130),
+        Rarity.Rare => Color.FromRgb(90, 160, 255),
+        Rarity.Epic => Color.FromRgb(190, 120, 255),
+        Rarity.Legendary => Color.FromRgb(255, 165, 60),
+        Rarity.Mythic => Color.FromRgb(255, 215, 90),
+        _ => Colors.White
+    };
+
     private void DrawTooltip(DrawingContext context, string text, Point mousePos)
     {
         var tooltipFont = new Typeface("Arial");

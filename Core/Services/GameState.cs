@@ -652,6 +652,38 @@ public class GameState
         return angleDiff <= (halfCone + expand);
     }
     
+    /// <summary>
+    /// Give the hero found loot. Attack-producing gear (weapons/spells) auto-equips into a free
+    /// hotbar slot and updates the hero's attacks; anything else (or an overflow) goes to inventory.
+    /// Auto-equip stands in for the manual "swap / combine / send to inventory" choice while the
+    /// game is auto-played.
+    /// </summary>
+    public void AcquireLoot(Combinable loot)
+    {
+        bool isAttackGear = loot is Weapon || loot is Spell;
+        int equippedAttackGear = Hero.Loadout.Count(c => c is Weapon || c is Spell);
+
+        if (isAttackGear && equippedAttackGear < Hero.HotbarCapacity)
+        {
+            Hero.Loadout.Add(loot);
+            RefreshAttacks();
+            GameLog.Debug($"Equipped {loot.Name} ({loot.Rarity})");
+        }
+        else
+        {
+            Hero.Inventory.Add(loot);
+            GameLog.Debug($"Stored {loot.Name} ({loot.Rarity}) in inventory");
+        }
+    }
+
+    /// <summary>Re-project attacks from the current loadout, keeping the current attack if it survives.</summary>
+    private void RefreshAttacks()
+    {
+        var currentId = Hero.CurrentAttack?.Id;
+        Hero.Attacks = AttackFactory.ToAttacks(Hero.Loadout);
+        Hero.CurrentAttack = Hero.Attacks.FirstOrDefault(a => a.Id == currentId) ?? Hero.Attacks.FirstOrDefault();
+    }
+
     private void CheckFeaturesWithKeyLogic()
     {
         // Update chest opening animation
@@ -671,6 +703,8 @@ public class GameState
                 HasKey = true;
                 Hero.IsOpeningChest = false;
                 Hero.GainExperience(25);
+                // Chest also drops loot (rarity scales with floor)
+                AcquireLoot(LootService.Roll(CurrentFloor, _random));
             }
         }
         
@@ -1044,84 +1078,30 @@ public class GameState
             emptyCells.RemoveAt(chestIdx);
             CurrentMaze.Features.Add(new MazeFeature { X = chestCell.x, Y = chestCell.y, Type = MazeFeatureType.Chest });
         }
-        // Place boss
+        // Place boss (rarer class, top level for the floor)
         if (emptyCells.Count > 0)
         {
             int bossIdx = _random.Next(emptyCells.Count);
             var bossCell = emptyCells[bossIdx];
             emptyCells.RemoveAt(bossIdx);
-            // Boss stats: stronger than regular enemies but beatable
-            // Roughly 2-3x stronger than regular enemies
-            Boss = new Enemy
-            {
-                X = bossCell.x,
-                Y = bossCell.y,
-                Level = CurrentFloor + 1,
-                MaxHp = 80 + CurrentFloor * 25,  // Reduced from 300 + 50*floor
-                Hp = 80 + CurrentFloor * 25,
-                Attack = 8 + CurrentFloor * 2,   // Reduced from 20 + 3*floor
-                Defense = 5 + CurrentFloor,       // Reduced from 10 + 2*floor
-                Strength = 3 + CurrentFloor,      // Reduced from 5 + floor
-                Constitution = 3 + CurrentFloor,  // Reduced from 5 + floor
-                Agility = 2 + CurrentFloor,       // Reduced from 4 + floor
-                Dexterity = 2 + CurrentFloor,     // Reduced from 3 + floor
-                NoiseOffsetX = _random.NextDouble() * 100,
-                NoiseOffsetY = _random.NextDouble() * 100,
-                Type = "Boss",
-                Class = "Boss",
-                AttackSpeed = 25,                 // Slightly slower (was 20)
-                AttackRange = 1.5f,
-                TargetX = bossCell.x,
-                TargetY = bossCell.y
-            };
+            Boss = EnemyFactory.RandomBoss(CurrentFloor, _characterDataService, _random);
+            Boss.X = bossCell.x;
+            Boss.Y = bossCell.y;
+            Boss.TargetX = bossCell.x;
+            Boss.TargetY = bossCell.y;
             Enemies.Add(Boss);
         }
-        // Spawn regular enemies
+        // Spawn regular enemies (weighted class, random race, random level in the floor's range)
         for (int i = 0; i < enemyCount && emptyCells.Count > 0; i++)
         {
             int idx = _random.Next(emptyCells.Count);
             var (x, y) = emptyCells[idx];
             emptyCells.RemoveAt(idx);
-            string enemyType = GetRandomEnemyType();
-            string enemyClass = GetRandomEnemyClass();
-            int enemyLevel = CurrentFloor;
-            int baseHp = 50 + enemyLevel * 15;
-            int baseAtk = 3 + enemyLevel;
-            int baseDef = 2 + enemyLevel / 2;
-            float atkMod = 1.0f;
-            float defMod = 1.0f;
-            float hpMod = 1.0f;
-            float range = 1.0f;
-            int speed = 40;
-            switch (enemyClass)
-            {
-                case "Brute": hpMod = 1.5f; defMod = 1.3f; atkMod = 1.1f; speed = 50; range = 1.0f; break;
-                case "Striker": atkMod = 1.3f; speed = 25; range = 1.0f; break;
-                case "Archer": atkMod = 1.2f; speed = 35; range = 2.5f; break;
-                case "Caster": atkMod = 1.4f; hpMod = 0.8f; speed = 40; range = 3.0f; break;
-            }
-            var enemy = new Enemy
-            {
-                X = x,
-                Y = y,
-                Level = enemyLevel,
-                MaxHp = (int)(baseHp * hpMod),
-                Hp = (int)(baseHp * hpMod),
-                Attack = (int)(baseAtk * atkMod),
-                Defense = (int)(baseDef * defMod),
-                Strength = enemyLevel + (enemyClass == "Brute" ? 3 : 0),
-                Constitution = enemyLevel + (enemyClass == "Brute" ? 2 : 0),
-                Agility = enemyLevel + (enemyClass == "Striker" ? 3 : 1),
-                Dexterity = enemyLevel + (enemyClass == "Striker" ? 2 : 0),
-                NoiseOffsetX = _random.NextDouble() * 100,
-                NoiseOffsetY = _random.NextDouble() * 100,
-                Type = enemyType,
-                Class = enemyClass,
-                AttackSpeed = speed,
-                AttackRange = range,
-                TargetX = x,
-                TargetY = y
-            };
+            var enemy = EnemyFactory.RandomRegular(CurrentFloor, _characterDataService, _random);
+            enemy.X = x;
+            enemy.Y = y;
+            enemy.TargetX = x;
+            enemy.TargetY = y;
             Enemies.Add(enemy);
         }
     }
@@ -1163,18 +1143,6 @@ public class GameState
 
         Console.WriteLine("Simulation ended.");
         IsRunning = false;
-    }
-    
-    private string GetRandomEnemyType()
-    {
-        var types = new[] { "Slime", "Goblin", "Bat", "Skeleton" };
-        return types[_random.Next(types.Length)];
-    }
-    
-    private string GetRandomEnemyClass()
-    {
-        var classes = new[] { "Brute", "Striker", "Archer", "Caster" };
-        return classes[_random.Next(classes.Length)];
     }
 }
 }

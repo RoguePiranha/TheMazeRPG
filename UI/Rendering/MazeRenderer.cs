@@ -30,6 +30,32 @@ public class MazeRenderer
     private static readonly SKColor EnemyColor = new(255, 80, 80);
     private static readonly SKColor ChestColor = new(255, 215, 0);
     private static readonly SKColor StairsColor = new(150, 255, 150);
+
+    // Enemy color by character class.
+    private static SKColor ClassColor(string cls) => cls switch
+    {
+        "Warrior" => new SKColor(205, 65, 60),          // red
+        "Rogue" => new SKColor(70, 150, 110),           // teal-green
+        "Archer" => new SKColor(110, 200, 80),          // lime
+        "Mage Apprentice" => new SKColor(95, 135, 240), // blue
+        "Priest" => new SKColor(232, 200, 95),          // gold
+        "Bard" => new SKColor(175, 125, 232),           // purple
+        "Wanderer" => new SKColor(175, 175, 175),       // gray
+        _ => new SKColor(200, 80, 80)
+    };
+
+    // 0=square (tank/generalist), 1=diamond (fast melee), 2=triangle (ranged), 3=pentagon (caster/support)
+    private static int ClassShape(string cls) => cls switch
+    {
+        "Warrior" => 0,
+        "Wanderer" => 0,
+        "Rogue" => 1,
+        "Archer" => 2,
+        "Mage Apprentice" => 3,
+        "Priest" => 3,
+        "Bard" => 3,
+        _ => 2
+    };
     
     public void Render(SKCanvas canvas, GameState gameState, int viewportWidth, int viewportHeight)
     {
@@ -422,88 +448,54 @@ public class MazeRenderer
             float px = enemy.X * CellSize + CellSize / 2f;
             float py = enemy.Y * CellSize + CellSize / 2f;
             
-            // Determine color and shape based on enemy class
-            SKColor enemyColor;
-            switch (enemy.Class)
-            {
-                case "Brute":
-                    enemyColor = enemy.IsAlive ? new SKColor(200, 50, 50) : new SKColor(100, 25, 25); // Red
-                    break;
-                case "Striker":
-                    enemyColor = enemy.IsAlive ? new SKColor(255, 165, 0) : new SKColor(127, 82, 0); // Orange
-                    break;
-                case "Archer":
-                    enemyColor = enemy.IsAlive ? new SKColor(100, 200, 100) : new SKColor(50, 100, 50); // Green
-                    break;
-                case "Caster":
-                    enemyColor = enemy.IsAlive ? new SKColor(150, 100, 255) : new SKColor(75, 50, 127); // Purple
-                    break;
-                default:
-                    enemyColor = enemy.IsAlive ? EnemyColor : new SKColor(100, 40, 40);
-                    break;
-            }
-            
+            // Color + shape derived from the enemy's character class; size scales with radius
+            // (bosses have a larger radius, so they read bigger).
+            SKColor baseColor = ClassColor(enemy.Class);
+            SKColor enemyColor = enemy.IsAlive ? baseColor
+                : new SKColor((byte)(baseColor.Red / 2), (byte)(baseColor.Green / 2), (byte)(baseColor.Blue / 2));
+
             using var paint = new SKPaint
             {
                 Color = enemyColor,
                 Style = SKPaintStyle.Fill,
                 IsAntialias = true
             };
-            
-            // Draw different shapes based on enemy class
-            switch (enemy.Class)
+
+            float sz = 10f * (enemy.Radius / 0.35f);
+            switch (ClassShape(enemy.Class))
             {
-                case "Brute":
-                    // Square for tank
-                    canvas.DrawRect(px - 10, py - 10, 20, 20, paint);
+                case 0: // square (melee tank / generalist)
+                    canvas.DrawRect(px - sz, py - sz, sz * 2, sz * 2, paint);
                     break;
-                    
-                case "Striker":
-                    // Diamond for fast melee
-                    var strikerPath = new SKPath();
-                    strikerPath.MoveTo(px, py - 10);
-                    strikerPath.LineTo(px + 10, py);
-                    strikerPath.LineTo(px, py + 10);
-                    strikerPath.LineTo(px - 10, py);
-                    strikerPath.Close();
-                    canvas.DrawPath(strikerPath, paint);
+                case 1: // diamond (fast melee)
+                    var diamond = new SKPath();
+                    diamond.MoveTo(px, py - sz);
+                    diamond.LineTo(px + sz, py);
+                    diamond.LineTo(px, py + sz);
+                    diamond.LineTo(px - sz, py);
+                    diamond.Close();
+                    canvas.DrawPath(diamond, paint);
                     break;
-                    
-                case "Archer":
-                    // Triangle pointing up for ranged
-                    var archerPath = new SKPath();
-                    archerPath.MoveTo(px, py - 10);
-                    archerPath.LineTo(px + 9, py + 8);
-                    archerPath.LineTo(px - 9, py + 8);
-                    archerPath.Close();
-                    canvas.DrawPath(archerPath, paint);
+                case 2: // triangle (ranged)
+                    var tri = new SKPath();
+                    tri.MoveTo(px, py - sz);
+                    tri.LineTo(px + sz * 0.9f, py + sz * 0.8f);
+                    tri.LineTo(px - sz * 0.9f, py + sz * 0.8f);
+                    tri.Close();
+                    canvas.DrawPath(tri, paint);
                     break;
-                    
-                case "Caster":
-                    // Pentagon/Star for magic user
-                    var casterPath = new SKPath();
+                default: // pentagon (caster / support)
+                    var penta = new SKPath();
                     for (int i = 0; i < 5; i++)
                     {
                         float angle = (float)(i * 2 * Math.PI / 5 - Math.PI / 2);
-                        float x = px + 10 * MathF.Cos(angle);
-                        float y = py + 10 * MathF.Sin(angle);
-                        if (i == 0)
-                            casterPath.MoveTo(x, y);
-                        else
-                            casterPath.LineTo(x, y);
+                        float x = px + sz * MathF.Cos(angle);
+                        float y = py + sz * MathF.Sin(angle);
+                        if (i == 0) penta.MoveTo(x, y);
+                        else penta.LineTo(x, y);
                     }
-                    casterPath.Close();
-                    canvas.DrawPath(casterPath, paint);
-                    break;
-                    
-                default:
-                    // Default triangle
-                    var defaultPath = new SKPath();
-                    defaultPath.MoveTo(px, py - 8);
-                    defaultPath.LineTo(px + 8, py + 6);
-                    defaultPath.LineTo(px - 8, py + 6);
-                    defaultPath.Close();
-                    canvas.DrawPath(defaultPath, paint);
+                    penta.Close();
+                    canvas.DrawPath(penta, paint);
                     break;
             }
             

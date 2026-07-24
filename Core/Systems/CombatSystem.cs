@@ -128,54 +128,9 @@ public class CombatSystem
             // Add small epsilon for floating point comparison
             if (enemyEffectiveDistance <= enemy.AttackRange + 0.01f && enemyHasLOS)
             {
-                // Enemy attacks!
+                // Enemy attacks! (damage/visual come from its equipped attack + effective stats)
                 GameLog.Debug($"  → Enemy attacks! (Distance: {distanceToHero:F2}, Range: {enemy.AttackRange})");
-                // Stat-driven enemy damage
-                int statEnemyDamage = enemy.Attack
-                    + (int)(enemy.Strength * 1.1f)
-                    + (int)(enemy.Dexterity * 0.4f);
-                // Calculate final damage, factoring hero defense and Constitution
-                int finalEnemyDamage = CalculateDamage(statEnemyDamage, hero.Defense + (int)(hero.EffectiveConstitution * 0.7f));
-
-                // Cooldown based on enemy attack speed, Dexterity, and Agility
-                int minEnemyCooldown = 10;
-                int statEnemyCooldown = enemy.AttackSpeed
-                    - (int)(enemy.Dexterity * 0.5f)
-                    - (int)(enemy.Agility * 0.2f);
-                enemy.AttackCooldown = Math.Max(minEnemyCooldown, statEnemyCooldown);
-
-                // Enemy attack animation (stronger lunge)
-                float dx = hero.X - enemy.X;
-                float dy = hero.Y - enemy.Y;
-                float dist = MathF.Sqrt(dx * dx + dy * dy);
-                if (dist > 0)
-                {
-                    dx /= dist;
-                    dy /= dist;
-                }
-                enemy.AnimationOffsetX = dx * 0.6f; // More impactful
-                enemy.AnimationOffsetY = dy * 0.6f;
-
-                // Spawn enemy attack projectile (melee hitbox)
-                projectiles.Add(new Projectile
-                {
-                    StartX = enemy.X,
-                    StartY = enemy.Y,
-                    CurrentX = enemy.X,
-                    CurrentY = enemy.Y,
-                    TargetX = hero.X,
-                    TargetY = hero.Y,
-                    Speed = 0.45f,
-                    Type = AttackAnimation.Melee,
-                    AttackName = "Enemy Attack",
-                    MaxLifeTime = 12,
-                    Team = ProjectileTeam.Enemy,
-                    Damage = finalEnemyDamage,
-                    Radius = 0.45f,
-                    CanHitMultiple = false
-                });
-
-                // Hero death will be handled when the projectile hits (if lethal)
+                PerformEnemyAttack(hero, enemy, projectiles);
             }
             else if (distanceToHero <= enemy.AttackRange)
             {
@@ -213,13 +168,13 @@ public class CombatSystem
         int statDamage = attack.Damage + hero.Attack;
         if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0)
         {
-            // Magic damage scaling
-            statDamage += (int)(hero.EffectiveIntelligence * 1.5f) + (int)(hero.EffectiveWisdom * 0.5f);
+            // Magic damage scaling (matches physical rate so casters aren't disproportionate)
+            statDamage += (int)(hero.EffectiveIntelligence * 1.2f) + (int)(hero.EffectiveWisdom * 0.5f);
         }
         else if (attack.FaithCost > 0)
         {
             // Faith damage scaling
-            statDamage += (int)(hero.EffectiveWisdom * 1.5f) + (int)(hero.EffectiveCharisma * 0.5f);
+            statDamage += (int)(hero.EffectiveWisdom * 1.2f) + (int)(hero.EffectiveCharisma * 0.5f);
         }
         else
         {
@@ -388,7 +343,76 @@ public class CombatSystem
             - (int)(hero.EffectiveCharisma * 0.2f); // Charisma provides slight cooldown reduction
         hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
     }
-    
+
+    /// <summary>
+    /// Execute an enemy's attack: damage and visual come from its equipped attack plus its
+    /// (race-effective) stats, mirroring how the hero's attacks scale. Spawns the damage-carrying
+    /// projectile and sets the enemy's cooldown.
+    /// </summary>
+    private void PerformEnemyAttack(Hero hero, Enemy enemy, List<Projectile> projectiles)
+    {
+        var atk = enemy.CurrentAttack;
+        var animation = atk?.Animation ?? AttackAnimation.Melee;
+
+        // Stat-driven damage, scaled by the attack's damage type (mirrors PerformHeroAttack).
+        int statDamage = (atk?.Damage ?? 6) + enemy.Attack;
+        bool magic = atk != null && (atk.Animation == AttackAnimation.Magic || atk.ManaCost > 0);
+        bool faith = atk != null && atk.FaithCost > 0;
+        // Magic/faith scale at the same rate as physical so casters aren't disproportionately strong.
+        if (magic)
+            statDamage += (int)(enemy.Intelligence * 1.2f) + (int)(enemy.Wisdom * 0.5f);
+        else if (faith)
+            statDamage += (int)(enemy.Wisdom * 1.2f) + (int)(enemy.Charisma * 0.5f);
+        else
+            statDamage += (int)(enemy.Strength * 1.2f) + (int)(enemy.Dexterity * 0.5f);
+
+        int finalDamage = CalculateDamage(statDamage, hero.Defense + (int)(hero.EffectiveConstitution * 0.7f));
+        if (enemy.IsBoss) finalDamage = (int)(finalDamage * 1.35f); // bosses always hit above regulars
+
+        // Lunge animation toward the hero.
+        float dx = hero.X - enemy.X;
+        float dy = hero.Y - enemy.Y;
+        float dist = MathF.Sqrt(dx * dx + dy * dy);
+        if (dist > 0) { dx /= dist; dy /= dist; }
+        enemy.AnimationOffsetX = dx * 0.6f;
+        enemy.AnimationOffsetY = dy * 0.6f;
+
+        // Projectile shape by animation type (ranged/magic travel; melee is a short hitbox).
+        float speed;
+        int maxLife;
+        float radius;
+        switch (animation)
+        {
+            case AttackAnimation.Ranged: speed = 0.5f; maxLife = 25; radius = 0.25f; break;
+            case AttackAnimation.Magic: speed = 0.4f; maxLife = 30; radius = 0.3f; break;
+            default: speed = 0.45f; maxLife = 12; radius = 0.45f; break; // melee/heavy/quick
+        }
+
+        projectiles.Add(new Projectile
+        {
+            StartX = enemy.X,
+            StartY = enemy.Y,
+            CurrentX = enemy.X,
+            CurrentY = enemy.Y,
+            TargetX = hero.X,
+            TargetY = hero.Y,
+            Speed = speed,
+            Type = animation,
+            AttackName = atk?.Name ?? "Enemy Attack",
+            Visual = atk != null ? AttackVisuals.For(atk) : VisualStyle.Blade,
+            MaxLifeTime = maxLife,
+            Team = ProjectileTeam.Enemy,
+            Damage = finalDamage,
+            Radius = radius,
+            CanHitMultiple = false
+        });
+
+        // Cooldown from attack speed, reduced slightly by Dexterity/Agility.
+        int minEnemyCooldown = 10;
+        int statCooldown = enemy.AttackSpeed - (int)(enemy.Dexterity * 0.5f) - (int)(enemy.Agility * 0.2f);
+        enemy.AttackCooldown = Math.Max(minEnemyCooldown, statCooldown);
+    }
+
     /// <summary>
     /// Initialize combat between hero and enemy
     /// </summary>
@@ -435,43 +459,7 @@ public class CombatSystem
         float enemyEffectiveDistance = MathF.Max(0f, distanceToHero - hero.Radius);
         if (enemyEffectiveDistance <= enemy.AttackRange + 0.01f && enemyHasLOS)
         {
-            int statEnemyDamage = enemy.Attack
-                + (int)(enemy.Strength * 1.1f)
-                + (int)(enemy.Dexterity * 0.4f);
-            int finalEnemyDamage = CalculateDamage(statEnemyDamage, hero.Defense + (int)(hero.EffectiveConstitution * 0.7f));
-
-            // Enemy attack animation (lunge)
-            float dx = hero.X - enemy.X;
-            float dy = hero.Y - enemy.Y;
-            float dist = MathF.Sqrt(dx * dx + dy * dy);
-            if (dist > 0) { dx /= dist; dy /= dist; }
-            enemy.AnimationOffsetX = dx * 0.6f;
-            enemy.AnimationOffsetY = dy * 0.6f;
-
-            // Spawn enemy melee hitbox projectile
-            projectiles.Add(new Projectile
-            {
-                StartX = enemy.X,
-                StartY = enemy.Y,
-                CurrentX = enemy.X,
-                CurrentY = enemy.Y,
-                TargetX = hero.X,
-                TargetY = hero.Y,
-                Speed = 0.45f,
-                Type = AttackAnimation.Melee,
-                AttackName = "Enemy Attack",
-                MaxLifeTime = 12,
-                Team = ProjectileTeam.Enemy,
-                Damage = finalEnemyDamage,
-                Radius = 0.45f,
-                CanHitMultiple = false
-            });
-
-            int minEnemyCooldown = 10;
-            int statEnemyCooldown = enemy.AttackSpeed
-                - (int)(enemy.Dexterity * 0.5f)
-                - (int)(enemy.Agility * 0.2f);
-            enemy.AttackCooldown = Math.Max(minEnemyCooldown, statEnemyCooldown);
+            PerformEnemyAttack(hero, enemy, projectiles);
         }
         else if (enemyEffectiveDistance <= enemy.AttackRange + 0.01f)
         {

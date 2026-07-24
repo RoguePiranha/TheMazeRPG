@@ -98,6 +98,11 @@ public class Hero
     public List<Combinable> Loadout { get; set; } = new();
     public List<Attack> Attacks { get; set; } = new();
     public Attack? CurrentAttack { get; set; }
+
+    // Inventory = found gear that isn't equipped. HotbarCapacity caps how many attack-producing
+    // items (weapons/spells) can be equipped in the Loadout at once.
+    public List<Combinable> Inventory { get; set; } = new();
+    public int HotbarCapacity { get; set; } = 4;
     
     // Animation state for combat movement
     public float AnimationOffsetX { get; set; }
