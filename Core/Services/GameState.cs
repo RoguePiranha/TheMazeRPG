@@ -267,7 +267,10 @@ public class GameState
         
         // Check for new combat encounters and process existing combat
         CheckCombat();
-        
+
+        // Advance/prune projectiles and hit effects every tick, even when combat just ended
+        UpdateProjectilesAndEffects();
+
         // Check for features (stairs, chests, key logic) - only if not in combat
         if (!Hero.InCombat)
         {
@@ -450,6 +453,15 @@ public class GameState
             _combatSystem.ProcessEnemyOnlyAttack(Hero, e, Projectiles, CurrentMaze);
         }
 
+    }
+
+    /// <summary>
+    /// Advance and prune projectiles and hit effects. Runs every tick (not only during combat),
+    /// so the final attack's projectile animates out and is removed even after the enemy dies —
+    /// otherwise it freezes in place until the next fight.
+    /// </summary>
+    private void UpdateProjectilesAndEffects()
+    {
         foreach (var projectile in Projectiles)
         {
             projectile.Update(CurrentMaze);
@@ -1010,6 +1022,8 @@ public class GameState
         
         // Spawn enemies in random valid locations
         Enemies.Clear();
+        Projectiles.Clear();   // don't let a lingering projectile carry into the new floor
+        HitEffects.Clear();
         Boss = null;
         HasKey = false;
         StairsLocation = null;
