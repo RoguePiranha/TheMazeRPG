@@ -15,5 +15,11 @@ public class CharacterRace
 {
     public string Description { get; set; } = "";
     public string Color { get; set; } = "#FFFFFF";
-    public Dictionary<string, int> StatModifiers { get; set; } = new();
+
+    /// <summary>
+    /// Per-attribute effectiveness multipliers (see Info/Racial Effectiveness.md). These do NOT
+    /// change base/displayed stats; they scale how effectively a stat translates into results:
+    /// EffectiveAttribute = BaseAttribute × Effectiveness. Defaults to 1.0 when absent.
+    /// </summary>
+    public Dictionary<string, float> Effectiveness { get; set; } = new();
 }

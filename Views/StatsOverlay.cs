@@ -321,12 +321,47 @@ public class StatsOverlay : Control
         
         context.DrawText(labelText, new Point(x, y));
         context.DrawText(valueText, new Point(x + 120, y));
-        
+
+        // Racial effectiveness: show the effective value inline (color-coded), full detail on hover.
+        var (mult, effective) = StatEffectiveness(label);
+        string tooltip = description;
+        if (System.Math.Abs(mult - 1.0f) > 0.001f)
+        {
+            var effBrush = new SolidColorBrush(mult > 1f
+                ? Color.FromRgb(120, 220, 130)   // buff
+                : Color.FromRgb(230, 140, 110));  // penalty
+            var effText = new FormattedText(
+                $"→ {effective:0.0}",
+                System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                font, 14, effBrush);
+            context.DrawText(effText, new Point(x + 145, y + 1));
+            tooltip = $"{description}\nRacial effectiveness: {mult * 100:0}%  (effective {effective:0.0})";
+        }
+
         // Store hover area for this stat
-        var hoverRect = new Rect(x, y, 160, 25);
-        _statHoverAreas[label] = (hoverRect, description);
-        
+        var hoverRect = new Rect(x, y, 200, 25);
+        _statHoverAreas[label] = (hoverRect, tooltip);
+
         y += 28;
+    }
+
+    /// <summary>Racial effectiveness multiplier and effective value for a stat, from the live hero.</summary>
+    private (float mult, float effective) StatEffectiveness(string label)
+    {
+        var h = _gameState?.Hero;
+        if (h == null) return (1f, 0f);
+        return label switch
+        {
+            "Strength" => (h.StrengthEffectiveness, h.EffectiveStrength),
+            "Constitution" => (h.ConstitutionEffectiveness, h.EffectiveConstitution),
+            "Agility" => (h.AgilityEffectiveness, h.EffectiveAgility),
+            "Dexterity" => (h.DexterityEffectiveness, h.EffectiveDexterity),
+            "Intelligence" => (h.IntelligenceEffectiveness, h.EffectiveIntelligence),
+            "Wisdom" => (h.WisdomEffectiveness, h.EffectiveWisdom),
+            "Charisma" => (h.CharismaEffectiveness, h.EffectiveCharisma),
+            _ => (1f, 0f)
+        };
     }
     
     private void DrawTooltip(DrawingContext context, string text, Point mousePos)

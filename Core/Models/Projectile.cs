@@ -15,7 +15,10 @@ public class Projectile
     public float TargetY { get; set; }
     public float Speed { get; set; } = 0.3f;
     public AttackAnimation Type { get; set; }
-    public string AttackName { get; set; } = ""; // To differentiate sword from dagger
+    public string AttackName { get; set; } = ""; // Display name (kept for HUD/labels)
+    // Stable visual style, chosen from the attack's id (not name substrings) — the renderer
+    // switches on this so renaming an attack never changes/breaks its effect.
+    public VisualStyle Visual { get; set; } = VisualStyle.Blade;
     // Combat fields
     public ProjectileTeam Team { get; set; } = ProjectileTeam.Neutral;
     public int Damage { get; set; } = 0;
@@ -81,4 +84,26 @@ public enum ProjectileTeam
     Neutral,
     Hero,
     Enemy
+}
+
+/// <summary>
+/// The visual effect a projectile renders as. Chosen per-attack from a stable id
+/// (see AttackVisuals), so visuals never depend on the display name.
+/// </summary>
+public enum VisualStyle
+{
+    Blade,        // default melee blade line
+    SwordArc,     // sweeping sword arc
+    HeavyArc,     // thick heavy-weapon arc
+    QuickSlash,   // rapid triple slashes
+    Backstab,     // rogue X-slash + blood
+    Arrow,        // arrow with fletching
+    PoisonDart,   // dart with green trail
+    MagicComet,   // cyan/blue magic comet (Mana/Magic bolt)
+    MagicMissile, // purple glowing orb
+    ArcaneRing,   // expanding AoE ring (also drives AoE behavior)
+    Sonic,        // concentric sound-wave rings
+    HolyStrike,   // radiant golden strike
+    ImpactBurst,  // unarmed impact burst
+    Parry         // defensive arc flash (not yet produced by any attack)
 }

@@ -29,6 +29,26 @@ public class Hero
     public int Intelligence { get; set; } = 1;   // Magic Damage, Cooldown, Mana
     public int Wisdom { get; set; } = 1;         // Magic Resist, Healing, Faith
     public int Charisma { get; set; } = 1;       // NPC Interaction, Followers
+
+    // Racial effectiveness multipliers (set from race). Base stats above are what the character
+    // sheet displays; the Effective* values below are what derived formulas use.
+    // See Info/Racial Effectiveness.md.
+    public float StrengthEffectiveness { get; set; } = 1f;
+    public float ConstitutionEffectiveness { get; set; } = 1f;
+    public float AgilityEffectiveness { get; set; } = 1f;
+    public float DexterityEffectiveness { get; set; } = 1f;
+    public float IntelligenceEffectiveness { get; set; } = 1f;
+    public float WisdomEffectiveness { get; set; } = 1f;
+    public float CharismaEffectiveness { get; set; } = 1f;
+
+    // Effective attributes (base × effectiveness), kept as floats — not rounded here.
+    public float EffectiveStrength => Strength * StrengthEffectiveness;
+    public float EffectiveConstitution => Constitution * ConstitutionEffectiveness;
+    public float EffectiveAgility => Agility * AgilityEffectiveness;
+    public float EffectiveDexterity => Dexterity * DexterityEffectiveness;
+    public float EffectiveIntelligence => Intelligence * IntelligenceEffectiveness;
+    public float EffectiveWisdom => Wisdom * WisdomEffectiveness;
+    public float EffectiveCharisma => Charisma * CharismaEffectiveness;
     
     // Derived Stats
     public int CurrentHp { get; set; }
@@ -73,6 +93,9 @@ public class Hero
     public int ChestOpeningDuration { get; set; } = 90; // ticks; set by GameState from the tick rate
     
     // Attack system
+    // Loadout = the equipped weapons/spells (Combinables) the hero carries. Attacks are
+    // projected from these, so combat is driven by equipped data rather than a class switch.
+    public List<Combinable> Loadout { get; set; } = new();
     public List<Attack> Attacks { get; set; } = new();
     public Attack? CurrentAttack { get; set; }
     
@@ -82,8 +105,8 @@ public class Hero
     
     public void GainExperience(int amount)
     {
-        // Charisma boosts experience gains
-        int bonusXP = (int)(amount * (1.0f + Charisma * 0.05f));
+        // Charisma boosts experience gains (effective value)
+        int bonusXP = (int)(amount * (1.0f + EffectiveCharisma * 0.05f));
         Experience += bonusXP;
         while (Experience >= ExperienceToNext)
         {
@@ -98,26 +121,29 @@ public class Hero
         // Quadratic XP curve per Levels and Stats.xlsx: XP to reach level L = 100 * L^2.
         ExperienceToNext = 100 * Level * Level;
         
-        // Stat gains per level (influenced by core stats)
-        int hpGain = 10 + Constitution + (Level % 5 == 0 ? 10 : 0); // Bonus HP every 5 levels
+        // Stat gains per level (influenced by effective core stats)
+        int hpGain = 10 + (int)EffectiveConstitution + (Level % 5 == 0 ? 10 : 0); // Bonus HP every 5 levels
         MaxHp += hpGain;
         CurrentHp = MaxHp; // Full heal on level up
 
-        Attack += 2 + (Strength / 2) + (Level % 3 == 0 ? 2 : 0); // Bonus attack every 3 levels
-        Defense += 1 + (Constitution / 3) + (Level % 4 == 0 ? 2 : 0); // Bonus defense every 4 levels
+        Attack += 2 + (int)(EffectiveStrength / 2) + (Level % 3 == 0 ? 2 : 0); // Bonus attack every 3 levels
+        Defense += 1 + (int)(EffectiveConstitution / 3) + (Level % 4 == 0 ? 2 : 0); // Bonus defense every 4 levels
 
         // Unlock new attack at milestones
         if (Level == 5)
         {
-            Attacks.Add(new Attack { Name = "Power Strike", Damage = 18, Range = 1.2f, Cooldown = 28, Animation = AttackAnimation.Heavy, CritChance = 0.12f, Description = "A heavy blow with bonus crit." });
+            Attacks.Add(new Attack { Id = "power-strike", Name = "Power Strike", Damage = 18, Range = 1.2f, Cooldown = 28, Animation = AttackAnimation.Heavy, CritChance = 0.12f, Description = "A heavy blow with bonus crit." });
         }
         if (Level == 10)
         {
-            Attacks.Add(new Attack { Name = "Quick Jab", Damage = 12, Range = 1.0f, Cooldown = 16, Animation = AttackAnimation.Quick, CritChance = 0.18f, Description = "A rapid jab with high crit chance." });
+            Attacks.Add(new Attack { Id = "quick-jab", Name = "Quick Jab", Damage = 12, Range = 1.0f, Cooldown = 16, Animation = AttackAnimation.Quick, CritChance = 0.18f, Description = "A rapid jab with high crit chance." });
         }
         if (Level == 15)
         {
-            Attacks.Add(new Attack { Name = "Arcane Blast", Damage = 22, Range = 2.0f, Cooldown = 32, Animation = AttackAnimation.Magic, CritChance = 0.10f, Description = "A ranged magic attack." });
+            // Basic "X Bolt" magic attack (naming convention: Mana Bolt / Fire Bolt / Ice Bolt).
+            // Distinct id from the Mage's "arcane-blast" so visuals/behavior keyed off Attack.Id
+            // don't conflate it with that AoE spell.
+            Attacks.Add(new Attack { Id = "mana-bolt", Name = "Mana Bolt", Damage = 22, Range = 2.0f, Cooldown = 32, Animation = AttackAnimation.Magic, CritChance = 0.10f, Description = "A ranged magic attack." });
         }
 
         // Increase core stats based on class stat growth

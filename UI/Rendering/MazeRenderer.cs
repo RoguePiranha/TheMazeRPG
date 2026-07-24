@@ -566,7 +566,7 @@ public class MazeRenderer
             {
                 case AttackAnimation.Melee:
                     // Different visuals based on weapon type
-                    if (projectile.AttackName.Contains("Slash") || projectile.AttackName.Contains("Sword"))
+                    if (projectile.Visual == VisualStyle.SwordArc)
                     {
                         // Sword - Draw a sweeping arc
                         float swordDx = px - startPx;
@@ -613,7 +613,7 @@ public class MazeRenderer
                         };
                         canvas.DrawCircle(tipX, tipY, 3, gleamPaint);
                     }
-                    else if (projectile.AttackName.Contains("Holy") || projectile.AttackName.Contains("Smite"))
+                    else if (projectile.Visual == VisualStyle.HolyStrike)
                     {
                         // Holy Smite - Draw radiant hammer strike
                         using (var holyPaint = new SKPaint
@@ -639,7 +639,7 @@ public class MazeRenderer
                         };
                         canvas.DrawCircle(px, py, 8, glowPaint);
                     }
-                    else if (projectile.AttackName.Contains("Unarmed") || projectile.AttackName.Contains("Punch") || projectile.AttackName.Contains("Kick"))
+                    else if (projectile.Visual == VisualStyle.ImpactBurst)
                     {
                         // Unarmed Strike - Draw impact burst and motion lines
                         float progress = (float)projectile.LifeTime / projectile.MaxLifeTime;
@@ -721,7 +721,7 @@ public class MazeRenderer
                     float dy = py - startPy;
                     float angle = MathF.Atan2(dy, dx);
                     
-                    if (projectile.AttackName.Contains("Bow") || projectile.AttackName.Contains("Arrow"))
+                    if (projectile.Visual == VisualStyle.Arrow)
                     {
                         // Bow Shot - Draw arrow with fletching
                         using (var shaftPaint = new SKPaint
@@ -768,7 +768,7 @@ public class MazeRenderer
                         };
                         canvas.DrawCircle(fletchX, fletchY, 2, fletchPaint);
                     }
-                    else if (projectile.AttackName.Contains("Poison") || projectile.AttackName.Contains("Dart"))
+                    else if (projectile.Visual == VisualStyle.PoisonDart)
                     {
                         // Poison Dart - Draw with green trail
                         using (var dartPaint = new SKPaint
@@ -819,7 +819,7 @@ public class MazeRenderer
                     break;
                     
                 case AttackAnimation.Magic:
-                    if (projectile.AttackName.Contains("Magic Missile"))
+                    if (projectile.Visual == VisualStyle.MagicMissile)
                     {
                         // Magic Missile - Purple glowing orb with sparkles
                         using (var magicGlow = new SKPaint
@@ -861,7 +861,7 @@ public class MazeRenderer
                             canvas.DrawCircle(sparkleX, sparkleY, 2, sparklePaint);
                         }
                     }
-                    else if (projectile.AttackName.Contains("Magic Dart"))
+                    else if (projectile.Visual == VisualStyle.MagicComet)
                     {
                         // Magic Dart - cyan/blue comet with additive glow and tapered trail
                         float trailDx = px - startPx;
@@ -908,7 +908,7 @@ public class MazeRenderer
                             canvas.DrawCircle(tx, ty, size, trail);
                         }
                     }
-                    else if (projectile.AttackName.Contains("Arcane Blast"))
+                    else if (projectile.Visual == VisualStyle.ArcaneRing)
                     {
                         // Arcane Blast - expanding teal ring (shockwave)
                         float progress = (float)projectile.LifeTime / projectile.MaxLifeTime;
@@ -924,7 +924,7 @@ public class MazeRenderer
                         };
                         canvas.DrawCircle(px, py, radius, ring);
                     }
-                    else if (projectile.AttackName.Contains("Sonic"))
+                    else if (projectile.Visual == VisualStyle.Sonic)
                     {
                         // Sonic Blast - Sound wave rings
                         float waveProgress = (float)projectile.LifeTime / projectile.MaxLifeTime;
@@ -985,7 +985,7 @@ public class MazeRenderer
                     break;
                     
                 case AttackAnimation.Quick:
-                    if (projectile.AttackName.Contains("Backstab"))
+                    if (projectile.Visual == VisualStyle.Backstab)
                     {
                         // Backstab - Multiple quick dagger slashes in a cross pattern
                         float quickDx = px - startPx;
@@ -1013,7 +1013,7 @@ public class MazeRenderer
                         };
                         canvas.DrawCircle(px, py, 3, bloodPaint);
                     }
-                    else if (projectile.AttackName.Contains("Parry"))
+                    else if (projectile.Visual == VisualStyle.Parry)
                     {
                         // Parry - Defensive arc flash
                         using var parryPaint = new SKPaint

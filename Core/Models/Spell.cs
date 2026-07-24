@@ -15,10 +15,12 @@ public class Spell : Combinable
     public int FaithCost { get; set; } = 0;
     public AttackAnimation Animation { get; set; } = AttackAnimation.Magic;
     public float CritChance { get; set; } = 0.1f;
+    public float KnockbackDistance { get; set; } = 0f;
 
     /// <summary>Project this spell into an Attack the combat system can execute.</summary>
     public Attack ToAttack() => new()
     {
+        Id = Id,
         Name = Name,
         Damage = BaseDamage,
         Range = Range,
@@ -27,6 +29,7 @@ public class Spell : Combinable
         Description = Description,
         CritChance = CritChance,
         ManaCost = ManaCost,
-        FaithCost = FaithCost
+        FaithCost = FaithCost,
+        KnockbackDistance = KnockbackDistance
     };
 }

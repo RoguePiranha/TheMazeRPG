@@ -77,6 +77,11 @@ sealed class Program
         Show("generic  ", CombinableCatalog.Sword(), CombinableCatalog.Fireball());
         Show("generic  ", CombinableCatalog.IceShard(), CombinableCatalog.ManaCircuitry());
         Show("generic  ", CombinableCatalog.ShieldGenerator(), CombinableCatalog.IceShard());
+
+        Console.WriteLine("\n=== Attack visual routing (id -> VisualStyle) ===");
+        foreach (var cls in new[] { "Warrior", "Mage Apprentice", "Rogue", "Archer", "Bard", "Priest", "Wanderer" })
+            foreach (var a in AttackFactory.GetStartingAttacks(cls))
+                Console.WriteLine($"  {cls,-16} {a.Name,-22} ({a.Id,-22}) -> {AttackVisuals.For(a)}");
     }
 
     // Avalonia configuration, don't remove; also used by visual designer.

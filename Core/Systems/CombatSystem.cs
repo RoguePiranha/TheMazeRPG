@@ -77,7 +77,7 @@ public class CombatSystem
 
                     // Set cooldown based on attack, Dexterity, and minimum threshold
                     int minCooldown = 8; // Lower minimum for snappier combat
-                    int statCooldown = attack.Cooldown - (int)(hero.Dexterity * 0.7f);
+                    int statCooldown = attack.Cooldown - (int)(hero.EffectiveDexterity * 0.7f);
                     hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
 
                     // Damage is applied on projectile contact in GameState.ProcessProjectileCollisions,
@@ -135,7 +135,7 @@ public class CombatSystem
                     + (int)(enemy.Strength * 1.1f)
                     + (int)(enemy.Dexterity * 0.4f);
                 // Calculate final damage, factoring hero defense and Constitution
-                int finalEnemyDamage = CalculateDamage(statEnemyDamage, hero.Defense + (int)(hero.Constitution * 0.7f));
+                int finalEnemyDamage = CalculateDamage(statEnemyDamage, hero.Defense + (int)(hero.EffectiveConstitution * 0.7f));
 
                 // Cooldown based on enemy attack speed, Dexterity, and Agility
                 int minEnemyCooldown = 10;
@@ -214,21 +214,21 @@ public class CombatSystem
         if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0)
         {
             // Magic damage scaling
-            statDamage += (int)(hero.Intelligence * 1.5f) + (int)(hero.Wisdom * 0.5f);
+            statDamage += (int)(hero.EffectiveIntelligence * 1.5f) + (int)(hero.EffectiveWisdom * 0.5f);
         }
         else if (attack.FaithCost > 0)
         {
             // Faith damage scaling
-            statDamage += (int)(hero.Wisdom * 1.5f) + (int)(hero.Charisma * 0.5f);
+            statDamage += (int)(hero.EffectiveWisdom * 1.5f) + (int)(hero.EffectiveCharisma * 0.5f);
         }
         else
         {
             // Physical damage scaling
-            statDamage += (int)(hero.Strength * 1.2f) + (int)(hero.Dexterity * 0.5f);
+            statDamage += (int)(hero.EffectiveStrength * 1.2f) + (int)(hero.EffectiveDexterity * 0.5f);
         }
 
         // Critical hit chance
-        float critChance = attack.CritChance + hero.Dexterity * 0.005f;
+        float critChance = attack.CritChance + hero.EffectiveDexterity * 0.005f;
         float critRoll = (float)_random.NextDouble();
         if (critRoll < critChance)
         {
@@ -242,6 +242,9 @@ public class CombatSystem
             enemyDefense += (int)(enemyDefense * 0.2f); // base 20% magic resist
         }
         int finalDamage = CalculateDamage(statDamage, enemyDefense);
+
+        // Choose the visual style from the attack's stable id (not its display name).
+        var visual = AttackVisuals.For(attack);
 
         // Apply attack animation movement and spawn damage-carrying projectiles/hitboxes
         switch (attack.Animation)
@@ -263,6 +266,7 @@ public class CombatSystem
                     Speed = 0.4f,
                     Type = AttackAnimation.Melee,
                     AttackName = attack.Name,
+                    Visual = visual,
                     MaxLifeTime = 12,
                     Team = ProjectileTeam.Hero,
                     Damage = Math.Max(1, finalDamage),
@@ -288,6 +292,7 @@ public class CombatSystem
                     Speed = 0.5f,
                     Type = AttackAnimation.Ranged,
                     AttackName = attack.Name,
+                    Visual = visual,
                     MaxLifeTime = 25,
                     Team = ProjectileTeam.Hero,
                     Damage = Math.Max(1, finalDamage),
@@ -313,6 +318,7 @@ public class CombatSystem
                     Speed = 0.3f,
                     Type = AttackAnimation.Heavy,
                     AttackName = attack.Name,
+                    Visual = visual,
                     MaxLifeTime = 14,
                     Team = ProjectileTeam.Hero,
                     Damage = Math.Max(1, (int)(finalDamage * 1.15f)),
@@ -338,6 +344,7 @@ public class CombatSystem
                     Speed = 0.6f,
                     Type = AttackAnimation.Quick,
                     AttackName = attack.Name,
+                    Visual = visual,
                     MaxLifeTime = 10,
                     Team = ProjectileTeam.Hero,
                     Damage = Math.Max(1, finalDamage),
@@ -359,6 +366,7 @@ public class CombatSystem
                     CurrentX = hero.X,
                     CurrentY = hero.Y,
                     AttackName = attack.Name,
+                    Visual = visual,
                     TargetX = (float)enemy.X,
                     TargetY = (float)enemy.Y,
                     Speed = 0.35f,
@@ -366,8 +374,8 @@ public class CombatSystem
                     MaxLifeTime = 30,
                     Team = ProjectileTeam.Hero,
                     Damage = Math.Max(1, finalDamage),
-                    Radius = attack.Name.Contains("Arcane Blast") ? 0.35f : 0.25f,
-                    CanHitMultiple = attack.Name.Contains("Arcane Blast") // treat blast as AoE ring that can hit multiple once
+                    Radius = attack.Id == "arcane-blast" ? 0.35f : 0.25f,
+                    CanHitMultiple = attack.Id == "arcane-blast" // treat blast as AoE ring that can hit multiple once
                 });
                 break;
         }
@@ -375,9 +383,9 @@ public class CombatSystem
         // Set cooldown based on attack, Dexterity, Agility, and Charisma
         int minCooldown = 8;
         int statCooldown = attack.Cooldown
-            - (int)(hero.Dexterity * 0.7f)
-            - (int)(hero.Agility * 0.3f)
-            - (int)(hero.Charisma * 0.2f); // Charisma provides slight cooldown reduction
+            - (int)(hero.EffectiveDexterity * 0.7f)
+            - (int)(hero.EffectiveAgility * 0.3f)
+            - (int)(hero.EffectiveCharisma * 0.2f); // Charisma provides slight cooldown reduction
         hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
     }
     
@@ -430,7 +438,7 @@ public class CombatSystem
             int statEnemyDamage = enemy.Attack
                 + (int)(enemy.Strength * 1.1f)
                 + (int)(enemy.Dexterity * 0.4f);
-            int finalEnemyDamage = CalculateDamage(statEnemyDamage, hero.Defense + (int)(hero.Constitution * 0.7f));
+            int finalEnemyDamage = CalculateDamage(statEnemyDamage, hero.Defense + (int)(hero.EffectiveConstitution * 0.7f));
 
             // Enemy attack animation (lunge)
             float dx = hero.X - enemy.X;

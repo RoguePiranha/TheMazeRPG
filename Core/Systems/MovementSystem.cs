@@ -139,7 +139,7 @@ public class MovementSystem
 
     // Movement speed scales with Agility
     float baseSpeed = 0.06f;
-    float speed = baseSpeed * (1.0f + 0.05f * (hero.Agility - 4));
+    float speed = baseSpeed * (1.0f + 0.05f * (hero.EffectiveAgility - 4));
         
         // If we're too far, use pathfinding to navigate around obstacles
         if (distance > desiredRange)
@@ -243,7 +243,7 @@ public class MovementSystem
             if (distance > 0.1f)
             {
                 float baseSpeed = 0.08f;
-                float speed = baseSpeed * (1.0f + 0.05f * (hero.Agility - 4));
+                float speed = baseSpeed * (1.0f + 0.05f * (hero.EffectiveAgility - 4));
                 hero.X += (dx / distance) * speed;
                 hero.Y += (dy / distance) * speed;
             }
@@ -381,7 +381,7 @@ public class MovementSystem
                 // Move a fraction of the way toward target (smooth movement)
                 // Movement speed scales with Agility
                 float baseSpeed = 0.075f;
-                float speed = baseSpeed * (1.0f + 0.05f * (hero.Agility - 4));
+                float speed = baseSpeed * (1.0f + 0.05f * (hero.EffectiveAgility - 4));
                 hero.X += (dx / distance) * speed;
                 hero.Y += (dy / distance) * speed;
             }

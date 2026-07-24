@@ -1,93 +1,119 @@
 {
   "Human": {
-    "description": "Versatile and adaptable with bonus charisma",
+    "description": "The baseline race: full effectiveness in every attribute, and no weaknesses.",
     "color": "#FFC0CB",
-    "statModifiers": {
-      "Strength": 0,
-      "Constitution": 0,
-      "Agility": 0,
-      "Dexterity": 0,
-      "Intelligence": 0,
-      "Wisdom": 0,
-      "Charisma": 1
+    "effectiveness": {
+      "Strength": 1.0,
+      "Constitution": 1.0,
+      "Agility": 1.0,
+      "Dexterity": 1.0,
+      "Intelligence": 1.0,
+      "Wisdom": 1.0,
+      "Charisma": 1.0
     }
   },
   "Elf": {
-    "description": "Graceful and wise with keen senses",
+    "description": "Graceful and wise, gifted with magic and keen senses but physically slight.",
     "color": "#90EE90",
-    "statModifiers": {
-      "Strength": -1,
-      "Constitution": 0,
-      "Agility": 2,
-      "Dexterity": 1,
-      "Intelligence": 1,
-      "Wisdom": 1,
-      "Charisma": 0
+    "effectiveness": {
+      "Strength": 0.8,
+      "Constitution": 0.9,
+      "Agility": 1.2,
+      "Dexterity": 1.1,
+      "Intelligence": 1.25,
+      "Wisdom": 1.1,
+      "Charisma": 1.0
     }
   },
   "Dwarf": {
-    "description": "Sturdy and resilient with great endurance",
+    "description": "Sturdy and resilient with great strength and endurance, but slow and unarcane.",
     "color": "#D2691E",
-    "statModifiers": {
-      "Strength": 1,
-      "Constitution": 2,
-      "Agility": -1,
-      "Dexterity": 0,
-      "Intelligence": 0,
-      "Wisdom": 1,
-      "Charisma": 0
+    "effectiveness": {
+      "Strength": 1.3,
+      "Constitution": 1.3,
+      "Agility": 0.8,
+      "Dexterity": 1.0,
+      "Intelligence": 0.8,
+      "Wisdom": 1.0,
+      "Charisma": 0.9
     }
   },
   "Halfling": {
-    "description": "Small and nimble with incredible luck",
+    "description": "Small, nimble, and charming, but lacking raw physical power.",
     "color": "#F0E68C",
-    "statModifiers": {
-      "Strength": -1,
-      "Constitution": 0,
-      "Agility": 2,
-      "Dexterity": 2,
-      "Intelligence": 0,
-      "Wisdom": 0,
-      "Charisma": 1
+    "effectiveness": {
+      "Strength": 0.6,
+      "Constitution": 0.8,
+      "Agility": 1.3,
+      "Dexterity": 1.2,
+      "Intelligence": 1.0,
+      "Wisdom": 1.0,
+      "Charisma": 1.2
     }
   },
-  "Orc": {
-    "description": "Powerful and fierce with raw strength",
-    "color": "#6B8E23",
-    "statModifiers": {
-      "Strength": 2,
-      "Constitution": 1,
-      "Agility": 0,
-      "Dexterity": -1,
-      "Intelligence": -1,
-      "Wisdom": 0,
-      "Charisma": -1
+  "Goblin": {
+    "description": "A Cursed Race: quick and cunning, but frail, dim, and widely mistrusted.",
+    "color": "#708238",
+    "effectiveness": {
+      "Strength": 0.7,
+      "Constitution": 0.9,
+      "Agility": 1.3,
+      "Dexterity": 1.2,
+      "Intelligence": 0.7,
+      "Wisdom": 0.8,
+      "Charisma": 0.4
     }
   },
-  "Tiefling": {
-    "description": "Infernal heritage grants cunning and charm",
-    "color": "#DC143C",
-    "statModifiers": {
-      "Strength": 0,
-      "Constitution": 0,
-      "Agility": 1,
-      "Dexterity": 0,
-      "Intelligence": 1,
-      "Wisdom": 0,
-      "Charisma": 2
+  "Kobold": {
+    "description": "Small, deft reptilian scavengers with a knack for precision.",
+    "color": "#B7410E",
+    "effectiveness": {
+      "Strength": 0.7,
+      "Constitution": 0.8,
+      "Agility": 1.2,
+      "Dexterity": 1.3,
+      "Intelligence": 1.1,
+      "Wisdom": 0.9,
+      "Charisma": 0.8
     }
   },
   "Dragonborn": {
-    "description": "Dragon-blooded warriors with natural power",
+    "description": "Dragon-blooded warriors with natural might and presence.",
     "color": "#FF6347",
-    "statModifiers": {
-      "Strength": 2,
-      "Constitution": 1,
-      "Agility": 0,
-      "Dexterity": 0,
-      "Intelligence": 0,
-      "Wisdom": 0,
-      "Charisma": 1
+    "effectiveness": {
+      "Strength": 1.3,
+      "Constitution": 1.15,
+      "Agility": 0.9,
+      "Dexterity": 0.9,
+      "Intelligence": 0.9,
+      "Wisdom": 1.0,
+      "Charisma": 1.1
+    }
+  },
+  "Orc": {
+    "description": "A Cursed Race: immense strength and toughness, but crude, dim, and off-putting.",
+    "color": "#6B8E23",
+    "effectiveness": {
+      "Strength": 1.4,
+      "Constitution": 1.3,
+      "Agility": 1.0,
+      "Dexterity": 0.8,
+      "Intelligence": 0.7,
+      "Wisdom": 0.8,
+      "Charisma": 0.6
+    }
+  },
+  "Tiefling": {
+    "description": "Infernal heritage grants cunning, arcane talent, and charm.",
+    "color": "#DC143C",
+    "effectiveness": {
+      "Strength": 0.9,
+      "Constitution": 0.8,
+      "Agility": 1.0,
+      "Dexterity": 1.1,
+      "Intelligence": 1.2,
+      "Wisdom": 0.9,
+      "Charisma": 1.3
     }
   }
 }

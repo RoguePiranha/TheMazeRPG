@@ -19,6 +19,7 @@ public class Weapon : Combinable
     /// <summary>Project this weapon into an Attack the combat system can execute.</summary>
     public Attack ToAttack() => new()
     {
+        Id = Id,
         Name = Name,
         Damage = BaseDamage,
         Range = Range,

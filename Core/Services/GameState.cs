@@ -129,9 +129,11 @@ public class GameState
 
         Console.WriteLine($"Character Created: {Hero.Name} - {Hero.Race} {Hero.Class}");
         GameLog.Debug($"Colors - Race: {Hero.RaceColor}, Class: {Hero.ClassColor}");
+        GameLog.Debug($"Base Str {Hero.Strength} -> Effective {Hero.EffectiveStrength:0.0}; Con {Hero.Constitution} -> {Hero.EffectiveConstitution:0.0} (MaxStamina {Hero.MaxStamina}); Int {Hero.Intelligence} -> {Hero.EffectiveIntelligence:0.0} (MaxMana {Hero.MaxMana})");
 
-        // Assign starting attacks based on class
-        Hero.Attacks = AttackFactory.GetStartingAttacks(className);
+        // Equip the class starting loadout and project it into executable attacks
+        Hero.Loadout = AttackFactory.GetStartingLoadout(className);
+        Hero.Attacks = AttackFactory.ToAttacks(Hero.Loadout);
         Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
         GameLog.Debug($"Attacks assigned: {Hero.Attacks.Count}, Current: {Hero.CurrentAttack?.Name ?? "None"}");
 
@@ -174,9 +176,9 @@ public class GameState
         float combatRegenModifier = Hero.InCombat ? 0.7f : 1.0f;
         float regenPerSecondDivisor = 8f * _ticksPerSecond;
 
-        float staminaPerTick = (Hero.Constitution / regenPerSecondDivisor) * combatRegenModifier;
-        float manaPerTick = (Hero.Intelligence / regenPerSecondDivisor) * combatRegenModifier;
-        float faithPerTick = (Hero.Wisdom / regenPerSecondDivisor) * combatRegenModifier;
+        float staminaPerTick = (Hero.EffectiveConstitution / regenPerSecondDivisor) * combatRegenModifier;
+        float manaPerTick = (Hero.EffectiveIntelligence / regenPerSecondDivisor) * combatRegenModifier;
+        float faithPerTick = (Hero.EffectiveWisdom / regenPerSecondDivisor) * combatRegenModifier;
         
         _accumulatedStaminaRegen += staminaPerTick;
         _accumulatedManaRegen += manaPerTick;
@@ -204,7 +206,7 @@ public class GameState
         }
         
         // Health regeneration: Constitution/16 HP per second (e.g. 16 Constitution = 1 HP/sec).
-        float hpPerTick = Hero.Constitution / (16f * _ticksPerSecond);
+        float hpPerTick = Hero.EffectiveConstitution / (16f * _ticksPerSecond);
         _accumulatedHealthRegen += hpPerTick;
         
         if (_accumulatedHealthRegen >= 1.0f)
@@ -475,7 +477,7 @@ public class GameState
         float GetEffectiveRadius(Projectile p)
         {
             // Base radius from projectile, with special-case growth
-            if (p.Type == AttackAnimation.Magic && p.AttackName.Contains("Arcane Blast"))
+            if (p.Visual == VisualStyle.ArcaneRing)
             {
                 // Start small and expand with lifetime (tiles)
                 return 0.25f + p.LifeTime * 0.05f;
@@ -827,9 +829,9 @@ public class GameState
     private void UpdateHeroResourcePools()
     {
         // Base resource pools + attribute scaling
-        Hero.MaxStamina = 100 + (Hero.Constitution * 10);
-        Hero.MaxMana = 100 + (Hero.Intelligence * 10);
-        Hero.MaxFaith = 100 + (Hero.Wisdom * 10);
+        Hero.MaxStamina = 100 + (int)(Hero.EffectiveConstitution * 10);
+        Hero.MaxMana = 100 + (int)(Hero.EffectiveIntelligence * 10);
+        Hero.MaxFaith = 100 + (int)(Hero.EffectiveWisdom * 10);
         
         // Regen rates scale with attributes (similar to health regen rate)
         // At 10 ticks/sec, these values give: Stat / 4 = resource per second
@@ -840,7 +842,7 @@ public class GameState
         
         // Health regen: 8 Constitution = 1 HP per second (at 10 ticks/sec = 0.1 HP/tick)
         // We'll use HealthRegen as HP per 10 ticks for display purposes
-        Hero.HealthRegen = Hero.Constitution / 8;
+        Hero.HealthRegen = (int)(Hero.EffectiveConstitution / 8);
     }
     
     /// <summary>
@@ -974,8 +976,9 @@ public class GameState
         Hero.CurrentFaith = Hero.MaxFaith;
         Hero.ChestOpeningDuration = _chestOpeningTicks;
 
-        // Assign starting attacks based on class
-        Hero.Attacks = AttackFactory.GetStartingAttacks(_className);
+        // Equip the class starting loadout and project it into executable attacks
+        Hero.Loadout = AttackFactory.GetStartingLoadout(_className);
+        Hero.Attacks = AttackFactory.ToAttacks(Hero.Loadout);
         Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
 
         // Start new floor

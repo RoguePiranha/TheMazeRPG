@@ -124,29 +124,18 @@ public class CharacterDataService
         if (characterClass.StartingStats.TryGetValue("Charisma", out var cha))
             hero.Charisma = cha;
             
-        // Apply race modifiers on top
-        if (race.StatModifiers.TryGetValue("Strength", out var strMod))
-            hero.Strength += strMod;
-        if (race.StatModifiers.TryGetValue("Constitution", out var conMod))
-            hero.Constitution += conMod;
-        if (race.StatModifiers.TryGetValue("Agility", out var agiMod))
-            hero.Agility += agiMod;
-        if (race.StatModifiers.TryGetValue("Dexterity", out var dexMod))
-            hero.Dexterity += dexMod;
-        if (race.StatModifiers.TryGetValue("Intelligence", out var intMod))
-            hero.Intelligence += intMod;
-        if (race.StatModifiers.TryGetValue("Wisdom", out var wisMod))
-            hero.Wisdom += wisMod;
-        if (race.StatModifiers.TryGetValue("Charisma", out var chaMod))
-            hero.Charisma += chaMod;
-            
-        // Ensure no stat goes below 0
-        hero.Strength = Math.Max(0, hero.Strength);
-        hero.Constitution = Math.Max(0, hero.Constitution);
-        hero.Agility = Math.Max(0, hero.Agility);
-        hero.Dexterity = Math.Max(0, hero.Dexterity);
-        hero.Intelligence = Math.Max(0, hero.Intelligence);
-        hero.Wisdom = Math.Max(0, hero.Wisdom);
-        hero.Charisma = Math.Max(0, hero.Charisma);
+        // Apply racial effectiveness multipliers. These do NOT alter the base stats above;
+        // they scale how effectively each stat translates into results (Info/Racial Effectiveness.md).
+        hero.StrengthEffectiveness = Effectiveness(race, "Strength");
+        hero.ConstitutionEffectiveness = Effectiveness(race, "Constitution");
+        hero.AgilityEffectiveness = Effectiveness(race, "Agility");
+        hero.DexterityEffectiveness = Effectiveness(race, "Dexterity");
+        hero.IntelligenceEffectiveness = Effectiveness(race, "Intelligence");
+        hero.WisdomEffectiveness = Effectiveness(race, "Wisdom");
+        hero.CharismaEffectiveness = Effectiveness(race, "Charisma");
     }
+
+    // Effectiveness multiplier for a stat, defaulting to 1.0 when the race doesn't specify one.
+    private static float Effectiveness(CharacterRace race, string stat) =>
+        race.Effectiveness.TryGetValue(stat, out var m) ? m : 1.0f;
 }
