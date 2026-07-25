@@ -123,7 +123,19 @@ public class CharacterDataService
             hero.Wisdom = wis;
         if (characterClass.StartingStats.TryGetValue("Charisma", out var cha))
             hero.Charisma = cha;
-            
+
+        // Testing races (e.g. Debug) can flat-override base stats after the class stats.
+        if (race.StatOverrides != null)
+        {
+            if (race.StatOverrides.TryGetValue("Strength", out var oStr)) hero.Strength = oStr;
+            if (race.StatOverrides.TryGetValue("Constitution", out var oCon)) hero.Constitution = oCon;
+            if (race.StatOverrides.TryGetValue("Agility", out var oAgi)) hero.Agility = oAgi;
+            if (race.StatOverrides.TryGetValue("Dexterity", out var oDex)) hero.Dexterity = oDex;
+            if (race.StatOverrides.TryGetValue("Intelligence", out var oInt)) hero.Intelligence = oInt;
+            if (race.StatOverrides.TryGetValue("Wisdom", out var oWis)) hero.Wisdom = oWis;
+            if (race.StatOverrides.TryGetValue("Charisma", out var oCha)) hero.Charisma = oCha;
+        }
+
         // Apply racial effectiveness multipliers. These do NOT alter the base stats above;
         // they scale how effectively each stat translates into results (Info/Racial Effectiveness.md).
         hero.StrengthEffectiveness = Effectiveness(race, "Strength");

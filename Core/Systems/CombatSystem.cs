@@ -145,202 +145,154 @@ public class CombatSystem
     private void PerformHeroAttack(Hero hero, Enemy enemy, List<Projectile> projectiles)
     {
         var attack = hero.CurrentAttack ?? new Attack { Name = "Unarmed Strike", Damage = 8 };
-        
-        // Deduct resources for heavy attacks
-        if (attack.IsHeavyAttack)
-        {
-            hero.CurrentStamina -= attack.StaminaCost;
-            hero.CurrentMana -= attack.ManaCost;
-            hero.CurrentFaith -= attack.FaithCost;
-        }
-        
-        // Calculate direction to enemy
-        float dx = (float)enemy.X - hero.X;
-        float dy = (float)enemy.Y - hero.Y;
+        DeductAttackCost(hero, attack);
+
+        // Direction to the target enemy.
+        float dx = enemy.X - hero.X;
+        float dy = enemy.Y - hero.Y;
         float distance = MathF.Sqrt(dx * dx + dy * dy);
-        
-        if (distance > 0)
-        {
-            dx /= distance;
-            dy /= distance;
-        }
-        // Compute damage now, but apply it on projectile contact
-        int statDamage = attack.Damage + hero.Attack;
-        if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0)
-        {
-            // Magic damage scaling (matches physical rate so casters aren't disproportionate)
-            statDamage += (int)(hero.EffectiveIntelligence * 1.2f) + (int)(hero.EffectiveWisdom * 0.5f);
-        }
-        else if (attack.FaithCost > 0)
-        {
-            // Faith damage scaling
-            statDamage += (int)(hero.EffectiveWisdom * 1.2f) + (int)(hero.EffectiveCharisma * 0.5f);
-        }
-        else
-        {
-            // Physical damage scaling
-            statDamage += (int)(hero.EffectiveStrength * 1.2f) + (int)(hero.EffectiveDexterity * 0.5f);
-        }
+        if (distance > 0) { dx /= distance; dy /= distance; }
 
-        // Critical hit chance
-        float critChance = attack.CritChance + hero.EffectiveDexterity * 0.005f;
-        float critRoll = (float)_random.NextDouble();
-        if (critRoll < critChance)
-        {
-            statDamage = (int)(statDamage * 1.5f);
-        }
-
-        // Compute target's defense (apply magic resist for spells)
+        // Target-locked: resolve final damage against this enemy's defense now (baked into Damage).
+        int statDamage = ComputeHeroStatDamage(hero, attack);
         int enemyDefense = enemy.Defense + (int)(enemy.Constitution * 0.7f);
         if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0 || attack.FaithCost > 0)
-        {
             enemyDefense += (int)(enemyDefense * 0.2f); // base 20% magic resist
-        }
         int finalDamage = CalculateDamage(statDamage, enemyDefense);
 
-        // Choose the visual style from the attack's stable id (not its display name).
+        SpawnHeroProjectile(hero, attack, dx, dy, enemy.X, enemy.Y, finalDamage, isStatDamage: false, projectiles);
+    }
+
+    /// <summary>
+    /// Fire the hero's current attack in a free direction (Manual click-to-fire). The projectile
+    /// travels along the aim and its damage is resolved against whatever enemy it strikes (it
+    /// carries the pre-defense stat damage — see Projectile.StatDamage), rather than being locked
+    /// to a specific target like <see cref="PerformHeroAttack"/>.
+    /// </summary>
+    public void PerformHeroDirectionalAttack(Hero hero, float dirX, float dirY, List<Projectile> projectiles)
+    {
+        var attack = hero.CurrentAttack ?? new Attack { Name = "Unarmed Strike", Damage = 8, Range = 1.0f, Cooldown = 20, CritChance = 0.05f, Animation = AttackAnimation.Melee };
+
+        float len = MathF.Sqrt(dirX * dirX + dirY * dirY);
+        if (len < 0.001f) return;
+        dirX /= len;
+        dirY /= len;
+
+        DeductAttackCost(hero, attack);
+        int statDamage = ComputeHeroStatDamage(hero, attack);
+
+        // Ranged/magic fly a long way (capped by projectile lifetime); melee-ish are a short
+        // lunge hitbox thrown just in front of the hero along the aim.
+        bool flies = attack.Animation == AttackAnimation.Ranged || attack.Animation == AttackAnimation.Magic;
+        float travel = flies ? 14f : MathF.Max(attack.Range, 1.0f);
+        float targetX = hero.X + dirX * travel;
+        float targetY = hero.Y + dirY * travel;
+
+        SpawnHeroProjectile(hero, attack, dirX, dirY, targetX, targetY, statDamage, isStatDamage: true, projectiles);
+    }
+
+    private static void DeductAttackCost(Hero hero, Attack attack)
+    {
+        if (!attack.IsHeavyAttack) return;
+        hero.CurrentStamina -= attack.StaminaCost;
+        hero.CurrentMana -= attack.ManaCost;
+        hero.CurrentFaith -= attack.FaithCost;
+    }
+
+    /// <summary>Offensive stat-scaled damage for a hero attack, before target defense; includes
+    /// a crit roll. Shared by target-locked and directional attacks.</summary>
+    private int ComputeHeroStatDamage(Hero hero, Attack attack)
+    {
+        int statDamage = attack.Damage + hero.Attack;
+        if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0)
+            statDamage += (int)(hero.EffectiveIntelligence * 1.2f) + (int)(hero.EffectiveWisdom * 0.5f);
+        else if (attack.FaithCost > 0)
+            statDamage += (int)(hero.EffectiveWisdom * 1.2f) + (int)(hero.EffectiveCharisma * 0.5f);
+        else
+            statDamage += (int)(hero.EffectiveStrength * 1.2f) + (int)(hero.EffectiveDexterity * 0.5f);
+
+        float critChance = attack.CritChance + hero.EffectiveDexterity * 0.005f;
+        if ((float)_random.NextDouble() < critChance)
+            statDamage = (int)(statDamage * 1.5f);
+        return statDamage;
+    }
+
+    /// <summary>
+    /// Spawn the hero's attack projectile (shared by target-locked and directional fire) with the
+    /// per-animation visual/speed/lifetime/hitbox and lunge animation. <paramref name="damage"/>
+    /// is the final damage when <paramref name="isStatDamage"/> is false (baked into Projectile.Damage),
+    /// or the pre-defense stat damage when true (into Projectile.StatDamage, resolved on hit). Also
+    /// sets the hero's post-attack cooldown.
+    /// </summary>
+    private static void SpawnHeroProjectile(Hero hero, Attack attack, float dirX, float dirY,
+        float targetX, float targetY, int damage, bool isStatDamage, List<Projectile> projectiles)
+    {
         var visual = AttackVisuals.For(attack);
 
-        // Apply attack animation movement and spawn damage-carrying projectiles/hitboxes
+        void Spawn(float speed, AttackAnimation type, int maxLife, float radius, float dmgMul, bool multi)
+        {
+            int d = Math.Max(1, (int)(damage * dmgMul));
+            projectiles.Add(new Projectile
+            {
+                StartX = hero.X,
+                StartY = hero.Y,
+                CurrentX = hero.X,
+                CurrentY = hero.Y,
+                TargetX = targetX,
+                TargetY = targetY,
+                Speed = speed,
+                Type = type,
+                AttackName = attack.Name,
+                Visual = visual,
+                MaxLifeTime = maxLife,
+                Team = ProjectileTeam.Hero,
+                Damage = isStatDamage ? 0 : d,
+                StatDamage = isStatDamage ? d : 0,
+                Radius = radius,
+                CanHitMultiple = multi
+            });
+        }
+
         switch (attack.Animation)
         {
             case AttackAnimation.Melee:
-                // Lunge forward toward enemy - spawn dagger/blade projectile
-                hero.AnimationOffsetX = dx * 0.4f;
-                hero.AnimationOffsetY = dy * 0.4f;
-                
-                // Create weapon trail effect
-                projectiles.Add(new Projectile
-                {
-                    StartX = hero.X,
-                    StartY = hero.Y,
-                    CurrentX = hero.X,
-                    CurrentY = hero.Y,
-                    TargetX = (float)enemy.X,
-                    TargetY = (float)enemy.Y,
-                    Speed = 0.4f,
-                    Type = AttackAnimation.Melee,
-                    AttackName = attack.Name,
-                    Visual = visual,
-                    MaxLifeTime = 12,
-                    Team = ProjectileTeam.Hero,
-                    Damage = Math.Max(1, finalDamage),
-                    Radius = 0.45f,
-                    CanHitMultiple = false
-                });
+                hero.AnimationOffsetX = dirX * 0.4f;
+                hero.AnimationOffsetY = dirY * 0.4f;
+                Spawn(0.4f, AttackAnimation.Melee, 12, 0.45f, 1f, false);
                 break;
-                
+
             case AttackAnimation.Ranged:
-                // Stay steady and shoot
-                hero.AnimationOffsetX = -dx * 0.05f; // Minimal recoil
-                hero.AnimationOffsetY = -dy * 0.05f;
-                
-                // Spawn arrow/dart projectile
-                projectiles.Add(new Projectile
-                {
-                    StartX = hero.X,
-                    StartY = hero.Y,
-                    CurrentX = hero.X,
-                    CurrentY = hero.Y,
-                    TargetX = (float)enemy.X,
-                    TargetY = (float)enemy.Y,
-                    Speed = 0.5f,
-                    Type = AttackAnimation.Ranged,
-                    AttackName = attack.Name,
-                    Visual = visual,
-                    MaxLifeTime = 25,
-                    Team = ProjectileTeam.Hero,
-                    Damage = Math.Max(1, finalDamage),
-                    Radius = 0.22f,
-                    CanHitMultiple = false
-                });
+                hero.AnimationOffsetX = -dirX * 0.05f; // minimal recoil
+                hero.AnimationOffsetY = -dirY * 0.05f;
+                Spawn(0.5f, AttackAnimation.Ranged, 25, 0.22f, 1f, false);
                 break;
-                
+
             case AttackAnimation.Heavy:
-                // Big lunge forward
-                hero.AnimationOffsetX = dx * 0.5f;
-                hero.AnimationOffsetY = dy * 0.5f;
-                
-                // Heavy weapon arc
-                projectiles.Add(new Projectile
-                {
-                    StartX = hero.X,
-                    StartY = hero.Y,
-                    CurrentX = hero.X,
-                    CurrentY = hero.Y,
-                    TargetX = (float)enemy.X,
-                    TargetY = (float)enemy.Y,
-                    Speed = 0.3f,
-                    Type = AttackAnimation.Heavy,
-                    AttackName = attack.Name,
-                    Visual = visual,
-                    MaxLifeTime = 14,
-                    Team = ProjectileTeam.Hero,
-                    Damage = Math.Max(1, (int)(finalDamage * 1.15f)),
-                    Radius = 0.55f,
-                    CanHitMultiple = false
-                });
+                hero.AnimationOffsetX = dirX * 0.5f;
+                hero.AnimationOffsetY = dirY * 0.5f;
+                Spawn(0.3f, AttackAnimation.Heavy, 14, 0.55f, 1.15f, false);
                 break;
-                
+
             case AttackAnimation.Quick:
-                // Quick dart in and out for rogue
-                hero.AnimationOffsetX = dx * 0.5f;
-                hero.AnimationOffsetY = dy * 0.5f;
-                
-                // Quick strike flash
-                projectiles.Add(new Projectile
-                {
-                    StartX = hero.X,
-                    StartY = hero.Y,
-                    CurrentX = hero.X,
-                    CurrentY = hero.Y,
-                    TargetX = (float)enemy.X,
-                    TargetY = (float)enemy.Y,
-                    Speed = 0.6f,
-                    Type = AttackAnimation.Quick,
-                    AttackName = attack.Name,
-                    Visual = visual,
-                    MaxLifeTime = 10,
-                    Team = ProjectileTeam.Hero,
-                    Damage = Math.Max(1, finalDamage),
-                    Radius = 0.4f,
-                    CanHitMultiple = false
-                });
+                hero.AnimationOffsetX = dirX * 0.5f;
+                hero.AnimationOffsetY = dirY * 0.5f;
+                Spawn(0.6f, AttackAnimation.Quick, 10, 0.4f, 1f, false);
                 break;
-                
+
             case AttackAnimation.Magic:
-                // Stay still for magic - minimal movement
                 hero.AnimationOffsetX = 0;
                 hero.AnimationOffsetY = 0;
-                
-                // Spawn magic missile
-                projectiles.Add(new Projectile
-                {
-                    StartX = hero.X,
-                    StartY = hero.Y,
-                    CurrentX = hero.X,
-                    CurrentY = hero.Y,
-                    AttackName = attack.Name,
-                    Visual = visual,
-                    TargetX = (float)enemy.X,
-                    TargetY = (float)enemy.Y,
-                    Speed = 0.35f,
-                    Type = AttackAnimation.Magic,
-                    MaxLifeTime = 30,
-                    Team = ProjectileTeam.Hero,
-                    Damage = Math.Max(1, finalDamage),
-                    Radius = attack.Id == "arcane-blast" ? 0.35f : 0.25f,
-                    CanHitMultiple = attack.Id == "arcane-blast" // treat blast as AoE ring that can hit multiple once
-                });
+                bool aoe = attack.Id == "arcane-blast"; // AoE ring that can hit multiple once
+                Spawn(0.35f, AttackAnimation.Magic, 30, aoe ? 0.35f : 0.25f, 1f, aoe);
                 break;
         }
-        
-        // Set cooldown based on attack, Dexterity, Agility, and Charisma
+
+        // Cooldown from attack + Dexterity/Agility/Charisma reductions.
         int minCooldown = 8;
         int statCooldown = attack.Cooldown
             - (int)(hero.EffectiveDexterity * 0.7f)
             - (int)(hero.EffectiveAgility * 0.3f)
-            - (int)(hero.EffectiveCharisma * 0.2f); // Charisma provides slight cooldown reduction
+            - (int)(hero.EffectiveCharisma * 0.2f);
         hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
     }
 

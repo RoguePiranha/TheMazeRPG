@@ -1,6 +1,7 @@
 using System;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Platform;
 using Avalonia.Rendering.SceneGraph;
@@ -23,7 +24,7 @@ public class GameCanvas : Control
     public GameCanvas()
     {
         _renderer = new MazeRenderer();
-        
+
         // Request render updates at ~60 FPS
         var timer = new DispatcherTimer
         {
@@ -31,11 +32,27 @@ public class GameCanvas : Control
         };
         timer.Tick += (s, e) => InvalidateVisual();
         timer.Start();
+
+        // Click-to-fire: aim the hero's current attack toward the clicked point (Manual mode).
+        PointerPressed += OnPointerPressed;
     }
-    
+
     public void SetGameState(GameState gameState)
     {
         _gameState = gameState;
+    }
+
+    private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_gameState == null) return;
+
+        var pos = e.GetPosition(this);
+        var (worldX, worldY) = _renderer.ScreenToWorld(pos.X, pos.Y);
+        float dx = worldX - _gameState.Hero.X;
+        float dy = worldY - _gameState.Hero.Y;
+
+        // No-op in Auto mode / on cooldown / when unaffordable (FireManualAttack guards all that).
+        _gameState.FireManualAttack(dx, dy);
     }
     
     public override void Render(DrawingContext context)

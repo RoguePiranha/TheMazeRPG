@@ -34,6 +34,9 @@ public class MineOreActivity : Activity
     public override void OnFinish(GameState gameState)
     {
         gameState.AddHeroResource(_materialId, _amount);
+        var name = MaterialDataService.Instance.Materials.TryGetValue(_materialId, out var def)
+            ? def.Name : _materialId;
+        gameState.LogMessage($"Mined {_amount}x {name}", MessageKind.Loot);
         _onComplete?.Invoke(gameState);
     }
 }

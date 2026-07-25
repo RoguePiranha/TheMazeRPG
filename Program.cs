@@ -73,7 +73,105 @@ sealed class Program
             return;
         }
 
+        // If TEST_DEBUGRACE is set, verify the Debug testing race's pools/exclusions and exit
+        if (Environment.GetEnvironmentVariable("TEST_DEBUGRACE") == "1")
+        {
+            RunDebugRaceDemo();
+            return;
+        }
+
+        // If TEST_CONTROL is set, verify Auto vs Manual control modes and exit
+        if (Environment.GetEnvironmentVariable("TEST_CONTROL") == "1")
+        {
+            RunControlModeDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+
+    // Debug/test entrypoint: verify the Debug race's flat pool overrides and that it never
+    // spawns as an enemy.
+    public static void RunDebugRaceDemo()
+    {
+        Console.WriteLine("=== Debug race ===");
+        var gs = new GameState(1, "Tester", "Warrior", "Debug");
+        var h = gs.Hero;
+        Console.WriteLine($"HP {h.CurrentHp}/{h.MaxHp} (expect 1000/1000), Stamina {h.CurrentStamina}/{h.MaxStamina} (expect 1000/1000), Mana {h.CurrentMana}/{h.MaxMana} (expect 1000/1000)");
+        Console.WriteLine($"Base stats: Str {h.Strength}, Con {h.Constitution}, Int {h.Intelligence}, Wis {h.Wisdom} (expect 100 each); Agi {h.Agility}, Dex {h.Dexterity}, Cha {h.Charisma} (class defaults)");
+
+        var cds = new CharacterDataService();
+        var rng = new Random(7);
+        int debugSpawns = 0;
+        for (int i = 0; i < 500; i++)
+        {
+            if (EnemyFactory.RandomRegular(3, cds, rng).Race == "Debug") debugSpawns++;
+        }
+        Console.WriteLine($"Debug-race enemies out of 500 random spawns: {debugSpawns} (expect 0)");
+    }
+
+    // Debug/test entrypoint: verify Auto vs Manual control modes.
+    public static void RunControlModeDemo()
+    {
+        Console.WriteLine("=== Control modes ===");
+
+        // Auto mode: the hero explores on its own (position changes without any input).
+        var auto = new GameState(4321, "AutoWalker", "Warrior", "Human");
+        auto.IsRunning = true;
+        float ax0 = auto.Hero.X, ay0 = auto.Hero.Y;
+        for (int t = 0; t < 60; t++) auto.Tick();
+        float autoMoved = MathF.Sqrt((auto.Hero.X - ax0) * (auto.Hero.X - ax0) + (auto.Hero.Y - ay0) * (auto.Hero.Y - ay0));
+        Console.WriteLine($"Auto mode ({auto.ControlMode}): hero auto-moved {autoMoved:F2} tiles with no input (expect > 0)");
+
+        // Manual mode, no input: the hero should hold position (auto-explore is off).
+        var man = new GameState(4321, "Driver", "Warrior", "Human");
+        man.IsRunning = true;
+        man.SetControlMode(ControlMode.Manual);
+        float mx0 = man.Hero.X, my0 = man.Hero.Y;
+        for (int t = 0; t < 60; t++) man.Tick();
+        float idleMoved = MathF.Sqrt((man.Hero.X - mx0) * (man.Hero.X - mx0) + (man.Hero.Y - my0) * (man.Hero.Y - my0));
+        Console.WriteLine($"Manual mode, no input: hero moved {idleMoved:F2} tiles (expect ~0)");
+
+        // Manual mode with a rightward intent: the hero should move right until a wall stops it.
+        man.SetManualMoveIntent(1, 0);
+        float bx = man.Hero.X;
+        for (int t = 0; t < 60; t++) man.Tick();
+        Console.WriteLine($"Manual mode, holding right: X {bx:F2} -> {man.Hero.X:F2} (expect increase, then wall-stop)");
+
+        // Toggle back to auto and confirm it resumes auto-movement.
+        man.ToggleControlMode();
+        float cx = man.Hero.X, cy = man.Hero.Y;
+        for (int t = 0; t < 60; t++) man.Tick();
+        float resumed = MathF.Sqrt((man.Hero.X - cx) * (man.Hero.X - cx) + (man.Hero.Y - cy) * (man.Hero.Y - cy));
+        Console.WriteLine($"Toggled back to {man.ControlMode}: hero auto-moved {resumed:F2} tiles (expect > 0)");
+
+        // Manual click-to-fire: a directional shot damages an enemy in its path.
+        var gunner = new GameState(555, "Gunner", "Warrior", "Human");
+        gunner.IsRunning = true;
+        gunner.SetControlMode(ControlMode.Manual);
+        var target = gunner.Enemies.FirstOrDefault();
+        if (target != null)
+        {
+            target.X = gunner.Hero.X + 1.0f;
+            target.Y = gunner.Hero.Y;
+            int hpBefore = target.Hp;
+            gunner.FireManualAttack(1f, 0f); // fire toward the enemy (to the right)
+            for (int t = 0; t < 20; t++) gunner.Tick();
+            Console.WriteLine($"Manual attack (current: {gunner.Hero.CurrentAttack?.Name}): enemy HP {hpBefore} -> {target.Hp} (expect decrease)");
+        }
+        else
+        {
+            Console.WriteLine("Manual attack: no enemy present to test.");
+        }
+
+        // Hotbar selection: number-key select changes the current attack.
+        var hb = new GameState(556, "Switcher", "Warrior", "Human");
+        if (hb.Hero.Attacks.Count > 1)
+        {
+            var first = hb.Hero.CurrentAttack;
+            hb.SelectAttack(1);
+            Console.WriteLine($"Hotbar select: attack '{first?.Name}' -> '{hb.Hero.CurrentAttack?.Name}' (expect different)");
+        }
     }
 
     // Debug/test entrypoint: if TEST_SIM=1 is set, run a short simulation and exit
@@ -294,10 +392,34 @@ sealed class Program
 
         if (gsGuardian.Boss != null)
         {
+            Console.WriteLine($"Guardian fight is floor {gsGuardian.CurrentFloor} (expect 5 — the Guardian floor itself)");
             gsGuardian.Boss.Hp = 1; // force a quick, deterministic kill to verify the defeat hook
             for (int t = 0; t < 500 && gsGuardian.Boss != null; t++) gsGuardian.Tick();
-            Console.WriteLine($"Guardian defeated -> Floor={gsGuardian.CurrentFloor}, InSafeRoom={gsGuardian.IsInSafeRoom}, Boss={(gsGuardian.Boss == null ? "null (resolved correctly)" : "STILL SET (bug)")}");
+            Console.WriteLine($"Guardian defeated -> Floor={gsGuardian.CurrentFloor} (expect 6), InSafeRoom={gsGuardian.IsInSafeRoom}, Boss={(gsGuardian.Boss == null ? "null (resolved correctly)" : "STILL SET (bug)")}");
         }
+
+        // Continue to the second gate: floors 6-9, then the safe room must be 9.5 (not 8.5 —
+        // Guardian floors are every 5th floor, with the safe room just before each).
+        for (int floor = 6; floor <= 9 && !gsGuardian.IsInSafeRoom; floor++)
+        {
+            var stairs = gsGuardian.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
+            gsGuardian.Hero.X = stairs.X;
+            gsGuardian.Hero.Y = stairs.Y;
+            for (int t = 0; t < 30 && gsGuardian.CurrentFloor == floor && !gsGuardian.IsInSafeRoom; t++) gsGuardian.Tick();
+        }
+        Console.WriteLine($"Second gate: InSafeRoom={gsGuardian.IsInSafeRoom} at floor {gsGuardian.CurrentFloor} (expect True at 9 — i.e. safe room 9.5)");
+        var door2 = gsGuardian.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.GuardianDoor);
+        gsGuardian.Hero.X = door2.X;
+        gsGuardian.Hero.Y = door2.Y;
+        for (int t = 0; t < 10 && gsGuardian.Boss == null; t++) gsGuardian.Tick();
+        Console.WriteLine($"Second Guardian: spawned={gsGuardian.Boss != null} at floor {gsGuardian.CurrentFloor} (expect 10)");
+
+        // Message log: real play should have generated a feed (floor descents, safe rooms,
+        // guardian events, kills/loot). Show the last few so the wiring is visibly working.
+        var recent = gsGuardian.Messages.Messages;
+        Console.WriteLine($"\nMessage log has {recent.Count} entries (expect > 0). Last few:");
+        foreach (var m in recent.Skip(Math.Max(0, recent.Count - 5)))
+            Console.WriteLine($"  [{m.Kind}] {m.Text}");
 
         // Separately verify the shrine-exit path (fresh instance so it isn't affected by the fight above).
         Console.WriteLine("\n=== Verify shrine exit preserves hero progress ===");
@@ -525,7 +647,20 @@ sealed class Program
         var gs5 = new GameState(99, "Diver", "Warrior", "Human");
         Console.WriteLine($"Fresh dungeon floor: CanSave={gs5.CanSave} (expect False)");
 
-        SaveService.Delete(gs3.SaveId); // cleanup (gs4 shares gs3's slot and deleted it on death; belt+braces)
+        // --- Creation-time save: starting a new game (the ViewModel path) immediately writes a
+        // DungeonStart save so a crash doesn't force re-creating the character. ---
+        Console.WriteLine("\n=== Creation-time save (new-game ViewModel path) ===");
+        var newGameVm = new TheMazeRPG.ViewModels.MainWindowViewModel("Rookie", "Warrior", "Human");
+        newGameVm.Stop();
+        var rookieSave = SaveService.Load(newGameVm.GameState.SaveId);
+        Console.WriteLine($"Save written at creation: {rookieSave != null}, ResumePoint={rookieSave?.ResumePoint} (expect DungeonStart), Level={rookieSave?.Level} (expect 1)");
+        var gs6 = new GameState(111, rookieSave!.HeroName, rookieSave.ClassName, rookieSave.RaceName);
+        gs6.LoadFrom(rookieSave);
+        Console.WriteLine($"Resumed rookie: Floor={gs6.CurrentFloor} (expect 1), IsInOverworld={gs6.IsInOverworld} (expect False), IsInSafeRoom={gs6.IsInSafeRoom} (expect False)");
+
+        // Cleanup all slots created by this demo.
+        SaveService.Delete(gs3.SaveId);
+        SaveService.Delete(newGameVm.GameState.SaveId);
     }
 
     // Avalonia configuration, don't remove; also used by visual designer.

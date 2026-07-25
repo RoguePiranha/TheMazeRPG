@@ -1,0 +1,125 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:TheMazeRPG.UI.Controls"
+             xmlns:views="using:TheMazeRPG.Views"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
+             x:Class="TheMazeRPG.Views.GameView"
+             Background="#000000">
+
+    <Grid>
+        <controls:GameCanvas x:Name="GameCanvas" />
+        <views:StatsOverlay x:Name="StatsOverlay"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Stretch" />
+
+        <!-- Death Overlay -->
+        <controls:DeathOverlay x:Name="DeathOverlay"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Stretch" />
+
+        <!-- Stats Button -->
+        <Button x:Name="StatsButton"
+                Content="Stats"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="10"
+                Padding="8,4"
+                FontSize="12"
+                Click="StatsButton_Click" />
+
+        <!-- ESC Pause Menu (game is paused while visible) -->
+        <Border x:Name="PauseMenuOverlay"
+                IsVisible="False"
+                Background="#C0000000"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch">
+            <Border Background="#181818"
+                    BorderBrush="#555555"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="30,24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                <StackPanel Spacing="10" MinWidth="220">
+                    <TextBlock Text="PAUSED"
+                               FontSize="22"
+                               FontWeight="Bold"
+                               Foreground="#FFCC00"
+                               HorizontalAlignment="Center"
+                               Margin="0,0,0,8"/>
+                    <Button x:Name="ResumeButton" Content="Resume"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                            Click="ResumeButton_Click"/>
+                    <Button x:Name="SaveButton" Content="Save"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                            Click="SaveButton_Click"/>
+                    <Button x:Name="SettingsButton" Content="Settings"
+                            IsEnabled="False"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                    <Button x:Name="QuitToMenuButton" Content="Quit to Main Menu"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                            Click="QuitToMenuButton_Click"/>
+                    <Button x:Name="QuitToDesktopButton" Content="Quit to Desktop"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                            Click="QuitToDesktopButton_Click"/>
+                    <TextBlock x:Name="SaveHintText"
+                               FontSize="11"
+                               Foreground="#777777"
+                               HorizontalAlignment="Center"
+                               TextWrapping="Wrap"
+                               MaxWidth="240"/>
+                </StackPanel>
+            </Border>
+        </Border>
+
+        <!-- Inventory / Hotbar assignment (game is paused while visible) -->
+        <Border x:Name="InventoryOverlay"
+                IsVisible="False"
+                Background="#C0000000"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch">
+            <Border Background="#181818"
+                    BorderBrush="#FFCC00"
+                    BorderThickness="2"
+                    CornerRadius="6"
+                    Padding="24,20"
+                    Width="560"
+                    MaxHeight="460"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top"
+                               Text="Equip Attacks &amp; Items"
+                               FontSize="22"
+                               FontWeight="Bold"
+                               Foreground="#FFCC00"
+                               HorizontalAlignment="Center"
+                               Margin="0,0,0,4"/>
+                    <TextBlock DockPanel.Dock="Top"
+                               Text="Click an inventory item to equip it to the hotbar, or an equipped item to remove it. [I] to close."
+                               FontSize="11"
+                               Foreground="#888888"
+                               HorizontalAlignment="Center"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,14"/>
+                    <Grid ColumnDefinitions="*,16,*">
+                        <StackPanel Grid.Column="0" Spacing="6">
+                            <TextBlock Text="Equipped (Hotbar)" FontSize="14" FontWeight="Bold" Foreground="#88AAFF"/>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="320">
+                                <StackPanel x:Name="EquippedPanel" Spacing="4"/>
+                            </ScrollViewer>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Spacing="6">
+                            <TextBlock Text="Inventory" FontSize="14" FontWeight="Bold" Foreground="#88AAFF"/>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="320">
+                                <StackPanel x:Name="InventoryPanel" Spacing="4"/>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Grid>
+                </DockPanel>
+            </Border>
+        </Border>
+    </Grid>
+</UserControl>

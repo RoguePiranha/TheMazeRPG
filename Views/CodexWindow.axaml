@@ -1,0 +1,57 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="560" d:DesignHeight="520"
+        x:Class="TheMazeRPG.Views.CodexWindow"
+        Title="Codex"
+        Width="560"
+        Height="520"
+        CanResize="False"
+        WindowStartupLocation="CenterScreen"
+        Background="#000000"
+        FontFamily="avares://TheMazeRPG/Assets/Fonts#Odderf Basic">
+
+    <Window.Styles>
+        <Style Selector="Button.codex">
+            <Setter Property="Background" Value="#222222"/>
+            <Setter Property="Foreground" Value="#FFCC00"/>
+            <Setter Property="BorderBrush" Value="#FFCC00"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="30,8"/>
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        </Style>
+        <Style Selector="Button.codex:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#333333"/>
+        </Style>
+    </Window.Styles>
+
+    <Border BorderBrush="#FFCC00" BorderThickness="2" Margin="8">
+        <Border BorderBrush="#66550" BorderThickness="1" Margin="3" Padding="16">
+            <Grid RowDefinitions="Auto,*,Auto">
+
+                <TextBlock x:Name="HeaderText"
+                           Grid.Row="0"
+                           Text="Codex"
+                           FontSize="26"
+                           FontWeight="Bold"
+                           Foreground="#FFCC00"
+                           HorizontalAlignment="Center"
+                           Margin="0,0,0,16"/>
+
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="ContentPanel" Spacing="6"/>
+                </ScrollViewer>
+
+                <Button Grid.Row="2"
+                        Classes="codex"
+                        Content="Back"
+                        HorizontalAlignment="Center"
+                        Margin="0,16,0,0"
+                        Click="BackButton_Click"/>
+            </Grid>
+        </Border>
+    </Border>
+</Window>

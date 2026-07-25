@@ -3,60 +3,75 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:controls="using:TheMazeRPG.UI.Controls"
-             mc:Ignorable="d" d:DesignWidth="300" d:DesignHeight="420"
+             mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
              x:Class="TheMazeRPG.UI.Controls.DeathOverlay"
              x:DataType="controls:DeathOverlay">
-    
-    <Grid Background="#CC000000" IsVisible="{Binding ShowOverlay}">
-        <Border Background="#CC1A1A1A"
-                BorderBrush="#FF8B0000"
-                BorderThickness="3"
-                CornerRadius="10"
-                Width="250"
-                Height="180"
+
+    <UserControl.Styles>
+        <Style Selector="Button.death">
+            <Setter Property="Background" Value="#222222"/>
+            <Setter Property="Foreground" Value="#FFCC00"/>
+            <Setter Property="BorderBrush" Value="#FFCC00"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="20,6"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        </Style>
+        <Style Selector="Button.death:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#333333"/>
+        </Style>
+    </UserControl.Styles>
+
+    <!-- SimpleRPG's death popup: darkened screen, #111 panel with a red double border -->
+    <Grid Background="#A6000000" IsVisible="{Binding ShowOverlay}">
+        <Border Background="#111111"
+                BorderBrush="#660000"
+                BorderThickness="2"
+                Width="360"
+                MinHeight="200"
                 HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                BoxShadow="0 4 16 2 #AA000000">
-            
-            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="15">
-                <!-- Death message -->
-                <TextBlock Text="{Binding DeathMessage}"
-                           FontSize="24"
-                           FontWeight="Bold"
-                           Foreground="#FFFF4444"
-                           HorizontalAlignment="Center"
-                           TextAlignment="Center"
-                           Margin="10,0" />
-                
-                <!-- Timer message -->
-                <TextBlock Text="{Binding TimerMessage}"
-                           FontSize="14"
-                           Foreground="#FFCCCCCC"
-                           HorizontalAlignment="Center"
-                           TextAlignment="Center" />
-                
-                <!-- Buttons -->
-                <StackPanel Orientation="Horizontal" 
-                           HorizontalAlignment="Center" 
-                           Spacing="10"
-                           Margin="0,10,0,0">
-                    <Button Content="Try Again"
-                            Width="100"
-                            Height="32"
-                            FontSize="13"
-                            Click="TryAgain_Click"
-                            Background="#FF4CAF50"
-                            Foreground="White" />
-                    <Button Content="New Hero"
-                            Width="100"
-                            Height="32"
-                            FontSize="13"
-                            Click="NewHero_Click"
-                            Background="#FF2196F3"
-                            Foreground="White" />
+                VerticalAlignment="Center">
+            <Border BorderBrush="#330000"
+                    BorderThickness="1"
+                    Margin="3"
+                    Padding="20,16">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10">
+                    <TextBlock Text="YOU DIED"
+                               FontSize="28"
+                               FontWeight="Bold"
+                               Foreground="#FF2222"
+                               HorizontalAlignment="Center"/>
+
+                    <!-- Separator -->
+                    <Border Height="1" Background="#440000" Margin="8,0"/>
+
+                    <TextBlock Text="{Binding DeathMessage}"
+                               FontSize="14"
+                               Foreground="#CCCCCC"
+                               HorizontalAlignment="Center"
+                               TextAlignment="Center"/>
+
+                    <TextBlock Text="{Binding TimerMessage}"
+                               FontSize="13"
+                               Foreground="#888888"
+                               HorizontalAlignment="Center"
+                               TextAlignment="Center"/>
+
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Center"
+                                Spacing="12"
+                                Margin="0,8,0,0">
+                        <Button Classes="death"
+                                Content="Try Again"
+                                Click="TryAgain_Click"/>
+                        <Button Classes="death"
+                                Content="New Hero"
+                                Click="NewHero_Click"/>
+                    </StackPanel>
                 </StackPanel>
-            </StackPanel>
+            </Border>
         </Border>
     </Grid>
-    
+
 </UserControl>

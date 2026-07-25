@@ -1,7 +1,24 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace TheMazeRPG.Core.Models;
+
+/// <summary>Where continuing a save resumes the hero.</summary>
+public enum ResumePoint
+{
+    /// <summary>Default for saves that predate this field. Standing at the Overworld's dungeon
+    /// entrance — used for shrine exits and mid-dive quits (regular floors are never saved).</summary>
+    OverworldEntrance,
+
+    /// <summary>A brand-new character who hasn't reached their first safe room yet. Resuming
+    /// starts a fresh dive from floor 1 (the character is preserved; dungeon progress isn't) —
+    /// they've never seen the Overworld, so there's no entrance to stand at.</summary>
+    DungeonStart,
+
+    /// <summary>The safe-room checkpoint recorded in SafeRoomFloor.</summary>
+    SafeRoom
+}
 
 /// <summary>
 /// A persisted snapshot of the hero's progress, written to disk so it survives an app restart
@@ -20,10 +37,14 @@ public class SaveData
     public double PlaytimeSeconds { get; set; }
     public DateTime SavedAtUtc { get; set; }
 
-    /// <summary>Where continuing this save resumes. Null = the Overworld dungeon entrance (the
-    /// default). A value N means the save was made in the interstitial safe room after floor N
-    /// (e.g. 4 = safe room "4.5") — safe rooms are the only mid-dungeon save points, and
-    /// continuing rebuilds that safe room and resumes there.</summary>
+    /// <summary>Where continuing this save resumes — see ResumePoint. Stored as a string in the
+    /// JSON for readability/robustness against enum reordering.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public ResumePoint ResumePoint { get; set; } = ResumePoint.OverworldEntrance;
+
+    /// <summary>The safe-room checkpoint's floor when ResumePoint is SafeRoom: N means the
+    /// interstitial safe room after floor N (e.g. 4 = safe room "4.5" before Guardian floor 5).
+    /// Null otherwise.</summary>
     public int? SafeRoomFloor { get; set; }
 
     public string HeroName { get; set; } = "";

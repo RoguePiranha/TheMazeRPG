@@ -22,4 +22,19 @@ public class CharacterRace
     /// EffectiveAttribute = BaseAttribute × Effectiveness. Defaults to 1.0 when absent.
     /// </summary>
     public Dictionary<string, float> Effectiveness { get; set; } = new();
+
+    /// <summary>Testing-only race (e.g. "Debug"): selectable in character creation, but excluded
+    /// from enemy generation and bestiary totals.</summary>
+    public bool Debug { get; set; }
+
+    // Optional flat pool overrides for testing races: when set, they replace the normally
+    // derived max pools (and fill the current value to match). Null = normal derivation.
+    public int? HealthOverride { get; set; }
+    public int? StaminaOverride { get; set; }
+    public int? ManaOverride { get; set; }
+
+    /// <summary>Optional flat base-stat overrides for testing races (e.g. Debug's 100s). Keyed by
+    /// attribute name ("Strength", ...); applied after the class's starting stats. Null = use the
+    /// class stats unchanged.</summary>
+    public Dictionary<string, int>? StatOverrides { get; set; }
 }

@@ -83,6 +83,12 @@ public static class SaveService
             SaveId = gameState.SaveId,
             PlaytimeSeconds = gameState.TotalPlaytimeSeconds,
             SavedAtUtc = DateTime.UtcNow,
+            // Where this save resumes, derived from where the hero is right now: a safe-room
+            // checkpoint, the Overworld, or (neither — a brand-new character saved at creation,
+            // before their first safe room) a fresh dive from floor 1.
+            ResumePoint = gameState.IsInSafeRoom ? ResumePoint.SafeRoom
+                : gameState.IsInOverworld ? ResumePoint.OverworldEntrance
+                : ResumePoint.DungeonStart,
             SafeRoomFloor = gameState.IsInSafeRoom ? gameState.CurrentFloor : null,
             HeroName = hero.Name,
             ClassName = hero.Class,

@@ -115,5 +115,28 @@
       "Wisdom": 0.9,
       "Charisma": 1.3
     }
+  },
+  "Debug": {
+    "description": "TESTING ONLY: towering health/stamina/mana pools. Never spawns as an enemy.",
+    "color": "#FF00FF",
+    "debug": true,
+    "healthOverride": 1000,
+    "staminaOverride": 1000,
+    "manaOverride": 1000,
+    "statOverrides": {
+      "Strength": 100,
+      "Constitution": 100,
+      "Intelligence": 100,
+      "Wisdom": 100
+    },
+    "effectiveness": {
+      "Strength": 1.0,
+      "Constitution": 1.0,
+      "Agility": 1.0,
+      "Dexterity": 1.0,
+      "Intelligence": 1.0,
+      "Wisdom": 1.0,
+      "Charisma": 1.0
+    }
   }
 }

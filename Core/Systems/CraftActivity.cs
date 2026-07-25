@@ -55,6 +55,7 @@ public class CraftActivity : Activity
 
         if (_recipe.OutputType == "weapon")
         {
+            // AcquireLoot logs the "Equipped/Found ..." message itself.
             for (int i = 0; i < _recipe.OutputAmount; i++)
             {
                 var item = CraftedItemCatalog.Build(_recipe.OutputId);
@@ -64,6 +65,9 @@ public class CraftActivity : Activity
         else
         {
             gameState.AddHeroResource(_recipe.OutputId, _recipe.OutputAmount);
+            var name = MaterialDataService.Instance.Materials.TryGetValue(_recipe.OutputId, out var def)
+                ? def.Name : _recipe.OutputId;
+            gameState.LogMessage($"{_recipe.Name}: +{_recipe.OutputAmount}x {name}", MessageKind.Loot);
         }
 
         _onComplete(gameState);

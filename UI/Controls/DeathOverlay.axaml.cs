@@ -82,7 +82,8 @@ public partial class DeathOverlay : UserControl, INotifyPropertyChanged
         if (_gameState.IsHeroDead)
         {
             ShowOverlay = true;
-            DeathMessage = $"{_gameState.Hero.Name} died!";
+            var hero = _gameState.Hero;
+            DeathMessage = $"{hero.Name} — {hero.Race} {hero.Class}\nLevel {hero.Level}  ·  Floor {_gameState.CurrentFloor}";
             TimerMessage = $"Restarting in {_gameState.DeathCountdownSeconds:F1}s...";
         }
         else
@@ -91,14 +92,21 @@ public partial class DeathOverlay : UserControl, INotifyPropertyChanged
         }
     }
     
+    /// <summary>Raised when the player picks "New Hero" — the shell navigates to character
+    /// creation (death already deleted this hero's save; they're gone for good).</summary>
+    public event Action? NewHeroRequested;
+
     private void TryAgain_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        _gameState?.RestartGame();
+        if (_gameState == null) return;
+        _gameState.RestartGame();
+        // Death deleted the save slot; the restarted character (same identity, fresh run) gets a
+        // new creation checkpoint so a crash doesn't force re-creating them.
+        SaveService.Save(_gameState);
     }
-    
+
     private void NewHero_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        // For now, just restart - in the future this could open character creation
-        _gameState?.RestartGame();
+        NewHeroRequested?.Invoke();
     }
 }

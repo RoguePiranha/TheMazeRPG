@@ -17,21 +17,77 @@ public class MazeRenderer
 {
     private const int CellSize = 64; // Size of each maze cell in pixels (much larger for free movement)
     private const float CameraLerpSpeed = 0.15f; // Smooth camera movement
-    
+
     private float _cameraX = 0;
     private float _cameraY = 0;
     private readonly Random _shakeRandom = new();
 
+    // Shake-free world→screen pixel offset from the last frame (screenPx = worldTile*CellSize +
+    // offset). Used by ScreenToWorld for click-to-fire aiming.
+    private float _lastOffsetX;
+    private float _lastOffsetY;
 
-    // Color palette
-    private static readonly SKColor BackgroundColor = new(26, 26, 26);
-    private static readonly SKColor WallColor = new(128, 128, 128);
-    private static readonly SKColor ExploredPathColor = new(64, 64, 64);
-    private static readonly SKColor UnexploredColor = new(40, 40, 40);
+    /// <summary>Map a screen-space point (pixels, relative to the canvas) to world tile
+    /// coordinates, using the last rendered camera position.</summary>
+    public (float x, float y) ScreenToWorld(double screenX, double screenY) =>
+        (((float)screenX - _lastOffsetX) / CellSize, ((float)screenY - _lastOffsetY) / CellSize);
+
+    // Color palette — SimpleRPG's dark terminal-roguelike look: pure black void, near-black
+    // floors, gray walls; entities/features pop in color against the dark.
+    private static readonly SKColor BackgroundColor = new(0, 0, 0);
+    private static readonly SKColor WallColor = new(0x66, 0x66, 0x66);
+    private static readonly SKColor WallDetailColor = new(0x88, 0x88, 0x88);
+    private static readonly SKColor FloorColor = new(0x22, 0x22, 0x22);
+    private static readonly SKColor FloorDotColor = new(0x33, 0x33, 0x33);
     private static readonly SKColor HeroColor = new(100, 180, 255);
     private static readonly SKColor EnemyColor = new(255, 80, 80);
     private static readonly SKColor ChestColor = new(255, 215, 0);
     private static readonly SKColor StairsColor = new(150, 255, 150);
+
+    // Explored-but-out-of-sight tiles render at this alpha over the black void (SimpleRPG's 0.3).
+    private const byte DimAlpha = 76;
+
+    // Fog-of-war memory: every floor tile the hero has ever actually SEEN (sight radius + LOS),
+    // per maze. Renderer-owned so gameplay's Maze.Explored (the walked trail driving
+    // auto-explore) keeps its meaning untouched.
+    private Maze? _fogMaze;
+    private readonly HashSet<(int x, int y)> _seenFloors = new();
+
+    /// <summary>Per-frame visibility for the fog pass. Disabled outside regular dungeon floors
+    /// (Overworld/safe rooms are fully lit spaces).</summary>
+    private readonly struct FogView
+    {
+        public readonly bool Enabled;
+        public readonly HashSet<(int x, int y)> VisibleFloors;
+        public readonly HashSet<(int x, int y)> SeenFloors;
+
+        public FogView(bool enabled, HashSet<(int x, int y)> visible, HashSet<(int x, int y)> seen)
+        {
+            Enabled = enabled;
+            VisibleFloors = visible;
+            SeenFloors = seen;
+        }
+
+        public bool FloorVisible(int x, int y) => !Enabled || VisibleFloors.Contains((x, y));
+        public bool FloorSeen(int x, int y) => !Enabled || VisibleFloors.Contains((x, y)) || SeenFloors.Contains((x, y));
+    }
+
+    // The game's pixel font for all Skia-drawn text (same file the XAML side uses). Falls back
+    // to a monospace system font if the asset can't be loaded.
+    private static readonly SKTypeface GameTypeface = LoadGameTypeface();
+    private static SKTypeface LoadGameTypeface()
+    {
+        try
+        {
+            using var stream = Avalonia.Platform.AssetLoader.Open(
+                new Uri("avares://TheMazeRPG/Assets/Fonts/Odderf Basic.otf"));
+            return SKTypeface.FromStream(stream) ?? SKTypeface.FromFamilyName("Consolas");
+        }
+        catch
+        {
+            return SKTypeface.FromFamilyName("Consolas");
+        }
+    }
 
     // Enemy color by character class.
     private static SKColor ClassColor(string cls) => cls switch
@@ -95,17 +151,25 @@ public class MazeRenderer
         float offsetX = viewportWidth / 2f - centerX + shakeX;
         float offsetY = viewportHeight / 2f - centerY + shakeY;
 
+        // Remember the shake-free world→screen offset so input (click-to-fire aim) can map a
+        // screen point back to world coordinates without aim jittering during screen shake.
+        _lastOffsetX = viewportWidth / 2f - centerX;
+        _lastOffsetY = viewportHeight / 2f - centerY;
+
         canvas.Save();
         canvas.Translate(offsetX, offsetY);
-        
+
+        // Fog-of-war visibility for this frame (regular dungeon floors only)
+        var fog = ComputeFogView(gameState);
+
         // Draw maze
-        DrawMaze(canvas, gameState.CurrentMaze);
-        
+        DrawMaze(canvas, gameState.CurrentMaze, fog);
+
         // Draw features (chests, stairs)
-        DrawFeatures(canvas, gameState.CurrentMaze);
-        
-        // Draw enemies
-        DrawEnemies(canvas, gameState.Enemies);
+        DrawFeatures(canvas, gameState.CurrentMaze, fog);
+
+        // Draw enemies (only the ones the hero can currently see, under fog)
+        DrawEnemies(canvas, gameState, fog);
         
     // Draw projectiles (between enemies and hero)
     DrawProjectiles(canvas, gameState);
@@ -126,6 +190,131 @@ public class MazeRenderer
 
         // Draw HUD overlay
         DrawHUD(canvas, gameState, viewportWidth, viewportHeight);
+
+        // Draw the player-facing message log (bottom-left, above the floor info line)
+        DrawMessageLog(canvas, gameState, viewportHeight);
+
+        // Draw the attack hotbar (bottom-center)
+        DrawHotbar(canvas, gameState, viewportWidth, viewportHeight);
+    }
+
+    /// <summary>
+    /// The attack hotbar (bottom-center): one slot per equipped/usable attack (Hero.Attacks),
+    /// numbered 1..N, with the current attack highlighted in gold. Number keys select; the
+    /// selected attack is what click-to-fire (and Auto combat) uses.
+    /// </summary>
+    private static void DrawHotbar(SKCanvas canvas, GameState gameState, int viewportWidth, int viewportHeight)
+    {
+        var attacks = gameState.Hero.Attacks;
+        if (attacks.Count == 0) return;
+
+        const float slotW = 108f;
+        const float slotH = 30f;
+        const float gap = 6f;
+        int n = Math.Min(attacks.Count, 9);
+        float totalW = n * slotW + (n - 1) * gap;
+        float startX = (viewportWidth - totalW) / 2f;
+        float y = viewportHeight - slotH - 8f;
+
+        for (int i = 0; i < n; i++)
+        {
+            var attack = attacks[i];
+            bool selected = gameState.Hero.CurrentAttack == attack;
+            float x = startX + i * (slotW + gap);
+
+            using var bg = new SKPaint { Color = new SKColor(0x1A, 0x1A, 0x1A, 0xE0), Style = SKPaintStyle.Fill, IsAntialias = true };
+            canvas.DrawRoundRect(x, y, slotW, slotH, 4, 4, bg);
+
+            using var border = new SKPaint
+            {
+                Color = selected ? new SKColor(0xFF, 0xCC, 0x00) : new SKColor(0x55, 0x55, 0x55),
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = selected ? 2f : 1f,
+                IsAntialias = true
+            };
+            canvas.DrawRoundRect(x, y, slotW, slotH, 4, 4, border);
+
+            // Slot number (gold)
+            using var numPaint = new SKPaint { Color = new SKColor(0xFF, 0xCC, 0x00), TextSize = 12, IsAntialias = true, Typeface = GameTypeface };
+            canvas.DrawText($"{i + 1}", x + 5, y + 20, numPaint);
+
+            // Attack name (white if selected, gray otherwise), truncated to fit
+            var nameColor = selected ? SKColors.White : new SKColor(0xAA, 0xAA, 0xAA);
+            using var namePaint = new SKPaint { Color = nameColor, TextSize = 11, IsAntialias = true, Typeface = GameTypeface };
+            string name = attack.Name.Length > 13 ? attack.Name.Substring(0, 12) + "…" : attack.Name;
+            canvas.DrawText(name, x + 18, y + 19, namePaint);
+
+            // Heavy-attack resource cost (small, bottom-right of the slot)
+            if (attack.IsHeavyAttack)
+            {
+                int cost = attack.StaminaCost > 0 ? attack.StaminaCost : attack.ManaCost > 0 ? attack.ManaCost : attack.FaithCost;
+                string costKind = attack.StaminaCost > 0 ? "SP" : attack.ManaCost > 0 ? "MP" : "FP";
+                using var costPaint = new SKPaint { Color = new SKColor(0x88, 0x88, 0x88), TextSize = 9, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Right };
+                canvas.DrawText($"{cost}{costKind}", x + slotW - 4, y + slotH - 4, costPaint);
+            }
+        }
+    }
+
+    private static readonly SKColor MsgSystemColor = new(0xAA, 0xAA, 0xAA);
+    private static readonly SKColor MsgCombatColor = new(0xFF, 0x66, 0x66);
+    private static readonly SKColor MsgLootColor = new(0xFF, 0xCC, 0x00);
+    private static readonly SKColor MsgLevelUpColor = new(0x66, 0xDD, 0x66);
+    private static readonly SKColor MsgWarningColor = new(0xFF, 0x99, 0x33);
+
+    private static SKColor MessageColor(MessageKind kind) => kind switch
+    {
+        MessageKind.Combat => MsgCombatColor,
+        MessageKind.Loot => MsgLootColor,
+        MessageKind.LevelUp => MsgLevelUpColor,
+        MessageKind.Warning => MsgWarningColor,
+        _ => MsgSystemColor
+    };
+
+    /// <summary>
+    /// The scrolling event feed (SimpleRPG's message log), drawn bottom-left above the floor info
+    /// line. Shows the most recent messages, newest at the bottom; older lines fade toward the top.
+    /// </summary>
+    private static void DrawMessageLog(SKCanvas canvas, GameState gameState, int viewportHeight)
+    {
+        var messages = gameState.Messages.Messages;
+        if (messages.Count == 0) return;
+
+        const int maxLines = 6;
+        const float lineHeight = 15f;
+        const float textSize = 12f;
+        float x = 10f;
+        // Sit just above the bottom floor-info line (which is drawn at viewportHeight - 10).
+        float bottomY = viewportHeight - 26f;
+
+        int shown = Math.Min(maxLines, messages.Count);
+        int startIndex = messages.Count - shown;
+
+        for (int i = 0; i < shown; i++)
+        {
+            var msg = messages[startIndex + i];
+            // Oldest visible line is dimmest; the newest is fully opaque.
+            float ageT = (i + 1) / (float)shown; // (0,1], newest = 1
+            byte alpha = (byte)(70 + ageT * 185);
+
+            float y = bottomY - (shown - 1 - i) * lineHeight;
+
+            using var shadow = new SKPaint
+            {
+                Color = SKColors.Black.WithAlpha((byte)(alpha * 0.8f)),
+                TextSize = textSize,
+                IsAntialias = true,
+                Typeface = GameTypeface
+            };
+            using var paint = new SKPaint
+            {
+                Color = MessageColor(msg.Kind).WithAlpha(alpha),
+                TextSize = textSize,
+                IsAntialias = true,
+                Typeface = GameTypeface
+            };
+            canvas.DrawText(msg.Text, x + 1, y + 1, shadow);
+            canvas.DrawText(msg.Text, x, y, paint);
+        }
     }
 
     /// <summary>Red radial vignette that creeps in as the hero's HP drops below 50%.</summary>
@@ -263,64 +452,140 @@ public class MazeRenderer
         }
     }
     
-    private void DrawMaze(SKCanvas canvas, Maze maze)
+    /// <summary>
+    /// Compute this frame's fog view: which floor tiles the hero can currently see (sight radius
+    /// + line of sight), unioned into the persistent seen-set. Fog only applies on regular
+    /// dungeon floors — the Overworld and safe rooms are fully lit spaces.
+    /// </summary>
+    private FogView ComputeFogView(GameState gameState)
     {
-        using var wallPaint = new SKPaint
+        var maze = gameState.CurrentMaze;
+        bool enabled = !gameState.IsInOverworld && !gameState.IsInSafeRoom;
+
+        // New maze (new floor/space): forget the old maze's seen tiles.
+        if (!ReferenceEquals(_fogMaze, maze))
         {
-            Color = WallColor,
-            Style = SKPaintStyle.Fill,
-            IsAntialias = false
-        };
-        
-        using var pathPaint = new SKPaint
+            _fogMaze = maze;
+            _seenFloors.Clear();
+        }
+
+        var visible = new HashSet<(int x, int y)>();
+        if (!enabled) return new FogView(false, visible, _seenFloors);
+
+        float heroX = gameState.Hero.X;
+        float heroY = gameState.Hero.Y;
+        float range = gameState.VisionRange;
+        int minX = Math.Max(0, (int)MathF.Floor(heroX - range));
+        int maxX = Math.Min(maze.Width - 1, (int)MathF.Ceiling(heroX + range));
+        int minY = Math.Max(0, (int)MathF.Floor(heroY - range));
+        int maxY = Math.Min(maze.Height - 1, (int)MathF.Ceiling(heroY + range));
+
+        for (int x = minX; x <= maxX; x++)
         {
-            Color = ExploredPathColor,
-            Style = SKPaintStyle.Fill,
-            IsAntialias = false
-        };
-        
-        using var unexploredPaint = new SKPaint
+            for (int y = minY; y <= maxY; y++)
+            {
+                if (maze.Walls[x, y]) continue;
+                float dx = x - heroX;
+                float dy = y - heroY;
+                if (dx * dx + dy * dy > range * range) continue;
+                if (!gameState.CheckLOS(heroX, heroY, x, y)) continue;
+                visible.Add((x, y));
+                _seenFloors.Add((x, y));
+            }
+        }
+
+        // The walked trail also counts as remembered, so pre-fog saves/old floors stay sane.
+        for (int x = 0; x < maze.Width; x++)
+            for (int y = 0; y < maze.Height; y++)
+                if (maze.Explored[x, y] && !maze.Walls[x, y])
+                    _seenFloors.Add((x, y));
+
+        return new FogView(true, visible, _seenFloors);
+    }
+
+    /// <summary>A wall is lit by the floors around it: fully if any neighboring floor is
+    /// currently visible, dimly if any was ever seen (walls themselves block LOS, so they're
+    /// never in the floor sets).</summary>
+    private static (bool visible, bool seen) WallLight(FogView fog, Maze maze, int x, int y)
+    {
+        if (!fog.Enabled) return (true, true);
+        bool visible = false, seen = false;
+        for (int nx = x - 1; nx <= x + 1; nx++)
         {
-            Color = UnexploredColor,
-            Style = SKPaintStyle.Fill,
-            IsAntialias = false
-        };
-        
+            for (int ny = y - 1; ny <= y + 1; ny++)
+            {
+                if (nx < 0 || ny < 0 || nx >= maze.Width || ny >= maze.Height || maze.Walls[nx, ny]) continue;
+                if (fog.VisibleFloors.Contains((nx, ny))) return (true, true);
+                if (fog.SeenFloors.Contains((nx, ny))) seen = true;
+            }
+        }
+        return (visible, seen);
+    }
+
+    private void DrawMaze(SKCanvas canvas, Maze maze, FogView fog)
+    {
+        using var floorPaint = new SKPaint { Color = FloorColor, Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var floorDotPaint = new SKPaint { Color = FloorDotColor, Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallPaint = new SKPaint { Color = WallColor, Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallDetailPaint = new SKPaint { Color = WallDetailColor, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
+
+        using var floorPaintDim = new SKPaint { Color = FloorColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var floorDotPaintDim = new SKPaint { Color = FloorDotColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallPaintDim = new SKPaint { Color = WallColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallDetailPaintDim = new SKPaint { Color = WallDetailColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
+
+        float dotSize = CellSize * 0.2f;
+        float dotOffset = CellSize * 0.4f;
+
         for (int x = 0; x < maze.Width; x++)
         {
             for (int y = 0; y < maze.Height; y++)
             {
                 float px = x * CellSize;
                 float py = y * CellSize;
-                
+
                 if (maze.Walls[x, y])
                 {
-                    // Draw wall
-                    canvas.DrawRect(px, py, CellSize, CellSize, wallPaint);
-                }
-                else if (maze.Explored[x, y])
-                {
-                    // Draw explored path
-                    canvas.DrawRect(px, py, CellSize, CellSize, pathPaint);
+                    var (visible, seen) = WallLight(fog, maze, x, y);
+                    if (!visible && !seen) continue; // never seen: pure black void
+
+                    canvas.DrawRect(px, py, CellSize, CellSize, visible ? wallPaint : wallPaintDim);
+                    canvas.DrawRect(px + 2, py + 2, CellSize - 4, CellSize - 4, visible ? wallDetailPaint : wallDetailPaintDim);
                 }
                 else
                 {
-                    // Draw unexplored (darker)
-                    canvas.DrawRect(px, py, CellSize, CellSize, unexploredPaint);
+                    if (!fog.FloorSeen(x, y)) continue; // never seen: pure black void
+                    bool visible = fog.FloorVisible(x, y);
+
+                    canvas.DrawRect(px, py, CellSize, CellSize, visible ? floorPaint : floorPaintDim);
+                    canvas.DrawRect(px + dotOffset, py + dotOffset, dotSize, dotSize, visible ? floorDotPaint : floorDotPaintDim);
                 }
             }
         }
     }
     
-    private void DrawFeatures(SKCanvas canvas, Maze maze)
+    private void DrawFeatures(SKCanvas canvas, Maze maze, FogView fog)
     {
         foreach (var feature in maze.Features)
         {
             if (feature.IsUsed) continue;
-            
+
+            // Fog: features on never-seen tiles don't exist yet; on remembered-but-out-of-sight
+            // tiles they render dimmed (a translucent layer, same 30% as the tiles under them).
+            int cellX = (int)MathF.Round(feature.X);
+            int cellY = (int)MathF.Round(feature.Y);
+            if (!fog.FloorSeen(cellX, cellY)) continue;
+            bool dimmed = !fog.FloorVisible(cellX, cellY);
+            int layer = 0;
+            if (dimmed)
+            {
+                using var dimLayerPaint = new SKPaint { Color = SKColors.White.WithAlpha(DimAlpha) };
+                layer = canvas.SaveLayer(dimLayerPaint);
+            }
+
             float px = feature.X * CellSize + CellSize / 2f;
             float py = feature.Y * CellSize + CellSize / 2f;
-            
+
             switch (feature.Type)
             {
                 case MazeFeatureType.Stairs:
@@ -359,6 +624,8 @@ public class MazeRenderer
                     DrawOverworldPoint(canvas, px, py, new SKColor(210, 180, 60), "$");
                     break;
             }
+
+            if (dimmed) canvas.RestoreToCount(layer);
         }
     }
 
@@ -599,10 +866,21 @@ public class MazeRenderer
         }
     }
     
-    private void DrawEnemies(SKCanvas canvas, List<Enemy> enemies)
+    private void DrawEnemies(SKCanvas canvas, GameState gameState, FogView fog)
     {
-        foreach (var enemy in enemies)
+        foreach (var enemy in gameState.Enemies)
         {
+            // Fog: an enemy only renders while the hero can actually see it (in sight range with
+            // clear line of sight) — SimpleRPG's rule; no minimap-style omniscience.
+            if (fog.Enabled)
+            {
+                float dx = enemy.X - gameState.Hero.X;
+                float dy = enemy.Y - gameState.Hero.Y;
+                float range = gameState.VisionRange;
+                if (dx * dx + dy * dy > range * range) continue;
+                if (!gameState.CheckLOS(gameState.Hero.X, gameState.Hero.Y, enemy.X, enemy.Y)) continue;
+            }
+
             float px = enemy.X * CellSize + CellSize / 2f;
             float py = enemy.Y * CellSize + CellSize / 2f;
             
@@ -1286,135 +1564,142 @@ public class MazeRenderer
         canvas.DrawCircle(px, py, heroRadius, outlinePaint);
     }
     
-    private void DrawHUD(SKCanvas canvas, GameState gameState, int viewportWidth, int viewportHeight)
+    /// <summary>SimpleRPG-style stat bar: dark tinted back, vertical-gradient fill, thin gray
+    /// border, centered shadowed text in the game font.</summary>
+    private static void DrawStatBar(SKCanvas canvas, float x, float y, float width, float height,
+        float percent, SKColor back, SKColor fillTop, SKColor fillBottom, string text)
     {
+        percent = Math.Clamp(percent, 0f, 1f);
+
+        using var backPaint = new SKPaint { Color = back, Style = SKPaintStyle.Fill };
+        canvas.DrawRect(x, y, width, height, backPaint);
+
+        if (percent > 0f)
+        {
+            using var fillPaint = new SKPaint
+            {
+                Shader = SKShader.CreateLinearGradient(
+                    new SKPoint(x, y), new SKPoint(x, y + height),
+                    new[] { fillTop, fillBottom }, null, SKShaderTileMode.Clamp)
+            };
+            canvas.DrawRect(x, y, width * percent, height, fillPaint);
+        }
+
+        using var borderPaint = new SKPaint { Color = new SKColor(0x55, 0x55, 0x55), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+        canvas.DrawRect(x, y, width, height, borderPaint);
+
         using var textPaint = new SKPaint
         {
             Color = SKColors.White,
-            TextSize = 14,
+            TextSize = 11,
             IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
+            Typeface = GameTypeface,
+            TextAlign = SKTextAlign.Center
         };
-        
-        using var textOutlinePaint = new SKPaint
+        using var shadowPaint = new SKPaint
         {
             Color = SKColors.Black,
-            TextSize = 14,
+            TextSize = 11,
             IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold),
-            Style = SKPaintStyle.Stroke,
-            StrokeWidth = 2.5f
+            Typeface = GameTypeface,
+            TextAlign = SKTextAlign.Center
         };
-        
-        using var barBgPaint = new SKPaint
-        {
-            Color = new SKColor(40, 40, 40),
-            Style = SKPaintStyle.Fill
-        };
-        
-        using var hpPaint = new SKPaint
-        {
-            Color = new SKColor(255, 80, 80),
-            Style = SKPaintStyle.Fill
-        };
-        
-        using var xpPaint = new SKPaint
-        {
-            Color = new SKColor(100, 180, 255),
-            Style = SKPaintStyle.Fill
-        };
-        
-        using var staminaPaint = new SKPaint
-        {
-            Color = new SKColor(100, 255, 100), // Green
-            Style = SKPaintStyle.Fill
-        };
-        
-        using var manaPaint = new SKPaint
-        {
-            Color = new SKColor(100, 150, 255), // Blue
-            Style = SKPaintStyle.Fill
-        };
-        
-        using var faithPaint = new SKPaint
-        {
-            Color = new SKColor(255, 215, 100), // Gold
-            Style = SKPaintStyle.Fill
-        };
-        
-        // HP Bar
-        float barWidth = 200;
-        float barHeight = 16;
+        float tx = x + width / 2f;
+        float ty = y + height / 2f + 4f;
+        canvas.DrawText(text, tx + 1, ty + 1, shadowPaint);
+        canvas.DrawText(text, tx, ty, textPaint);
+    }
+
+    private static void DrawHudLine(SKCanvas canvas, string text, float x, float y, SKColor color, float size = 12)
+    {
+        using var shadowPaint = new SKPaint { Color = SKColors.Black, TextSize = size, IsAntialias = true, Typeface = GameTypeface };
+        using var textPaint = new SKPaint { Color = color, TextSize = size, IsAntialias = true, Typeface = GameTypeface };
+        canvas.DrawText(text, x + 1, y + 1, shadowPaint);
+        canvas.DrawText(text, x, y, textPaint);
+    }
+
+    private static void DrawHUD(SKCanvas canvas, GameState gameState, int viewportWidth, int viewportHeight)
+    {
+        var hero = gameState.Hero;
+        float barWidth = 170;
+        float barHeight = 14;
         float barX = 10;
-        float barY = 10;
-        
-        canvas.DrawRect(barX, barY, barWidth, barHeight, barBgPaint);
-        
-        float hpPercent = (float)gameState.Hero.CurrentHp / gameState.Hero.MaxHp;
-        canvas.DrawRect(barX, barY, barWidth * hpPercent, barHeight, hpPaint);
-        
-        string hpText = $"HP: {gameState.Hero.CurrentHp}/{gameState.Hero.MaxHp}";
-        canvas.DrawText(hpText, barX + 5, barY + 12, textOutlinePaint);
-        canvas.DrawText(hpText, barX + 5, barY + 12, textPaint);
-        
-        // Resource bars - always show all three
-        float resourceBarY = barY + 22;
-        
-        // Stamina Bar (Green)
-        canvas.DrawRect(barX, resourceBarY, barWidth, barHeight, barBgPaint);
-        float staminaPercent = (float)gameState.Hero.CurrentStamina / gameState.Hero.MaxStamina;
-        canvas.DrawRect(barX, resourceBarY, barWidth * staminaPercent, barHeight, staminaPaint);
-        string staminaText = $"Stamina: {gameState.Hero.CurrentStamina}/{gameState.Hero.MaxStamina}";
-        canvas.DrawText(staminaText, barX + 5, resourceBarY + 12, textOutlinePaint);
-        canvas.DrawText(staminaText, barX + 5, resourceBarY + 12, textPaint);
-        
-        // Mana Bar (Blue)
-        float manaBarY = resourceBarY + 18;
-        canvas.DrawRect(barX, manaBarY, barWidth, barHeight, barBgPaint);
-        float manaPercent = (float)gameState.Hero.CurrentMana / gameState.Hero.MaxMana;
-        canvas.DrawRect(barX, manaBarY, barWidth * manaPercent, barHeight, manaPaint);
-        string manaText = $"Mana: {gameState.Hero.CurrentMana}/{gameState.Hero.MaxMana}";
-        canvas.DrawText(manaText, barX + 5, manaBarY + 12, textOutlinePaint);
-        canvas.DrawText(manaText, barX + 5, manaBarY + 12, textPaint);
-        
-        // Faith Bar (Gold)
-        float faithBarY = manaBarY + 18;
-        canvas.DrawRect(barX, faithBarY, barWidth, barHeight, barBgPaint);
-        float faithPercent = (float)gameState.Hero.CurrentFaith / gameState.Hero.MaxFaith;
-        canvas.DrawRect(barX, faithBarY, barWidth * faithPercent, barHeight, faithPaint);
-        string faithText = $"Faith: {gameState.Hero.CurrentFaith}/{gameState.Hero.MaxFaith}";
-        canvas.DrawText(faithText, barX + 5, faithBarY + 12, textOutlinePaint);
-        canvas.DrawText(faithText, barX + 5, faithBarY + 12, textPaint);
-        
-        // XP Bar
-        float xpBarY = faithBarY + 22;
-        float xpPercent = gameState.Hero.ExperienceToNext > 0 
-            ? (float)gameState.Hero.Experience / gameState.Hero.ExperienceToNext 
+        float y = 10;
+        float gap = 4;
+
+        // Identity line (SimpleRPG's "Race Class D:x Lv:y" info style, in gold)
+        DrawHudLine(canvas, $"{hero.Race} {hero.Class}  Lv:{hero.Level}", barX, y + 8, new SKColor(0xFF, 0xCC, 0x00));
+        y += 16;
+
+        DrawStatBar(canvas, barX, y, barWidth, barHeight,
+            (float)hero.CurrentHp / hero.MaxHp,
+            new SKColor(0x33, 0x00, 0x00), new SKColor(0xCC, 0x44, 0x44), new SKColor(0x88, 0x00, 0x00),
+            $"HP {hero.CurrentHp}/{hero.MaxHp}");
+        y += barHeight + gap;
+
+        DrawStatBar(canvas, barX, y, barWidth, barHeight,
+            (float)hero.CurrentStamina / hero.MaxStamina,
+            new SKColor(0x00, 0x33, 0x00), new SKColor(0x44, 0xCC, 0x44), new SKColor(0x00, 0x77, 0x00),
+            $"SP {hero.CurrentStamina}/{hero.MaxStamina}");
+        y += barHeight + gap;
+
+        DrawStatBar(canvas, barX, y, barWidth, barHeight,
+            (float)hero.CurrentMana / hero.MaxMana,
+            new SKColor(0x00, 0x00, 0x66), new SKColor(0x44, 0x88, 0xFF), new SKColor(0x22, 0x22, 0x88),
+            $"MP {hero.CurrentMana}/{hero.MaxMana}");
+        y += barHeight + gap;
+
+        DrawStatBar(canvas, barX, y, barWidth, barHeight,
+            (float)hero.CurrentFaith / hero.MaxFaith,
+            new SKColor(0x33, 0x33, 0x00), new SKColor(0xFF, 0xCC, 0x00), new SKColor(0xAA, 0x88, 0x00),
+            $"FP {hero.CurrentFaith}/{hero.MaxFaith}");
+        y += barHeight + gap;
+
+        float xpPercent = hero.ExperienceToNext > 0
+            ? (float)hero.Experience / hero.ExperienceToNext
             : 0;
-        canvas.DrawRect(barX, xpBarY, barWidth, barHeight, barBgPaint);
-        canvas.DrawRect(barX, xpBarY, barWidth * xpPercent, barHeight, xpPaint);
-        string levelText = $"Level {gameState.Hero.Level}";
-        canvas.DrawText(levelText, barX + 5, xpBarY + 12, textOutlinePaint);
-        canvas.DrawText(levelText, barX + 5, xpBarY + 12, textPaint);
-        
+        DrawStatBar(canvas, barX, y, barWidth, barHeight,
+            xpPercent,
+            new SKColor(0x11, 0x11, 0x33), new SKColor(0x66, 0xAA, 0xFF), new SKColor(0x22, 0x33, 0x88),
+            $"XP {hero.Experience}/{hero.ExperienceToNext}");
+        y += barHeight + gap + 4;
+
         // Current attack info
-        var currentAttack = gameState.Hero.CurrentAttack;
+        var currentAttack = hero.CurrentAttack;
         if (currentAttack != null)
         {
             string attackInfo = $"Attack: {currentAttack.Name}";
             if (currentAttack.IsHeavyAttack)
             {
-                if (currentAttack.StaminaCost > 0) attackInfo += $" ({currentAttack.StaminaCost} Stamina)";
-                else if (currentAttack.ManaCost > 0) attackInfo += $" ({currentAttack.ManaCost} Mana)";
-                else if (currentAttack.FaithCost > 0) attackInfo += $" ({currentAttack.FaithCost} Faith)";
+                if (currentAttack.StaminaCost > 0) attackInfo += $" ({currentAttack.StaminaCost} SP)";
+                else if (currentAttack.ManaCost > 0) attackInfo += $" ({currentAttack.ManaCost} MP)";
+                else if (currentAttack.FaithCost > 0) attackInfo += $" ({currentAttack.FaithCost} FP)";
             }
-            canvas.DrawText(attackInfo, barX, xpBarY + 30, textOutlinePaint);
-            canvas.DrawText(attackInfo, barX, xpBarY + 30, textPaint);
+            DrawHudLine(canvas, attackInfo, barX, y + 8, new SKColor(0xAA, 0xAA, 0xAA));
         }
-        
-        // Floor info (bottom)
-        string floorText = $"Floor {gameState.CurrentFloor} | ATK: {gameState.Hero.Attack} | DEF: {gameState.Hero.Defense}";
-        canvas.DrawText(floorText, 10, viewportHeight - 10, textOutlinePaint);
-        canvas.DrawText(floorText, 10, viewportHeight - 10, textPaint);
+
+        // Floor / location info (bottom-left, gold like SimpleRPG's info spans)
+        string location = gameState.IsInOverworld ? "Town"
+            : gameState.IsInSafeRoom ? $"Safe Room {gameState.CurrentFloor}.5"
+            : $"Floor {gameState.CurrentFloor}";
+        DrawHudLine(canvas, $"{location}  Atk:{hero.Attack} Def:{hero.Defense} Gold:{hero.Gold}",
+            10, viewportHeight - 10, new SKColor(0xFF, 0xCC, 0x00));
+
+        // Control-mode indicator (bottom-right, clear of the top-right Stats button): AUTO in
+        // green, MANUAL in gold, with a hint line above it.
+        bool manual = gameState.ControlMode == ControlMode.Manual;
+        var modeColor = manual ? new SKColor(0xFF, 0xCC, 0x00) : new SKColor(0x66, 0xDD, 0x66);
+        DrawHudLineRight(canvas,
+            manual ? "WASD move  ·  M: auto" : "M / WASD: take control",
+            viewportWidth - 12, viewportHeight - 28, new SKColor(0x88, 0x88, 0x88), 11);
+        DrawHudLineRight(canvas, manual ? "MANUAL" : "AUTO", viewportWidth - 12, viewportHeight - 12, modeColor, 14);
+    }
+
+    private static void DrawHudLineRight(SKCanvas canvas, string text, float rightX, float y, SKColor color, float size = 12)
+    {
+        using var shadow = new SKPaint { Color = SKColors.Black, TextSize = size, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Right };
+        using var paint = new SKPaint { Color = color, TextSize = size, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Right };
+        canvas.DrawText(text, rightX + 1, y + 1, shadow);
+        canvas.DrawText(text, rightX, y, paint);
     }
 }

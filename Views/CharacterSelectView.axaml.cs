@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -8,33 +7,25 @@ using TheMazeRPG.Core.Services;
 
 namespace TheMazeRPG.Views;
 
-public partial class CharacterSelectWindow : Window
+/// <summary>
+/// Character creation view, hosted by the MainWindow shell. Raises Confirmed with the chosen
+/// (name, class, race), or Cancelled to go back to the title — no window opening/closing.
+/// </summary>
+public partial class CharacterSelectView : UserControl
 {
+    /// <summary>(characterName, className, raceName)</summary>
+    public event Action<string, string, string>? Confirmed;
+    public event Action? Cancelled;
+
     private readonly CharacterDataService _characterDataService;
 
-    public string SelectedRace { get; private set; } = "Human";
-    public string SelectedClass { get; private set; } = "Wanderer";
-    public string CharacterName { get; private set; } = "Hero";
-    public bool WasConfirmed { get; private set; } = false;
-
-    /// <summary>Set (non-null) when the player picked an existing character via Continue/SavesWindow
-    /// instead of creating a new one — the caller should load this save id instead of reading the
-    /// Selected*/CharacterName properties above.</summary>
-    public string? LoadedSaveId { get; private set; }
-
-    public CharacterSelectWindow()
+    public CharacterSelectView()
     {
         InitializeComponent();
         _characterDataService = new CharacterDataService();
         PopulateSelections();
-
-        var continueButton = this.FindControl<Button>("ContinueButton");
-        if (continueButton != null)
-        {
-            continueButton.IsEnabled = SaveService.HasAnySaves();
-        }
     }
-    
+
     private void PopulateSelections()
     {
         // Populate Races
@@ -54,7 +45,7 @@ public partial class CharacterSelectWindow : Window
             raceListBox.ItemsSource = raceItems;
             raceListBox.SelectedIndex = raceItems.FindIndex(r => r.Name == "Human");
         }
-        
+
         // Populate Classes
         var classListBox = this.FindControl<ListBox>("ClassListBox");
         if (classListBox != null)
@@ -73,55 +64,44 @@ public partial class CharacterSelectWindow : Window
             classListBox.SelectedIndex = classItems.FindIndex(c => c.Name == "Wanderer");
         }
     }
-    
+
     private void StartButton_Click(object? sender, RoutedEventArgs e)
     {
         var nameTextBox = this.FindControl<TextBox>("NameTextBox");
         var raceListBox = this.FindControl<ListBox>("RaceListBox");
         var classListBox = this.FindControl<ListBox>("ClassListBox");
-        
+
+        string characterName = "Hero";
+        string selectedRace = "Human";
+        string selectedClass = "Wanderer";
+
         if (nameTextBox != null && !string.IsNullOrWhiteSpace(nameTextBox.Text))
         {
-            CharacterName = nameTextBox.Text;
+            characterName = nameTextBox.Text;
         }
-        
-        if (raceListBox?.SelectedItem is SelectionItem selectedRace)
+
+        if (raceListBox?.SelectedItem is SelectionItem race)
         {
-            SelectedRace = selectedRace.Name;
+            selectedRace = race.Name;
         }
-        
-        if (classListBox?.SelectedItem is SelectionItem selectedClass)
+
+        if (classListBox?.SelectedItem is SelectionItem charClass)
         {
-            SelectedClass = selectedClass.Name;
+            selectedClass = charClass.Name;
         }
-        
-        WasConfirmed = true;
-        Close();
+
+        Confirmed?.Invoke(characterName, selectedClass, selectedRace);
     }
 
-    private async void ContinueButton_Click(object? sender, RoutedEventArgs e)
-    {
-        var savesWindow = new SavesWindow();
-        await savesWindow.ShowDialog(this);
-
-        // Deletions made inside the saves window may have emptied the list entirely.
-        var continueButton = this.FindControl<Button>("ContinueButton");
-        if (continueButton != null) continueButton.IsEnabled = SaveService.HasAnySaves();
-
-        if (savesWindow.WasConfirmed && savesWindow.SelectedSaveId != null)
-        {
-            LoadedSaveId = savesWindow.SelectedSaveId;
-            WasConfirmed = true;
-            Close();
-        }
-    }
+    private void BackButton_Click(object? sender, RoutedEventArgs e) =>
+        Cancelled?.Invoke();
 
     public class SelectionItem
     {
         public string Name { get; set; } = "";
         public string Description { get; set; } = "";
         public Color Color { get; set; }
-        
+
         public override string ToString()
         {
             return $"{Name} - {Description}";

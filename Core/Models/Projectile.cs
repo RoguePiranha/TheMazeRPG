@@ -22,6 +22,11 @@ public class Projectile
     // Combat fields
     public ProjectileTeam Team { get; set; } = ProjectileTeam.Neutral;
     public int Damage { get; set; } = 0;
+    // Directional (manual-fire) hero shots don't know their target at spawn time, so they carry
+    // the hero's pre-defense offensive damage here (> 0) and the final hit is computed against
+    // whatever enemy they strike (see GameState.ProcessProjectileCollisions). Target-locked
+    // auto-combat shots leave this 0 and use the pre-baked Damage instead.
+    public int StatDamage { get; set; } = 0;
     // Collision radius in tiles for contact damage
     public float Radius { get; set; } = 0.2f;
     // Whether this projectile can hit multiple targets across its lifetime

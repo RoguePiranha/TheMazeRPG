@@ -152,7 +152,8 @@ public static class EnemyFactory
 
     private static string PickRace(CharacterDataService cds, Random rng)
     {
-        var races = cds.Races.Keys.ToList();
+        // Testing-only races (Debug) never spawn as enemies.
+        var races = cds.Races.Where(kv => !kv.Value.Debug).Select(kv => kv.Key).ToList();
         return races.Count > 0 ? races[rng.Next(races.Count)] : "Human";
     }
 }

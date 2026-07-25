@@ -222,6 +222,33 @@ public class MovementSystem
     }
     
     /// <summary>
+    /// Move the hero freely in a direction (Manual control mode). Direction components are each in
+    /// [-1,1]; the vector is normalized so diagonals aren't faster. Uses the same round-to-cell
+    /// walkability check as the rest of the game, applied per-axis so the hero slides along walls
+    /// instead of stopping dead when one axis is blocked.
+    /// </summary>
+    public void MoveHeroByDirection(Hero hero, float dirX, float dirY, Maze maze)
+    {
+        float len = MathF.Sqrt(dirX * dirX + dirY * dirY);
+        if (len < 0.01f) return;
+        dirX /= len;
+        dirY /= len;
+
+        float baseSpeed = 0.09f; // a touch snappier than auto-explore for responsive control
+        float speed = baseSpeed * (1.0f + 0.05f * (hero.EffectiveAgility - 4));
+        float dx = dirX * speed;
+        float dy = dirY * speed;
+
+        // Per-axis so a wall on one axis doesn't cancel movement on the other (wall sliding).
+        float newX = hero.X + dx;
+        if (IsWalkable(maze, (int)MathF.Round(newX), (int)MathF.Round(hero.Y))) hero.X = newX;
+        float newY = hero.Y + dy;
+        if (IsWalkable(maze, (int)MathF.Round(hero.X), (int)MathF.Round(newY))) hero.Y = newY;
+
+        maze.Explored[hero.GridX, hero.GridY] = true;
+    }
+
+    /// <summary>
     /// Move hero toward a specific target location (e.g., stairs after getting key)
     /// </summary>
     public void MoveHeroTowardTarget(Hero hero, float targetX, float targetY, Maze maze)

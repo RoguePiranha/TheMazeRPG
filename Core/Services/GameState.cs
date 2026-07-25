@@ -25,6 +25,18 @@ public enum OverworldGoal
 }
 
 /// <summary>
+/// How the hero is driven. <see cref="Auto"/> is the default: the hero auto-explores, auto-fights,
+/// and follows the Overworld goal script (the original screensaver-style behavior). <see cref="Manual"/>
+/// hands movement to the player (attacks still auto-fire at engaged enemies) — the two are toggled
+/// live, never removing the auto-run option.
+/// </summary>
+public enum ControlMode
+{
+    Auto,
+    Manual
+}
+
+/// <summary>
 /// Manages the current game state and simulation
 /// </summary>
 public class GameState
@@ -59,6 +71,96 @@ public class GameState
     /// <summary>The hero's current scripted Overworld objective — see OverworldGoal doc comment.</summary>
     public OverworldGoal CurrentOverworldGoal { get; private set; } = OverworldGoal.ToMine;
 
+    /// <summary>Auto-run vs. player-driven movement — see ControlMode. Defaults to Auto; a session
+    /// preference, not saved.</summary>
+    public ControlMode ControlMode { get; private set; } = ControlMode.Auto;
+
+    // Player movement intent for Manual mode, set by the UI from held keys (each component in
+    // [-1,1]); consumed once per Tick. Ignored entirely in Auto mode.
+    private float _manualMoveX;
+    private float _manualMoveY;
+
+    /// <summary>Set the player's desired movement direction (Manual mode). Called by the UI when
+    /// held movement keys change.</summary>
+    public void SetManualMoveIntent(float x, float y)
+    {
+        _manualMoveX = x;
+        _manualMoveY = y;
+    }
+
+    public void SetControlMode(ControlMode mode)
+    {
+        ControlMode = mode;
+        if (mode == ControlMode.Auto)
+        {
+            _manualMoveX = 0;
+            _manualMoveY = 0;
+        }
+    }
+
+    public void ToggleControlMode() =>
+        SetControlMode(ControlMode == ControlMode.Auto ? ControlMode.Manual : ControlMode.Auto);
+
+    /// <summary>
+    /// Fire the hero's current attack toward a world direction (Manual click-to-fire). No-op in
+    /// Auto mode, while dead/paused, on cooldown, or when a heavy attack can't be afforded. The
+    /// direction need not be normalized.
+    /// </summary>
+    public void FireManualAttack(float dirX, float dirY)
+    {
+        if (ControlMode != ControlMode.Manual || IsHeroDead || !IsRunning) return;
+        if (Hero.AttackCooldown > 0) return;
+
+        var attack = Hero.CurrentAttack;
+        if (attack != null && attack.IsHeavyAttack &&
+            (Hero.CurrentStamina < attack.StaminaCost ||
+             Hero.CurrentMana < attack.ManaCost ||
+             Hero.CurrentFaith < attack.FaithCost))
+        {
+            return; // can't afford this attack right now
+        }
+
+        _combatSystem.PerformHeroDirectionalAttack(Hero, dirX, dirY, Projectiles);
+    }
+
+    /// <summary>Select a hotbar attack by index into Hero.Attacks (the equipped/usable attacks).
+    /// Ignored if out of range.</summary>
+    public void SelectAttack(int index)
+    {
+        if (index >= 0 && index < Hero.Attacks.Count)
+        {
+            Hero.CurrentAttack = Hero.Attacks[index];
+        }
+    }
+
+    /// <summary>Move an attack-bearing item from Inventory into the equipped Loadout (hotbar), if
+    /// there's a free hotbar slot. Refreshes projected attacks. Returns true on success.</summary>
+    public bool EquipFromInventory(Combinable item)
+    {
+        if (!Hero.Inventory.Contains(item)) return false;
+        bool isAttackGear = item is Weapon || item is Spell;
+        if (!isAttackGear) return false;
+        int equipped = Hero.Loadout.Count(c => c is Weapon || c is Spell);
+        if (equipped >= Hero.HotbarCapacity) return false;
+
+        Hero.Inventory.Remove(item);
+        Hero.Loadout.Add(item);
+        RefreshAttacks();
+        LogMessage($"Equipped {item.Name} to the hotbar", MessageKind.System);
+        return true;
+    }
+
+    /// <summary>Move an item from the equipped Loadout (hotbar) back into Inventory. Refreshes
+    /// projected attacks. Returns true on success.</summary>
+    public bool UnequipToInventory(Combinable item)
+    {
+        if (!Hero.Loadout.Remove(item)) return false;
+        Hero.Inventory.Add(item);
+        RefreshAttacks();
+        LogMessage($"Unequipped {item.Name}", MessageKind.System);
+        return true;
+    }
+
     /// <summary>Whether saving is allowed right now: in the Overworld, or in a safe room whose
     /// Guardian hasn't been engaged. Never on regular dungeon floors — the dungeon is the Trial;
     /// closing the game mid-dive reverts to the dungeon-entrance auto-save. The pause menu's
@@ -71,6 +173,12 @@ public class GameState
     /// <summary>The hero's current multi-tick task (opening a chest, mining, crafting, ...).
     /// Only one at a time — see StartActivity. Advanced once per Tick().</summary>
     public Activity? CurrentActivity { get; private set; }
+
+    /// <summary>Player-facing event feed ("Found a Sword", "The Guardian stirs...") rendered at
+    /// the bottom of the game view. Distinct from GameLog (developer/debug output).</summary>
+    public MessageLog Messages { get; } = new();
+
+    internal void LogMessage(string text, MessageKind kind) => Messages.Add(text, kind, TickCount);
 
     public List<Projectile> Projectiles { get; set; } = new();
     public List<HitEffect> HitEffects { get; set; } = new();
@@ -220,6 +328,7 @@ public class GameState
             IsHeroDead = true;
             DeathTimer = 0;
             CodexService.Instance.RecordDeath(CurrentFloor);
+            LogMessage($"{Hero.Name} has died on floor {CurrentFloor}.", MessageKind.Warning);
             // Permadeath: death destroys this hero's save slot — no reloading out of it.
             SaveService.Delete(SaveId);
             // Stop the game but keep ticking for the timer
@@ -292,7 +401,13 @@ public class GameState
         // Move hero (unless busy with an activity)
         if (CurrentActivity == null)
         {
-            if (!Hero.InCombat)
+            if (ControlMode == ControlMode.Manual)
+            {
+                // Player-driven movement. Auto-explore / goal-walk / combat-approach are all
+                // skipped; the player positions the hero and attacks still auto-fire (CheckCombat).
+                _movementSystem.MoveHeroByDirection(Hero, _manualMoveX, _manualMoveY, CurrentMaze);
+            }
+            else if (!Hero.InCombat)
             {
                 if (IsInOverworld)
                 {
@@ -379,6 +494,7 @@ public class GameState
         {
             _pendingGuardianVictory = false;
             IsInSafeRoom = false;
+            LogMessage("The Guardian falls! The way deeper opens.", MessageKind.Combat);
             StartNewFloor();
         }
 
@@ -391,8 +507,20 @@ public class GameState
             CheckFeatures();
         }
         
-        // Smart attack rotation during combat - prefer heavy attacks when resources are available
-        if (Hero.InCombat && Hero.Attacks.Count > 1)
+        // In Manual mode the player selects the attack (hotbar) and fires by clicking; the
+        // hero's attack cooldown still ticks down here so click-fire respects it. Auto-mode's
+        // cooldown is driven by ProcessCombat instead.
+        if (ControlMode == ControlMode.Manual)
+        {
+            if (Hero.AttackCooldown > 0) Hero.AttackCooldown--;
+            // Decay the lunge animation offset (ProcessCombat does this in Auto mode).
+            Hero.AnimationOffsetX *= 0.8f;
+            Hero.AnimationOffsetY *= 0.8f;
+        }
+
+        // Smart attack rotation during combat - prefer heavy attacks when resources are available.
+        // Auto mode only: in Manual mode the player's hotbar selection must stick.
+        if (ControlMode == ControlMode.Auto && Hero.InCombat && Hero.Attacks.Count > 1)
         {
             // Switch attack every ~2 seconds OR when we can't afford the current attack
             bool timeToSwitch = TickCount % _attackSwitchTicks == 0;
@@ -558,16 +686,26 @@ public class GameState
             Hero.AttackCooldown = Math.Max(Hero.AttackCooldown, _combatStartWindupTicks);
         }
 
-        // Process hero vs primary target (includes enemy retaliation for that target)
-        _combatSystem.ProcessCombat(Hero, targetEnemy, Projectiles, CurrentMaze);
-
-        // Process enemy-only attacks for the rest so hero cooldown isn't decremented multiple times
-        foreach (var e in engagedEnemies)
+        if (ControlMode == ControlMode.Manual)
         {
-            if (e == targetEnemy) continue;
-            _combatSystem.ProcessEnemyOnlyAttack(Hero, e, Projectiles, CurrentMaze);
+            // The player fires the hero's attacks by clicking (FireManualAttack); here we only run
+            // the enemies' side so they still fight back while the player positions and aims.
+            foreach (var e in engagedEnemies)
+            {
+                _combatSystem.ProcessEnemyOnlyAttack(Hero, e, Projectiles, CurrentMaze);
+            }
         }
-
+        else
+        {
+            // Auto: process hero vs primary target (includes that enemy's retaliation)...
+            _combatSystem.ProcessCombat(Hero, targetEnemy, Projectiles, CurrentMaze);
+            // ...and enemy-only attacks for the rest so hero cooldown isn't decremented twice.
+            foreach (var e in engagedEnemies)
+            {
+                if (e == targetEnemy) continue;
+                _combatSystem.ProcessEnemyOnlyAttack(Hero, e, Projectiles, CurrentMaze);
+            }
+        }
     }
 
     /// <summary>
@@ -592,6 +730,20 @@ public class GameState
     /// Public debug wrapper for LOS checks from renderer/diagnostics.
     /// </summary>
     public bool CheckLOS(float x1, float y1, float x2, float y2) => HasLineOfSight(x1, y1, x2, y2);
+
+    /// <summary>
+    /// Final damage for a directional (manual) hero shot against the enemy it actually hit —
+    /// mirrors CombatSystem's target-locked math (defense = Defense + 0.7·Con, +20% magic resist
+    /// for magic, then a ±25% variance), so manual and auto attacks hit for comparable amounts.
+    /// </summary>
+    private int ResolveStatDamage(int statDamage, Enemy enemy, bool magic)
+    {
+        int enemyDefense = enemy.Defense + (int)(enemy.Constitution * 0.7f);
+        if (magic) enemyDefense += (int)(enemyDefense * 0.2f);
+        int baseDamage = Math.Max(1, statDamage - enemyDefense / 2);
+        int variance = _random.Next(-baseDamage / 4, baseDamage / 4 + 1);
+        return Math.Max(1, baseDamage + variance);
+    }
 
     /// <summary>
     /// Resolve projectile contact damage against hero/enemies.
@@ -628,7 +780,12 @@ public class GameState
                     float dist = MathF.Sqrt(dx * dx + dy * dy);
                     if (dist <= (pr + enemy.Radius))
                     {
-                        enemy.Hp -= Math.Max(1, p.Damage);
+                        // Directional (manual) shots resolve their damage here against the enemy
+                        // actually struck; auto-combat shots use the damage pre-baked at spawn.
+                        int applied = p.StatDamage > 0
+                            ? ResolveStatDamage(p.StatDamage, enemy, p.Type == AttackAnimation.Magic)
+                            : Math.Max(1, p.Damage);
+                        enemy.Hp -= applied;
                         // Spawn tiny on-hit flash
                         HitEffects.Add(new HitEffect
                         {
@@ -712,7 +869,13 @@ public class GameState
     private void HandleEnemyDefeated(Enemy enemy)
     {
         int xpGain = (int)((10 + enemy.MaxHp / 4) * enemy.XpMultiplier);
+        int levelBefore = Hero.Level;
         Hero.GainExperience(xpGain);
+        LogMessage($"Slew the {enemy.Race} {enemy.Class} (+{xpGain} XP)", MessageKind.Combat);
+        if (Hero.Level > levelBefore)
+        {
+            LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
+        }
 
         float dropChance = enemy.Tier switch
         {
@@ -816,12 +979,12 @@ public class GameState
         {
             Hero.Loadout.Add(loot);
             RefreshAttacks();
-            GameLog.Debug($"Equipped {loot.Name} ({loot.Rarity})");
+            LogMessage($"Equipped {loot.Name} ({loot.Rarity})", MessageKind.Loot);
         }
         else
         {
             Hero.Inventory.Add(loot);
-            GameLog.Debug($"Stored {loot.Name} ({loot.Rarity}) in inventory");
+            LogMessage($"Found {loot.Name} ({loot.Rarity}) — stored", MessageKind.Loot);
         }
     }
 
@@ -861,7 +1024,13 @@ public class GameState
     /// so the shared RNG (_random) stays private to this class.</summary>
     internal void GrantChestRewards()
     {
+        int levelBefore = Hero.Level;
         Hero.GainExperience(25);
+        LogMessage("Opened a chest (+25 XP)", MessageKind.Loot);
+        if (Hero.Level > levelBefore)
+        {
+            LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
+        }
         AcquireLoot(LootService.Roll(CurrentFloor, _random));
     }
 
@@ -881,6 +1050,13 @@ public class GameState
     /// <summary>Advance the scripted Overworld goal sequence. Called by activities on completion
     /// (e.g. MineOreActivity finishing moves to ToSmithy).</summary>
     internal void AdvanceOverworldGoal(OverworldGoal next) => CurrentOverworldGoal = next;
+
+    /// <summary>Whether an Overworld feature's proximity trigger may fire. In Auto mode the hero
+    /// follows the scripted goal sequence, so a feature only triggers when it's the current goal;
+    /// in Manual mode the player walks wherever they like, so any feature they reach triggers
+    /// (activities validate their own inputs, so e.g. crafting with no ore is a safe no-op).</summary>
+    private bool OverworldTriggerAllowed(OverworldGoal requiredGoal) =>
+        ControlMode == ControlMode.Manual || CurrentOverworldGoal == requiredGoal;
 
     /// <summary>
     /// Combine two owned Combinables at the Smithy (Forge-gated). Reuses the CombinationEngine/
@@ -920,6 +1096,7 @@ public class GameState
         if (wasEquipped) RefreshAttacks();
         int price = CombinationEngine.RarityPoints(item.Rarity) * GoldPerRarityPoint;
         Hero.Gold += price;
+        LogMessage($"Sold {item.Name} for {price} gold", MessageKind.Loot);
         return price;
     }
 
@@ -971,7 +1148,7 @@ public class GameState
 
             // Overworld: mining at the MineEntrance.
             if (feature.Type == MazeFeatureType.MineEntrance && distance < 0.6f
-                && CurrentOverworldGoal == OverworldGoal.ToMine)
+                && OverworldTriggerAllowed(OverworldGoal.ToMine))
             {
                 CurrentOverworldGoal = OverworldGoal.Mining;
                 StartActivity(new MineOreActivity("iron-ore", 3, GameSettings.Current.SecondsToTicks(5f),
@@ -982,7 +1159,7 @@ public class GameState
             // Overworld: smelt then craft at the Smithy — two chained recipes, proving the
             // recipe system generalizes rather than being a single hardcoded transformation.
             if (feature.Type == MazeFeatureType.Smithy && distance < 0.6f
-                && CurrentOverworldGoal == OverworldGoal.ToSmithy)
+                && OverworldTriggerAllowed(OverworldGoal.ToSmithy))
             {
                 CurrentOverworldGoal = OverworldGoal.Crafting;
                 var smelt = RecipeDataService.Instance.Get("smelt-iron")!;
@@ -998,7 +1175,7 @@ public class GameState
             // Overworld: sell the crafted item at the Stall (instant — unlike mining/crafting,
             // "handing an item to a merchant" doesn't need a multi-tick Activity for v1).
             if (feature.Type == MazeFeatureType.Stall && distance < 0.6f
-                && CurrentOverworldGoal == OverworldGoal.ToStall)
+                && OverworldTriggerAllowed(OverworldGoal.ToStall))
             {
                 var sword = Hero.Inventory.Concat(Hero.Loadout).OfType<Weapon>()
                     .FirstOrDefault(w => w.Id == "iron-sword");
@@ -1091,6 +1268,7 @@ public class GameState
             Team = ProjectileTeam.Enemy
         });
         GameLog.Debug($"Trap triggered! {damage} damage.");
+        LogMessage($"A trap springs! -{damage} HP", MessageKind.Warning);
     }
 
     /// <summary>Spawns the gate Guardian once the hero approaches the safe room's door.
@@ -1109,6 +1287,7 @@ public class GameState
         Boss.TargetY = y;
         Enemies.Add(Boss);
         GameLog.Debug($"Guardian spawned: {Boss.Race} {Boss.Class} (Level {Boss.Level})");
+        LogMessage($"The Guardian bars the way — {Boss.Race} {Boss.Class}, level {Boss.Level}!", MessageKind.Warning);
     }
 
     /// <summary>
@@ -1127,6 +1306,7 @@ public class GameState
         CurrentMaze = GenerateSafeRoomMaze();
         Hero.X = 1;
         Hero.Y = CurrentMaze.Height / 2;
+        LogMessage("A safe room. The shrine's blue glow is restful. Progress saved.", MessageKind.System);
 
         // Safe rooms are the only mid-dungeon save points: checkpoint automatically on entry.
         // Continuing this save resumes back in this safe room (SaveData.SafeRoomFloor).
@@ -1180,6 +1360,7 @@ public class GameState
         // new dive before the Overworld goal logic gets a turn.
         Hero.X = entrance.X + 1;
         Hero.Y = entrance.Y;
+        LogMessage("You emerge into the town by the dungeon mouth. Progress saved.", MessageKind.System);
 
         // Auto-save checkpoint: the hero just survived leaving the dungeon, bank that progress
         // to disk. There's no player-driven "Save" action yet (no input system at all), so this
@@ -1218,13 +1399,19 @@ public class GameState
         Hero.Inventory = new List<Combinable>(data.Inventory);
         RefreshAttacks();
 
-        if (data.SafeRoomFloor.HasValue)
+        if (data.ResumePoint == ResumePoint.SafeRoom && data.SafeRoomFloor.HasValue)
         {
             // Resume at the safe-room checkpoint (e.g. floor "4.5"). EnterSafeRoom rebuilds the
             // room, places the hero, and re-checkpoints (a harmless identical re-save).
             CurrentFloor = data.SafeRoomFloor.Value;
             IsInOverworld = false;
             EnterSafeRoom();
+        }
+        else if (data.ResumePoint == ResumePoint.DungeonStart)
+        {
+            // A creation-time save: the character never reached a safe room, so there's no
+            // Overworld to stand in — the constructor already spawned them into a fresh floor 1,
+            // which is exactly where this resume belongs. Nothing further to do.
         }
         else
         {
@@ -1256,6 +1443,11 @@ public class GameState
     /// </summary>
     private void StartFreshDungeonDive()
     {
+        // Entry-time snapshot, taken while still standing in the Overworld so it records an
+        // OverworldEntrance resume: closing the game mid-dungeon reverts to the dungeon entrance
+        // with the state the hero carried in (regular floors themselves are never saved).
+        SaveService.Save(this);
+
         IsInOverworld = false;
         CurrentFloor = 0; // StartNewFloor increments to 1
         Seed = new Random().Next();
@@ -1265,10 +1457,6 @@ public class GameState
         _combatSystem = new CombatSystem(Seed);
 
         StartNewFloor();
-
-        // Entry-time snapshot: closing the game mid-dungeon reverts to the dungeon entrance
-        // with the state the hero carried in (regular floors themselves are never saved).
-        SaveService.Save(this);
     }
 
     /// <summary>
@@ -1355,17 +1543,30 @@ public class GameState
         Hero.MaxStamina = 100 + (int)(Hero.EffectiveConstitution * 10);
         Hero.MaxMana = 100 + (int)(Hero.EffectiveIntelligence * 10);
         Hero.MaxFaith = 100 + (int)(Hero.EffectiveWisdom * 10);
-        
+
         // Regen rates scale with attributes (similar to health regen rate)
         // At 10 ticks/sec, these values give: Stat / 4 = resource per second
         // Example: 8 Constitution = 2 Stamina/sec, 12 Intelligence = 3 Mana/sec
         Hero.StaminaRegen = 0; // Will use fractional accumulation
         Hero.ManaRegen = 0;     // Will use fractional accumulation
         Hero.FaithRegen = 0;    // Will use fractional accumulation
-        
+
         // Health regen: 8 Constitution = 1 HP per second (at 10 ticks/sec = 0.1 HP/tick)
         // We'll use HealthRegen as HP per 10 ticks for display purposes
         Hero.HealthRegen = (int)(Hero.EffectiveConstitution / 8);
+
+        // Testing races (e.g. Debug) can flat-override pools — applied last so they win over
+        // the derived values above regardless of stats.
+        if (_characterDataService.Races.TryGetValue(_raceName, out var race))
+        {
+            if (race.HealthOverride.HasValue)
+            {
+                Hero.MaxHp = race.HealthOverride.Value;
+                Hero.CurrentHp = race.HealthOverride.Value;
+            }
+            if (race.StaminaOverride.HasValue) Hero.MaxStamina = race.StaminaOverride.Value;
+            if (race.ManaOverride.HasValue) Hero.MaxMana = race.ManaOverride.Value;
+        }
     }
     
     /// <summary>
@@ -1462,6 +1663,7 @@ public class GameState
         // Reset death state
         IsHeroDead = false;
         DeathTimer = 0;
+        Messages.Clear(); // a fresh run starts a fresh feed (StartNewFloor logs the opener)
         
         // Reset game state (StartNewFloor increments CurrentFloor to 1 for the first floor)
         TickCount = 0;
@@ -1520,6 +1722,8 @@ public class GameState
 
         CurrentFloor++;
         CurrentMaze = _mazeGenerator.Generate(41, 31, CurrentFloor);
+        LogMessage(CurrentFloor == 1 ? "The dungeon awakens around you." : $"Descended to floor {CurrentFloor}.",
+            MessageKind.System);
         
         // Heal hero 25% when advancing to new floor
         int healAmount = Hero.MaxHp / 4;

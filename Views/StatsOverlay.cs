@@ -19,13 +19,18 @@ public class StatsOverlay : Control
     private Point _lastMousePosition;
     private readonly Dictionary<string, (Rect bounds, string description)> _statHoverAreas = new();
 
+    // The game's pixel font (same file the XAML side references) for all overlay text.
+    private static readonly FontFamily GameFontFamily =
+        new("avares://TheMazeRPG/Assets/Fonts#Odderf Basic");
+
     // For the bestiary "discovered/total" denominator: every "{Race} {Class}" combo an enemy can
     // spawn as. Derived from the loaded content data so it stays correct as races/classes grow.
     private static readonly int TotalSpeciesCount = ComputeTotalSpeciesCount();
     private static int ComputeTotalSpeciesCount()
     {
         var cds = new CharacterDataService();
-        return cds.Races.Count * cds.Classes.Count;
+        int spawnableRaces = cds.Races.Count(kv => !kv.Value.Debug);
+        return spawnableRaces * cds.Classes.Count;
     }
     
     public static readonly StyledProperty<string> HeroNameProperty =
@@ -146,6 +151,9 @@ public class StatsOverlay : Control
     public void SetGameState(GameState gameState)
     {
         _gameState = gameState;
+        // Start transparent to input so clicks reach the game canvas beneath (click-to-fire);
+        // IsOverlayVisible flips this on only while the stats panel is actually shown.
+        IsHitTestVisible = false;
         UpdateStats();
     }
     
@@ -190,18 +198,24 @@ public class StatsOverlay : Control
         try
         {
             _statHoverAreas.Clear();
-            
-            // Semi-transparent dark background
+
+            // SimpleRPG panel chrome: near-opaque black backdrop, then a dark panel with a
+            // colored double border (bright outer line, darker inner echo).
             context.FillRectangle(
-                new SolidColorBrush(Color.FromArgb(200, 20, 20, 20)),
+                new SolidColorBrush(Color.FromArgb(220, 0, 0, 0)),
                 new Rect(0, 0, Bounds.Width, Bounds.Height));
-        
-        var textBrush = new SolidColorBrush(Colors.White);
-        var headerBrush = new SolidColorBrush(Color.FromRgb(100, 180, 255));
-        var statLabelBrush = new SolidColorBrush(Color.FromRgb(200, 200, 200));
-        
-        var headerFont = new Typeface("Arial", FontStyle.Normal, FontWeight.Bold);
-        var normalFont = new Typeface("Arial");
+
+            var panelRect = new Rect(20, 20, Bounds.Width - 40, Bounds.Height - 40);
+            context.FillRectangle(new SolidColorBrush(Color.FromRgb(0x11, 0x11, 0x11)), panelRect);
+            context.DrawRectangle(new Pen(new SolidColorBrush(Color.FromRgb(0xFF, 0xCC, 0x00)), 2), panelRect);
+            context.DrawRectangle(new Pen(new SolidColorBrush(Color.FromRgb(0x66, 0x55, 0x00)), 1), panelRect.Deflate(3));
+
+        var textBrush = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
+        var headerBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xCC, 0x00));
+        var statLabelBrush = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+
+        var headerFont = new Typeface(GameFontFamily, FontStyle.Normal, FontWeight.Bold);
+        var normalFont = new Typeface(GameFontFamily);
         
         double x = 40;
         double y = 40;
@@ -444,14 +458,14 @@ public class StatsOverlay : Control
 
     private void DrawTooltip(DrawingContext context, string text, Point mousePos)
     {
-        var tooltipFont = new Typeface("Arial");
+        var tooltipFont = new Typeface(GameFontFamily);
         var tooltipText = new FormattedText(
             text,
             System.Globalization.CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight,
             tooltipFont,
             12,
-            new SolidColorBrush(Colors.White));
+            new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)));
         
         double padding = 8;
         double tooltipWidth = tooltipText.Width + padding * 2;
@@ -470,12 +484,12 @@ public class StatsOverlay : Control
         
         // Draw tooltip background
         context.FillRectangle(
-            new SolidColorBrush(Color.FromArgb(240, 40, 40, 40)),
+            new SolidColorBrush(Color.FromArgb(245, 0x11, 0x11, 0x11)),
             tooltipRect);
-        
+
         // Draw tooltip border
         context.DrawRectangle(
-            new Pen(new SolidColorBrush(Color.FromRgb(100, 180, 255)), 1),
+            new Pen(new SolidColorBrush(Color.FromRgb(0xFF, 0xCC, 0x00)), 1),
             tooltipRect);
         
         // Draw tooltip text

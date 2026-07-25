@@ -23,6 +23,13 @@ public partial class MainWindowViewModel : ViewModelBase
         // Initialize with a random seed (or let user set it)
         int seed = (int)DateTime.Now.Ticks;
         _gameState = new GameState(seed, characterName, className, raceName);
+
+        // Creation-time save: if the game closes/crashes before the first safe room, the
+        // character themselves survives (skip re-creating them) even though the dungeon run
+        // restarts from floor 1. Done here rather than in the GameState constructor so headless
+        // test GameStates don't each write a save slot.
+        SaveService.Save(_gameState);
+
         Initialize();
     }
 
@@ -41,6 +48,11 @@ public partial class MainWindowViewModel : ViewModelBase
     private void Initialize()
     {
         _gameState.IsRunning = true;
+
+        // The player-facing game starts in Manual control (the player drives). A bare GameState
+        // still defaults to Auto — that's the right default for the headless simulation demos,
+        // which are fundamentally auto-play — so this preference lives here, at the live-game seam.
+        _gameState.SetControlMode(ControlMode.Manual);
 
         // Simulation tick loop at the configured rate (Data/Config/settings.json)
         int tickRate = Math.Max(1, GameSettings.Current.TickRate);

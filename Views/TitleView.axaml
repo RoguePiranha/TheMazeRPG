@@ -1,0 +1,106 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
+             x:Class="TheMazeRPG.Views.TitleView"
+             Background="#000000">
+
+    <UserControl.Styles>
+        <!-- Slow pulse for the "press any key" prompt -->
+        <Style Selector="TextBlock.pulse">
+            <Style.Animations>
+                <Animation Duration="0:0:1.6" IterationCount="Infinite" PlaybackDirection="Alternate">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="Opacity" Value="0.25"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="Opacity" Value="1.0"/>
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+
+        <!-- Dark buttons with colored borders, SimpleRPG-style -->
+        <Style Selector="Button.title">
+            <Setter Property="Background" Value="#222222"/>
+            <Setter Property="Padding" Value="40,10"/>
+            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="MinWidth" Value="260"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+        <Style Selector="Button.title:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#333333"/>
+        </Style>
+        <Style Selector="Button.gold">
+            <Setter Property="Foreground" Value="#FFCC00"/>
+            <Setter Property="BorderBrush" Value="#FFCC00"/>
+        </Style>
+        <Style Selector="Button.blue">
+            <Setter Property="Foreground" Value="#88AAFF"/>
+            <Setter Property="BorderBrush" Value="#88AAFF"/>
+        </Style>
+        <Style Selector="Button.title:disabled">
+            <Setter Property="Foreground" Value="#444444"/>
+            <Setter Property="BorderBrush" Value="#444444"/>
+        </Style>
+    </UserControl.Styles>
+
+    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
+        <TextBlock Text="THE MAZE RPG"
+                   FontSize="56"
+                   FontWeight="Bold"
+                   Foreground="#FFFF00"
+                   HorizontalAlignment="Center">
+            <TextBlock.Effect>
+                <DropShadowEffect Color="#FFFF00" BlurRadius="24" Opacity="0.35" OffsetX="0" OffsetY="0"/>
+            </TextBlock.Effect>
+        </TextBlock>
+
+        <TextBlock Text="Every dive is a trial."
+                   FontSize="16"
+                   Foreground="#666666"
+                   HorizontalAlignment="Center"/>
+
+        <TextBlock Text="####....####..@..G...$..!..####....####"
+                   FontSize="13"
+                   Foreground="#333333"
+                   HorizontalAlignment="Center"
+                   Margin="0,4,0,32"/>
+
+        <!-- State 1: press any key -->
+        <TextBlock x:Name="PressAnyKeyText"
+                   Classes="pulse"
+                   Text="[ Press any key to start ]"
+                   FontSize="18"
+                   Foreground="#AAAAAA"
+                   HorizontalAlignment="Center"/>
+
+        <!-- State 2: main menu (hidden until a key is pressed) -->
+        <StackPanel x:Name="MenuPanel"
+                    IsVisible="False"
+                    Spacing="12"
+                    HorizontalAlignment="Center">
+            <Button x:Name="NewGameButton"
+                    Classes="title gold"
+                    Content="Start a New Game"
+                    Click="NewGameButton_Click"/>
+            <Button x:Name="ContinueButton"
+                    Classes="title blue"
+                    Content="Continue"
+                    Click="ContinueButton_Click"/>
+            <Button x:Name="BestiaryButton"
+                    Classes="title blue"
+                    Content="Bestiary"
+                    IsVisible="False"
+                    Click="BestiaryButton_Click"/>
+            <Button x:Name="PlayStatsButton"
+                    Classes="title blue"
+                    Content="Play Stats"
+                    IsVisible="False"
+                    Click="PlayStatsButton_Click"/>
+        </StackPanel>
+    </StackPanel>
+</UserControl>
