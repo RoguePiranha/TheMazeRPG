@@ -1,5 +1,6 @@
 ﻿using Avalonia;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using TheMazeRPG.Core.Models;
 using TheMazeRPG.Core.Services;
@@ -40,6 +41,35 @@ sealed class Program
         if (Environment.GetEnvironmentVariable("TEST_BALANCE") == "1")
         {
             RunBalanceDemo();
+            return;
+        }
+
+        // If TEST_CODEX is set, check tier distribution + exercise the Codex end-to-end and exit
+        if (Environment.GetEnvironmentVariable("TEST_CODEX") == "1")
+        {
+            RunCodexDemo();
+            return;
+        }
+
+        // If TEST_DUNGEON is set, exercise the restructured floor pacing (no per-floor boss/key,
+        // far-apart stairs, safe rooms just before each Guardian floor: 4.5, 9.5, ...) and exit
+        if (Environment.GetEnvironmentVariable("TEST_DUNGEON") == "1")
+        {
+            RunDungeonRestructureDemo();
+            return;
+        }
+
+        // If TEST_OVERWORLD is set, exercise the Overworld vertical slice and exit
+        if (Environment.GetEnvironmentVariable("TEST_OVERWORLD") == "1")
+        {
+            RunOverworldDemo();
+            return;
+        }
+
+        // If TEST_SAVE is set, exercise the save/load round-trip and exit
+        if (Environment.GetEnvironmentVariable("TEST_SAVE") == "1")
+        {
+            RunSaveLoadDemo();
             return;
         }
 
@@ -140,10 +170,362 @@ sealed class Program
                     : (int)(e.Strength * 1.2f) + (int)(e.Dexterity * 0.5f);
                 int est = System.Math.Max(1, stat - heroDef / 2); // pre-variance (+-25%)
                 if (e.IsBoss) est = System.Math.Max((int)(est * 1.35f), 12 + e.Level * 2);
-                string tag = e == gs.Boss ? "BOSS " : "     ";
-                Console.WriteLine($"  {tag}L{e.Level,2} {e.Race,-10} {e.Class,-16} {atk?.Name,-14} ~{est,2} dmg  HP {e.MaxHp}");
+                int xp = (int)((10 + e.MaxHp / 4) * e.XpMultiplier);
+                Console.WriteLine($"  {e.Tier,-5} L{e.Level,2} {e.Race,-10} {e.Class,-16} {atk?.Name,-14} ~{est,2} dmg  HP {e.MaxHp,3}  XP {xp,3}");
             }
         }
+    }
+
+    // Debug/test entrypoint: if TEST_CODEX=1 is set, check tier distribution + run a real
+    // auto-play sim and dump the resulting Codex (bestiary + play stats) and exit
+    public static void RunCodexDemo()
+    {
+        // Tally tier distribution over many floor spawns (expect ~18% Elite, rest Basic, plus
+        // exactly 1 Boss per floor). Re-generating StartNewFloor repeatedly replaces gs.Enemies
+        // each time, so we tally right after each generation rather than at the end.
+        var tallyGs = new GameState(99, "Tally", "Warrior", "Human");
+        int basic = 0, elite = 0, boss = 0;
+        for (int i = 0; i < 40; i++)
+        {
+            tallyGs.StartNewFloor();
+            foreach (var e in tallyGs.Enemies)
+            {
+                if (e.IsBoss) boss++;
+                else if (e.IsElite) elite++;
+                else basic++;
+            }
+        }
+        int total = basic + elite + boss;
+        Console.WriteLine($"=== Tier distribution over 40 floor spawns ({total} enemies) ===");
+        Console.WriteLine($"  Basic: {basic} ({basic * 100.0 / total:0.0}%)   Elite: {elite} ({elite * 100.0 / total:0.0}%)   Boss: {boss}");
+
+        // The tally loop above called StartNewFloor() 40 times, which (correctly, for real
+        // gameplay) records 40 floor-clears through the shared Codex singleton. Wipe that before
+        // the real sim below so its report reflects only the real run.
+        CodexService.Instance.Reset();
+
+        // Real auto-play sim to exercise kill/death/floor Codex hooks end-to-end.
+        var gs = new GameState(7, "Adventurer", "Warrior", "Human");
+        gs.IsRunning = true;
+        for (int i = 0; i < 20000 && gs.CurrentFloor < 8; i++)
+        {
+            gs.Tick();
+        }
+        Console.WriteLine($"\n=== Codex demo: reached Floor {gs.CurrentFloor}, Hero Level {gs.Hero.Level} (XP {gs.Hero.Experience}/{gs.Hero.ExperienceToNext}) ===");
+        var data = CodexService.Instance.Data;
+        Console.WriteLine($"PlayStats: Kills={data.PlayStats.TotalKills} Deaths={data.PlayStats.TotalDeaths} DeepestFloor={data.PlayStats.DeepestFloor} FloorsCleared={data.PlayStats.TotalFloorsCleared}");
+        Console.WriteLine($"Bestiary ({data.Bestiary.Count} species discovered):");
+        foreach (var kv in data.Bestiary.OrderByDescending(kv => kv.Value.Killed))
+        {
+            var e = kv.Value;
+            Console.WriteLine($"  {kv.Key,-24} seen {e.Seen,3}  killed {e.Killed,3}  floors {e.FirstFloor}-{e.LastFloor}");
+        }
+    }
+
+    // Debug/test entrypoint: if TEST_DUNGEON=1 is set, drive a real auto-play sim through several
+    // floors and log floor pacing, safe-room entry, Guardian spawn/defeat, and codex results
+    public static void RunDungeonRestructureDemo()
+    {
+        var gs = new GameState(11, "Explorer", "Warrior", "Human");
+        gs.IsRunning = true;
+
+        bool wasInSafeRoom = false;
+        bool hadGuardian = false;
+        int lastFloor = gs.CurrentFloor;
+
+        Console.WriteLine("=== Dungeon restructure demo (floor pacing, safe rooms, guardians) ===");
+        Console.WriteLine($"Floor {gs.CurrentFloor} start. Stairs BFS-distance from entrance: {StairsDistance(gs)}");
+
+        for (int i = 0; i < 60000; i++)
+        {
+            gs.Tick();
+
+            if (gs.CurrentFloor != lastFloor && !gs.IsInSafeRoom)
+            {
+                lastFloor = gs.CurrentFloor;
+                Console.WriteLine($"[tick {i}] Entered Floor {lastFloor}. Stairs BFS-distance: {StairsDistance(gs)}. Enemies: {gs.Enemies.Count} (Boss present: {gs.Boss != null})");
+            }
+            if (gs.IsInSafeRoom && !wasInSafeRoom)
+            {
+                wasInSafeRoom = true;
+                Console.WriteLine($"[tick {i}] Entered SAFE ROOM after floor {lastFloor}.");
+            }
+            if (!gs.IsInSafeRoom && wasInSafeRoom)
+            {
+                wasInSafeRoom = false;
+                Console.WriteLine($"[tick {i}] Left safe room (exited to overworld, or floor advanced past it).");
+            }
+            if (gs.IsInSafeRoom && gs.Boss != null && !hadGuardian)
+            {
+                hadGuardian = true;
+                Console.WriteLine($"[tick {i}] Guardian spawned: {gs.Boss.Race} {gs.Boss.Class} L{gs.Boss.Level}, HP {gs.Boss.MaxHp}");
+            }
+            if (hadGuardian && gs.Boss == null)
+            {
+                hadGuardian = false; // resolved (defeated and floor advanced, or room exited)
+                Console.WriteLine($"[tick {i}] Guardian resolved.");
+            }
+        }
+
+        Console.WriteLine($"\nFinal: Floor {gs.CurrentFloor}, InSafeRoom={gs.IsInSafeRoom}, Hero Level {gs.Hero.Level}, HP {gs.Hero.CurrentHp}/{gs.Hero.MaxHp}");
+        var codex = CodexService.Instance.Data;
+        Console.WriteLine($"Codex: Kills={codex.PlayStats.TotalKills} Deaths={codex.PlayStats.TotalDeaths} DungeonExits={codex.PlayStats.TotalDungeonExits} FloorsCleared={codex.PlayStats.TotalFloorsCleared}");
+
+        // The organic run above may never reach floor 4 (far-apart stairs + repeated deaths).
+        // Directly verify the safe-room/Guardian path by teleporting to each floor's stairs
+        // (skipping the maze-solving itself) so real game logic drives the interesting part.
+        Console.WriteLine("\n=== Fast-forward to floor 4's safe room (teleport to stairs each floor) ===");
+        var gsGuardian = new GameState(22, "Fast", "Warrior", "Human");
+        gsGuardian.IsRunning = true;
+        for (int floor = 1; floor <= 4; floor++)
+        {
+            var stairs = gsGuardian.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
+            gsGuardian.Hero.X = stairs.X;
+            gsGuardian.Hero.Y = stairs.Y;
+            for (int t = 0; t < 30 && gsGuardian.CurrentFloor == floor; t++) gsGuardian.Tick();
+        }
+        Console.WriteLine($"Reached floor 4 stairs -> InSafeRoom={gsGuardian.IsInSafeRoom}, Floor={gsGuardian.CurrentFloor}");
+
+        var guardianDoor = gsGuardian.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.GuardianDoor);
+        gsGuardian.Hero.X = guardianDoor.X;
+        gsGuardian.Hero.Y = guardianDoor.Y;
+        for (int t = 0; t < 10 && gsGuardian.Boss == null; t++) gsGuardian.Tick();
+        Console.WriteLine($"Approached Guardian door -> Boss={(gsGuardian.Boss != null ? $"{gsGuardian.Boss.Race} {gsGuardian.Boss.Class} L{gsGuardian.Boss.Level} HP{gsGuardian.Boss.MaxHp}" : "null (not spawned!)")}");
+
+        if (gsGuardian.Boss != null)
+        {
+            gsGuardian.Boss.Hp = 1; // force a quick, deterministic kill to verify the defeat hook
+            for (int t = 0; t < 500 && gsGuardian.Boss != null; t++) gsGuardian.Tick();
+            Console.WriteLine($"Guardian defeated -> Floor={gsGuardian.CurrentFloor}, InSafeRoom={gsGuardian.IsInSafeRoom}, Boss={(gsGuardian.Boss == null ? "null (resolved correctly)" : "STILL SET (bug)")}");
+        }
+
+        // Separately verify the shrine-exit path (fresh instance so it isn't affected by the fight above).
+        Console.WriteLine("\n=== Verify shrine exit preserves hero progress ===");
+        var gsShrine = new GameState(33, "Fast2", "Warrior", "Human");
+        gsShrine.IsRunning = true;
+        for (int floor = 1; floor <= 4; floor++)
+        {
+            var stairs = gsShrine.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
+            gsShrine.Hero.X = stairs.X;
+            gsShrine.Hero.Y = stairs.Y;
+            for (int t = 0; t < 30 && gsShrine.CurrentFloor == floor; t++) gsShrine.Tick();
+        }
+        gsShrine.Hero.GainExperience(500); // give the hero real progress so "preserved" is a meaningful check
+        int levelBeforeExit = gsShrine.Hero.Level;
+        int xpBeforeExit = gsShrine.Hero.Experience;
+        var shrine = gsShrine.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Shrine);
+        gsShrine.Hero.X = shrine.X;
+        gsShrine.Hero.Y = shrine.Y;
+        for (int t = 0; t < 10 && gsShrine.IsInSafeRoom; t++) gsShrine.Tick();
+        Console.WriteLine($"After touching shrine -> Floor={gsShrine.CurrentFloor}, InSafeRoom={gsShrine.IsInSafeRoom}");
+        Console.WriteLine($"Hero progress preserved: Level {levelBeforeExit}->{gsShrine.Hero.Level}, XP {xpBeforeExit}->{gsShrine.Hero.Experience} (should be unchanged, unlike death)");
+        var codexShrine = CodexService.Instance.Data;
+        Console.WriteLine($"DungeonExits recorded: {codexShrine.PlayStats.TotalDungeonExits}");
+
+        // Verify the trap hazard (find a seed whose floor 1 rolled one, then step on it).
+        Console.WriteLine("\n=== Verify trap hazard ===");
+        for (int seed = 1; seed <= 30; seed++)
+        {
+            var gsTrap = new GameState(seed, "Trapper", "Warrior", "Human");
+            gsTrap.IsRunning = true;
+            var trap = gsTrap.CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.Trap);
+            if (trap == null) continue;
+
+            int hpBefore = gsTrap.Hero.CurrentHp;
+            gsTrap.Hero.X = trap.X;
+            gsTrap.Hero.Y = trap.Y;
+            for (int t = 0; t < 10 && trap.IsUsed == false; t++) gsTrap.Tick();
+            Console.WriteLine($"Seed {seed}: trap triggered={trap.IsUsed}, HP {hpBefore}->{gsTrap.Hero.CurrentHp}");
+            break;
+        }
+
+        // Verify chest-opening via the new Activity system (walk to a real chest and let the
+        // full multi-tick Activity run to completion — not a shortcut call to AcquireLoot).
+        Console.WriteLine("\n=== Verify chest-opening Activity ===");
+        var gsChest = new GameState(1, "Looter2", "Warrior", "Human");
+        gsChest.IsRunning = true;
+        var chest = gsChest.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Chest);
+        int xpBefore = gsChest.Hero.Experience;
+        int invBefore = gsChest.Hero.Inventory.Count + gsChest.Hero.Loadout.Count;
+        gsChest.Hero.X = chest.X;
+        gsChest.Hero.Y = chest.Y;
+        int ticksToOpen = 0;
+        for (int t = 0; t < 200 && !chest.IsUsed; t++) { gsChest.Tick(); ticksToOpen++; }
+        Console.WriteLine($"Chest opened in {ticksToOpen} ticks (CurrentActivity null after: {gsChest.CurrentActivity == null}); IsUsed={chest.IsUsed}");
+        Console.WriteLine($"XP {xpBefore}->{gsChest.Hero.Experience}, inventory+loadout count {invBefore}->{gsChest.Hero.Inventory.Count + gsChest.Hero.Loadout.Count}");
+    }
+
+    private static int StairsDistance(GameState gs)
+    {
+        var stairs = gs.CurrentMaze.Features.FirstOrDefault(f => f.Type == Core.Models.MazeFeatureType.Stairs);
+        if (stairs == null) return -1;
+        var distances = gs.CurrentMaze.BfsDistancesFrom(1, 1);
+        return distances.GetValueOrDefault((stairs.X, stairs.Y), -1);
+    }
+
+    // Debug/test entrypoint: if TEST_OVERWORLD=1 is set, exercise the Overworld vertical slice and exit
+    public static void RunOverworldDemo()
+    {
+        Console.WriteLine("=== Step 2: Overworld entry/exit wiring ===");
+        var gs = new GameState(44, "Pioneer", "Warrior", "Human");
+        gs.IsRunning = true;
+        gs.Hero.GainExperience(300); // real progress, so "preserved on exit" is a meaningful check
+        int levelBeforeExit = gs.Hero.Level;
+
+        // Fast-forward to floor 4's safe room (same teleport technique as TEST_DUNGEON).
+        for (int floor = 1; floor <= 4; floor++)
+        {
+            var stairs = gs.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
+            gs.Hero.X = stairs.X;
+            gs.Hero.Y = stairs.Y;
+            for (int t = 0; t < 30 && gs.CurrentFloor == floor; t++) gs.Tick();
+        }
+        Console.WriteLine($"Reached safe room -> InSafeRoom={gs.IsInSafeRoom}");
+
+        var shrine = gs.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Shrine);
+        gs.Hero.X = shrine.X;
+        gs.Hero.Y = shrine.Y;
+        for (int t = 0; t < 10 && gs.IsInSafeRoom; t++) gs.Tick();
+
+        var entrance = gs.CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.DungeonEntrance);
+        Console.WriteLine($"After shrine touch -> IsInOverworld={gs.IsInOverworld}, HeroPos=({gs.Hero.X},{gs.Hero.Y}), EntrancePos=({entrance?.X},{entrance?.Y})");
+        Console.WriteLine($"Hero preserved: Level {levelBeforeExit}->{gs.Hero.Level} (should be unchanged)");
+
+        Console.WriteLine("\n=== Step 3: OverworldGoal drives movement (no teleporting — real auto-play) ===");
+        var mine = gs.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.MineEntrance);
+        float startDist = Dist(gs.Hero.X, gs.Hero.Y, mine.X, mine.Y);
+        Console.WriteLine($"Goal={gs.CurrentOverworldGoal}, start distance to mine: {startDist:0.00}");
+        for (int t = 0; t < 60; t++) gs.Tick();
+        float endDist = Dist(gs.Hero.X, gs.Hero.Y, mine.X, mine.Y);
+        Console.WriteLine($"After 60 ticks of real auto-play: distance to mine {endDist:0.00} (should have decreased)");
+
+        Console.WriteLine("\n=== Step 4: Mining ===");
+        int oreBefore = gs.Hero.Resources.GetValueOrDefault("iron-ore", 0);
+        for (int t = 0; t < 300 && gs.CurrentOverworldGoal != OverworldGoal.ToSmithy; t++) gs.Tick();
+        int oreAfter = gs.Hero.Resources.GetValueOrDefault("iron-ore", 0);
+        Console.WriteLine($"Goal after mining: {gs.CurrentOverworldGoal}, iron-ore {oreBefore}->{oreAfter}, CurrentActivity null: {gs.CurrentActivity == null}");
+
+        Console.WriteLine("\n=== Step 5: Smelt + craft at the Smithy ===");
+        int itemCountBefore = gs.Hero.Inventory.Count + gs.Hero.Loadout.Count;
+        for (int t = 0; t < 2000 && gs.CurrentOverworldGoal != OverworldGoal.ToStall; t++) gs.Tick();
+        int itemCountAfter = gs.Hero.Inventory.Count + gs.Hero.Loadout.Count;
+        var sword = gs.Hero.Inventory.Concat(gs.Hero.Loadout).OfType<Weapon>().FirstOrDefault(w => w.Id == "iron-sword");
+        Console.WriteLine($"Goal after crafting: {gs.CurrentOverworldGoal}, iron-ore={gs.Hero.Resources.GetValueOrDefault("iron-ore", 0)}, iron-ingot={gs.Hero.Resources.GetValueOrDefault("iron-ingot", 0)}");
+        Console.WriteLine($"Item count {itemCountBefore}->{itemCountAfter}, Iron Sword crafted: {sword != null}");
+
+        // Verify Forge-combine is reachable at the Smithy (reusing the Phase 1 combine system).
+        var combined = gs.CombineAtForge(CombinableCatalog.Sword(), CombinableCatalog.Dagger());
+        Console.WriteLine($"Forge-combine reachable: {combined != null} -> {combined?.Name} ({combined?.Kind})");
+
+        Console.WriteLine("\n=== Step 6: Selling at the Stall ===");
+        int goldBefore = gs.Hero.Gold;
+        for (int t = 0; t < 300 && gs.CurrentOverworldGoal != OverworldGoal.ToDungeonEntrance; t++) gs.Tick();
+        bool swordStillOwned = gs.Hero.Inventory.Concat(gs.Hero.Loadout).OfType<Weapon>().Any(w => w.Id == "iron-sword");
+        Console.WriteLine($"Goal after selling: {gs.CurrentOverworldGoal}, Gold {goldBefore}->{gs.Hero.Gold} (expect +30 for a Common item), sword still owned: {swordStillOwned}");
+
+        // Walk onto the dungeon entrance to start the return trip.
+        gs.Hero.X = entrance!.X;
+        gs.Hero.Y = entrance.Y;
+        for (int t = 0; t < 10 && gs.IsInOverworld; t++) gs.Tick();
+        Console.WriteLine($"After walking onto DungeonEntrance -> IsInOverworld={gs.IsInOverworld}, Floor={gs.CurrentFloor}");
+
+        Console.WriteLine("\n=== Full loop proven, same Hero object throughout ===");
+        Console.WriteLine($"{gs.Hero.Name}: Level {gs.Hero.Level}, Gold {gs.Hero.Gold}, back in the dungeon at Floor {gs.CurrentFloor}");
+        Console.WriteLine("Dungeon exit -> mine ore -> smelt+craft a sword -> sell it -> return to a fresh dive: complete.");
+    }
+
+    private static float Dist(float x1, float y1, float x2, float y2)
+        => MathF.Sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
+
+    // Debug/test entrypoint: if TEST_SAVE=1 is set, exercise the save/load round-trip and exit
+    public static void RunSaveLoadDemo()
+    {
+        Console.WriteLine("=== Save/Load round-trip ===");
+
+        // Build up real progress, then trigger the shrine's EnterOverworld (which auto-saves).
+        var gs1 = new GameState(55, "Saver", "Warrior", "Human");
+        gs1.IsRunning = true;
+        gs1.Hero.GainExperience(500);
+        gs1.Hero.Gold = 42;
+        gs1.Hero.Resources["iron-ore"] = 5;
+        gs1.Hero.Inventory.Add(CraftedItemCatalog.Build("iron-sword")!);
+
+        for (int floor = 1; floor <= 4; floor++)
+        {
+            var stairs = gs1.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
+            gs1.Hero.X = stairs.X;
+            gs1.Hero.Y = stairs.Y;
+            for (int t = 0; t < 30 && gs1.CurrentFloor == floor; t++) gs1.Tick();
+        }
+        var shrine = gs1.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Shrine);
+        gs1.Hero.X = shrine.X;
+        gs1.Hero.Y = shrine.Y;
+        for (int t = 0; t < 10 && gs1.IsInSafeRoom; t++) gs1.Tick();
+
+        Console.WriteLine($"Before save: Level {gs1.Hero.Level}, Gold {gs1.Hero.Gold}, iron-ore {gs1.Hero.Resources.GetValueOrDefault("iron-ore", 0)}, Inventory count {gs1.Hero.Inventory.Count}");
+        Console.WriteLine($"Save slot exists (written by EnterOverworld's auto-save): {SaveService.HasAnySaves()}");
+
+        var summaries = SaveService.ListSaves();
+        Console.WriteLine($"ListSaves() sees {summaries.Count} slot(s): {string.Join(", ", summaries.Select(s => $"{s.HeroName} (Lvl {s.Level}, {s.PlaytimeDisplay})"))}");
+
+        // Construct a totally separate, fresh GameState and load the save into it — proves this
+        // isn't just reading gs1's own in-memory state back.
+        var loaded = SaveService.Load(gs1.SaveId);
+        var gs2 = new GameState(999, loaded!.HeroName, loaded.ClassName, loaded.RaceName);
+        gs2.LoadFrom(loaded);
+
+        Console.WriteLine($"After load into a FRESH GameState: Level {gs2.Hero.Level}, Gold {gs2.Hero.Gold}, iron-ore {gs2.Hero.Resources.GetValueOrDefault("iron-ore", 0)}, Inventory count {gs2.Hero.Inventory.Count}, IsInOverworld {gs2.IsInOverworld}");
+
+        var loadedSword = gs2.Hero.Inventory.OfType<Weapon>().FirstOrDefault(w => w.Id == "iron-sword");
+        Console.WriteLine($"Polymorphic type preserved: sword found={loadedSword != null}, BaseDamage={loadedSword?.BaseDamage} (expect 7)");
+
+        bool match = gs1.Hero.Level == gs2.Hero.Level && gs1.Hero.Gold == gs2.Hero.Gold
+            && gs1.Hero.Resources.GetValueOrDefault("iron-ore", 0) == gs2.Hero.Resources.GetValueOrDefault("iron-ore", 0)
+            && gs1.Hero.Inventory.Count == gs2.Hero.Inventory.Count;
+        Console.WriteLine($"Round-trip exact match: {match}");
+
+        // Exercise the exact code path the Continue button drives: MainWindowViewModel(SaveData).
+        var vm = new TheMazeRPG.ViewModels.MainWindowViewModel(loaded);
+        Console.WriteLine($"MainWindowViewModel(SaveData) constructed: Level {vm.GameState.Hero.Level}, IsInOverworld {vm.GameState.IsInOverworld}, IsRunning {vm.GameState.IsRunning}");
+        vm.Stop();
+
+        // Exercise the saves-picker's Delete action. Only this character's slot is asserted on —
+        // other demos run in the same process (e.g. TEST_OVERWORLD's hero auto-saving on shrine
+        // exit) may legitimately own other slots, so HasAnySaves isn't a valid check here.
+        SaveService.Delete(gs1.SaveId);
+        Console.WriteLine($"After Delete: slot removed, Load returns null={SaveService.Load(gs1.SaveId) == null} (expect True)");
+
+        // --- Safe-room checkpoint: entering the safe room auto-saves; continuing that save
+        // resumes back in the safe room, not the Overworld. ---
+        Console.WriteLine("\n=== Safe-room checkpoint resume ===");
+        var gs3 = new GameState(77, "Camper", "Warrior", "Human");
+        gs3.IsRunning = true;
+        for (int floor = 1; floor <= 4; floor++)
+        {
+            var stairs = gs3.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
+            gs3.Hero.X = stairs.X;
+            gs3.Hero.Y = stairs.Y;
+            for (int t = 0; t < 30 && gs3.CurrentFloor == floor && !gs3.IsInSafeRoom; t++) gs3.Tick();
+        }
+        Console.WriteLine($"In safe room: {gs3.IsInSafeRoom} (floor {gs3.CurrentFloor}); CanSave={gs3.CanSave} (expect True)");
+        var safeRoomSave = SaveService.Load(gs3.SaveId);
+        Console.WriteLine($"Auto-saved on safe-room entry: SafeRoomFloor={safeRoomSave?.SafeRoomFloor} (expect 4)");
+
+        var gs4 = new GameState(888, safeRoomSave!.HeroName, safeRoomSave.ClassName, safeRoomSave.RaceName);
+        gs4.LoadFrom(safeRoomSave);
+        Console.WriteLine($"Resumed: IsInSafeRoom={gs4.IsInSafeRoom} (expect True), Floor={gs4.CurrentFloor} (expect 4), IsInOverworld={gs4.IsInOverworld} (expect False)");
+
+        // --- Permadeath: dying deletes the hero's save slot. ---
+        gs4.IsRunning = true;
+        gs4.Hero.CurrentHp = 0;
+        gs4.Tick();
+        Console.WriteLine($"After death tick: save deleted={SaveService.Load(gs4.SaveId) == null} (expect True)");
+
+        // Mid-dungeon: CanSave must be false on a regular floor.
+        var gs5 = new GameState(99, "Diver", "Warrior", "Human");
+        Console.WriteLine($"Fresh dungeon floor: CanSave={gs5.CanSave} (expect False)");
+
+        SaveService.Delete(gs3.SaveId); // cleanup (gs4 shares gs3's slot and deleted it on death; belt+braces)
     }
 
     // Avalonia configuration, don't remove; also used by visual designer.

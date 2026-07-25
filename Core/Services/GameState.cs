@@ -8,6 +8,23 @@ namespace TheMazeRPG.Core.Services
 {
 
 /// <summary>
+/// The hero's current scripted objective while in the Overworld. This is an explicit,
+/// deliberately-flagged placeholder for real player choice/input (see Implementation Plan
+/// section 0a) — a linear scripted sequence, not "AI deciding," proving the first Overworld
+/// vertical slice (mine -> smelt/craft -> sell or equip -> return to the dungeon).
+/// </summary>
+public enum OverworldGoal
+{
+    ToMine,
+    Mining,
+    ToSmithy,
+    Crafting,
+    ToStall,
+    Selling,
+    ToDungeonEntrance
+}
+
+/// <summary>
 /// Manages the current game state and simulation
 /// </summary>
 public class GameState
@@ -22,9 +39,39 @@ public class GameState
     public Hero Hero { get; set; }
     public Maze CurrentMaze { get; set; } = null!;
     public List<Enemy> Enemies { get; set; } = new();
+    /// <summary>The current gate Guardian once spawned in a safe room (also used for the balance
+    /// dump). Null on regular floors — regular floors no longer have an embedded boss.</summary>
     public Enemy? Boss { get; set; }
-    public bool HasKey { get; set; }
     public (int x, int y)? StairsLocation { get; set; }
+
+    /// <summary>True while the hero is in the interstitial safe room just before a Guardian
+    /// floor (e.g. 4.5, before floor 5) — see GameState.EnterSafeRoom.</summary>
+    public bool IsInSafeRoom { get; private set; }
+    // Guardian floors are every 5th floor (5, 10, 15, ...); the safe room sits just before each
+    // one (4.5, 9.5, 14.5, ...). The Guardian fight itself IS the 5th/10th/... floor — beating
+    // it advances to floor 6/11/....
+    private const int GuardianFloorInterval = 5;
+
+    /// <summary>True while the hero is in the persistent Overworld (the Starting Region town)
+    /// rather than the dungeon. Set by EnterOverworld/StartFreshDungeonDive.</summary>
+    public bool IsInOverworld { get; private set; }
+
+    /// <summary>The hero's current scripted Overworld objective — see OverworldGoal doc comment.</summary>
+    public OverworldGoal CurrentOverworldGoal { get; private set; } = OverworldGoal.ToMine;
+
+    /// <summary>Whether saving is allowed right now: in the Overworld, or in a safe room whose
+    /// Guardian hasn't been engaged. Never on regular dungeon floors — the dungeon is the Trial;
+    /// closing the game mid-dive reverts to the dungeon-entrance auto-save. The pause menu's
+    /// Save action keys off this.</summary>
+    public bool CanSave => IsInOverworld || (IsInSafeRoom && Boss == null);
+    // Set when the Guardian dies mid-enumeration (see HandleEnemyDefeated); applied once Tick()
+    // reaches a point where Enemies/Projectiles are safe to clear.
+    private bool _pendingGuardianVictory;
+
+    /// <summary>The hero's current multi-tick task (opening a chest, mining, crafting, ...).
+    /// Only one at a time — see StartActivity. Advanced once per Tick().</summary>
+    public Activity? CurrentActivity { get; private set; }
+
     public List<Projectile> Projectiles { get; set; } = new();
     public List<HitEffect> HitEffects { get; set; } = new();
 
@@ -45,6 +92,16 @@ public class GameState
     public int TickCount { get; private set; }
     public int CurrentFloor { get; private set; } = 0;
     public bool IsRunning { get; set; }
+
+    /// <summary>Identifies this character's save slot (Saves/{SaveId}.json) — generated fresh for
+    /// a new character, or restored from the loaded SaveData in LoadFrom so re-saving overwrites
+    /// the same file rather than multiplying save slots.</summary>
+    public string SaveId { get; private set; } = Guid.NewGuid().ToString();
+
+    // Playtime accumulated in prior sessions (from a loaded save); TotalPlaytimeSeconds adds the
+    // current session's elapsed ticks on top so it stays accurate without a per-tick save write.
+    private double _priorPlaytimeSeconds;
+    public double TotalPlaytimeSeconds => _priorPlaytimeSeconds + TickCount / (double)_ticksPerSecond;
     
     // Debug flags (can be toggled via env vars)
     public bool DebugDrawHitboxes { get; set; }
@@ -128,7 +185,6 @@ public class GameState
         Hero.CurrentStamina = Hero.MaxStamina;
         Hero.CurrentMana = Hero.MaxMana;
         Hero.CurrentFaith = Hero.MaxFaith;
-        Hero.ChestOpeningDuration = _chestOpeningTicks;
 
         Console.WriteLine($"Character Created: {Hero.Name} - {Hero.Race} {Hero.Class}");
         GameLog.Debug($"Colors - Race: {Hero.RaceColor}, Class: {Hero.ClassColor}");
@@ -163,6 +219,9 @@ public class GameState
         {
             IsHeroDead = true;
             DeathTimer = 0;
+            CodexService.Instance.RecordDeath(CurrentFloor);
+            // Permadeath: death destroys this hero's save slot — no reloading out of it.
+            SaveService.Delete(SaveId);
             // Stop the game but keep ticking for the timer
         }
         
@@ -182,8 +241,10 @@ public class GameState
         // Regenerate hero resources using fractional accumulation.
         // Per-second rates: Constitution/8 stamina, Intelligence/8 mana, Wisdom/8 faith.
         // Divide by ticks/sec so the real-time rate is correct at any tick rate.
-        // Resources regenerate 30% slower during combat.
+        // Resources regenerate 30% slower during combat; a safe room's restful effect gives a
+        // 3x boost instead (while the Guardian hasn't been engaged yet).
         float combatRegenModifier = Hero.InCombat ? 0.7f : 1.0f;
+        if (IsInSafeRoom && Boss == null) combatRegenModifier = 3.0f;
         float regenPerSecondDivisor = 8f * _ticksPerSecond;
 
         float staminaPerTick = (Hero.EffectiveConstitution / regenPerSecondDivisor) * combatRegenModifier;
@@ -216,7 +277,9 @@ public class GameState
         }
         
         // Health regeneration: Constitution/16 HP per second (e.g. 16 Constitution = 1 HP/sec).
-        float hpPerTick = Hero.EffectiveConstitution / (16f * _ticksPerSecond);
+        // Boosted by the same safe-room restful effect as the resource regen above.
+        float hpRegenModifier = (IsInSafeRoom && Boss == null) ? 3.0f : 1.0f;
+        float hpPerTick = (Hero.EffectiveConstitution / (16f * _ticksPerSecond)) * hpRegenModifier;
         _accumulatedHealthRegen += hpPerTick;
         
         if (_accumulatedHealthRegen >= 1.0f)
@@ -226,14 +289,43 @@ public class GameState
             _accumulatedHealthRegen -= hpToRestore;
         }
         
-        // Move hero (unless opening chest)
-        if (!Hero.IsOpeningChest)
+        // Move hero (unless busy with an activity)
+        if (CurrentActivity == null)
         {
             if (!Hero.InCombat)
             {
-                // If hero has key and knows where stairs are, path directly to them
-                if (HasKey && StairsLocation.HasValue)
+                if (IsInOverworld)
                 {
+                    // Placeholder scripted sequence standing in for real player choice/input,
+                    // exactly like the safe room's shrine-vs-Guardian default below — see
+                    // Implementation Plan section 0a. Walks the hero toward whatever feature the
+                    // current OverworldGoal points at; goals with no walk target (the hero is mid-
+                    // Activity) leave movement alone.
+                    var targetType = OverworldGoalTarget(CurrentOverworldGoal);
+                    if (targetType.HasValue)
+                    {
+                        var target = CurrentMaze.Features.FirstOrDefault(f => f.Type == targetType.Value);
+                        if (target != null)
+                        {
+                            _movementSystem.MoveHeroTowardTarget(Hero, target.X, target.Y, CurrentMaze);
+                        }
+                    }
+                }
+                else if (IsInSafeRoom)
+                {
+                    // Default auto-play behavior in a safe room: push toward the Guardian gate
+                    // rather than retreat to the shrine. This is a stand-in for a real player
+                    // choice (shrine vs. guardian) until a pause/manual-control system exists —
+                    // see Implementation Plan section 0a.
+                    var guardianDoor = CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.GuardianDoor);
+                    if (guardianDoor != null)
+                    {
+                        _movementSystem.MoveHeroTowardTarget(Hero, guardianDoor.X, guardianDoor.Y, CurrentMaze);
+                    }
+                }
+                else if (StairsLocation.HasValue)
+                {
+                    // Stairs need no key anymore — path straight to them once spotted.
                     _movementSystem.MoveHeroTowardTarget(Hero, StairsLocation.Value.x, StairsLocation.Value.y, CurrentMaze);
                 }
                 else
@@ -281,10 +373,22 @@ public class GameState
         // Advance/prune projectiles and hit effects every tick, even when combat just ended
         UpdateProjectilesAndEffects();
 
-        // Check for features (stairs, chests, key logic) - only if not in combat
+        // Apply a deferred Guardian-victory transition now that it's safe to clear
+        // Enemies/Projectiles (see HandleEnemyDefeated for why this can't happen inline).
+        if (_pendingGuardianVictory)
+        {
+            _pendingGuardianVictory = false;
+            IsInSafeRoom = false;
+            StartNewFloor();
+        }
+
+        // Advance the hero's current activity (chest-opening, mining, crafting, ...), if any
+        UpdateCurrentActivity();
+
+        // Check for features (stairs, chests, shrine, guardian door, traps) - only if not in combat
         if (!Hero.InCombat)
         {
-            CheckFeaturesWithKeyLogic();
+            CheckFeatures();
         }
         
         // Smart attack rotation during combat - prefer heavy attacks when resources are available
@@ -439,6 +543,7 @@ public class GameState
                 e.InCombat = true;
                 // Give them a small initial delay similar to StartCombat, but don't reset hero
                 e.AttackCooldown = Math.Max(e.AttackCooldown, e.AttackSpeed / 2);
+                CodexService.Instance.RecordEncounter(e, CurrentFloor);
             }
         }
 
@@ -539,8 +644,7 @@ public class GameState
                         if (!enemy.IsAlive)
                         {
                             GameLog.Debug("  ✓ Enemy defeated by hit!");
-                            int xpGain = 10 + enemy.MaxHp / 4;
-                            Hero.GainExperience(xpGain);
+                            HandleEnemyDefeated(enemy);
                             Hero.InCombat = false;
                             enemy.InCombat = false;
                             Hero.AnimationOffsetX = 0;
@@ -597,6 +701,39 @@ public class GameState
                     }
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Awards XP (scaled by the enemy's tier, see Enemy.XpMultiplier), rolls a tier-scaled
+    /// chance for a loot drop, and records the kill in the Codex. Single choke point — this is
+    /// the only place an enemy's Hp reaches zero.
+    /// </summary>
+    private void HandleEnemyDefeated(Enemy enemy)
+    {
+        int xpGain = (int)((10 + enemy.MaxHp / 4) * enemy.XpMultiplier);
+        Hero.GainExperience(xpGain);
+
+        float dropChance = enemy.Tier switch
+        {
+            EnemyTier.Elite => 0.45f,
+            EnemyTier.Boss => 1.0f,
+            _ => 0.15f
+        };
+        if (_random.NextDouble() < dropChance)
+        {
+            AcquireLoot(LootService.Roll(CurrentFloor, _random));
+        }
+
+        CodexService.Instance.RecordKill(enemy, CurrentFloor);
+
+        // Defeating the safe room's Guardian proceeds to the next floor group. This is called
+        // from inside a live `foreach (var p in Projectiles)` (ProcessProjectileCollisions), so
+        // we can't mutate Enemies/Projectiles here (StartNewFloor clears both) — defer it and
+        // apply it once that enumeration has finished (see Tick()).
+        if (IsInSafeRoom && enemy == Boss)
+        {
+            _pendingGuardianVictory = true;
         }
     }
 
@@ -696,42 +833,105 @@ public class GameState
         Hero.CurrentAttack = Hero.Attacks.FirstOrDefault(a => a.Id == currentId) ?? Hero.Attacks.FirstOrDefault();
     }
 
-    private void CheckFeaturesWithKeyLogic()
+    /// <summary>Begin a new multi-tick activity. Cancels and replaces any activity already
+    /// in progress (only one can be active at a time).</summary>
+    public void StartActivity(Activity activity)
     {
-        // Update chest opening animation
-        foreach (var feature in CurrentMaze.Features.Where(f => f.IsOpening))
-        {
-            feature.OpeningTicks++;
-            // Normalized 0..1 open progress (renderer uses this instead of a hardcoded duration)
-            feature.OpenProgress = Math.Min(1f, feature.OpeningTicks / (float)Hero.ChestOpeningDuration);
-            // Expand light radius during opening (0 to 2.0)
-            feature.LightRadius = feature.OpenProgress * 2.0f;
+        CurrentActivity?.OnCancel(this);
+        CurrentActivity = activity;
+        CurrentActivity.OnStart(this);
+    }
 
-            if (feature.OpeningTicks >= Hero.ChestOpeningDuration)
-            {
-                // Chest fully opened
-                feature.IsOpening = false;
-                feature.IsUsed = true;
-                HasKey = true;
-                Hero.IsOpeningChest = false;
-                Hero.GainExperience(25);
-                // Chest also drops loot (rarity scales with floor)
-                AcquireLoot(LootService.Roll(CurrentFloor, _random));
-            }
-        }
-        
-        // If hero is opening a chest, don't check for other features
-        if (Hero.IsOpeningChest)
+    /// <summary>Advance the current activity by one tick; finish and clear it once complete.
+    /// Called once per Tick() (see the main loop).</summary>
+    private void UpdateCurrentActivity()
+    {
+        if (CurrentActivity == null) return;
+
+        CurrentActivity.OnTick(this);
+        if (CurrentActivity.IsComplete)
         {
-            Hero.ChestOpeningTicks++;
-            if (Hero.ChestOpeningTicks >= Hero.ChestOpeningDuration)
-            {
-                Hero.IsOpeningChest = false;
-                Hero.ChestOpeningTicks = 0;
-            }
+            var finished = CurrentActivity;
+            CurrentActivity = null;
+            finished.OnFinish(this);
+        }
+    }
+
+    /// <summary>XP + loot for a fully-opened chest. Kept on GameState (not ChestOpenActivity)
+    /// so the shared RNG (_random) stays private to this class.</summary>
+    internal void GrantChestRewards()
+    {
+        Hero.GainExperience(25);
+        AcquireLoot(LootService.Roll(CurrentFloor, _random));
+    }
+
+    /// <summary>The single validated write path for Hero.Resources — checks the material id
+    /// against MaterialDataService before adding, so a typo'd id in recipes.json is caught here
+    /// rather than silently growing a phantom inventory entry that never matches any recipe.</summary>
+    internal void AddHeroResource(string materialId, int amount)
+    {
+        if (!MaterialDataService.Instance.IsValidMaterial(materialId))
+        {
+            GameLog.Debug($"WARNING: unknown material id '{materialId}' — resource not added.");
             return;
         }
-        
+        Hero.Resources[materialId] = Hero.Resources.GetValueOrDefault(materialId, 0) + amount;
+    }
+
+    /// <summary>Advance the scripted Overworld goal sequence. Called by activities on completion
+    /// (e.g. MineOreActivity finishing moves to ToSmithy).</summary>
+    internal void AdvanceOverworldGoal(OverworldGoal next) => CurrentOverworldGoal = next;
+
+    /// <summary>
+    /// Combine two owned Combinables at the Smithy (Forge-gated). Reuses the CombinationEngine/
+    /// RecipeBook system built in Phase 1 rather than duplicating it — the Smithy's new recipe-
+    /// crafting (ore -> ingot -> gear) and this pre-existing merge system are two different ways
+    /// to make things, both available at the same location. Returns null (with a logged reason)
+    /// if the combination isn't allowed.
+    /// </summary>
+    public Combinable? CombineAtForge(Combinable a, Combinable b)
+    {
+        if (!CombinationEngine.CanCombine(a, b, CombineLocation.Forge, out var reason))
+        {
+            GameLog.Debug($"Cannot combine at Forge: {reason}");
+            return null;
+        }
+        return CombinationEngine.Combine(a, b);
+    }
+
+    private const int GoldPerRarityPoint = 10;
+
+    /// <summary>
+    /// Sell an owned Combinable for gold at the Stall. Price reuses CombinationEngine's
+    /// RarityPoints scale (the same one rarity-averaging already uses) rather than a second,
+    /// unrelated formula. Works whether the item is equipped (Loadout) or not (Inventory);
+    /// returns 0 (no gold) if the hero doesn't actually own the item.
+    /// </summary>
+    public int SellItem(Combinable item)
+    {
+        bool wasEquipped = Hero.Loadout.Remove(item);
+        bool owned = Hero.Inventory.Remove(item) || wasEquipped;
+        if (!owned)
+        {
+            GameLog.Debug($"SellItem: hero does not own '{item.Name}' — no sale.");
+            return 0;
+        }
+
+        if (wasEquipped) RefreshAttacks();
+        int price = CombinationEngine.RarityPoints(item.Rarity) * GoldPerRarityPoint;
+        Hero.Gold += price;
+        return price;
+    }
+
+    private void CheckFeatures()
+    {
+        // While an activity (chest-opening, mining, crafting, ...) is active, don't check other
+        // features — the activity itself is advanced from Tick() (see CurrentActivity handling).
+        if (CurrentActivity != null)
+        {
+            return;
+        }
+
         // Use directional sight cone for hero to identify features (for far awareness),
         // but do NOT require cone visibility for close interactions like stairs usage.
         float heroFacing = Hero.InCombat && Hero.AttackCooldown == 0 && Hero.CurrentAttack != null
@@ -740,42 +940,107 @@ public class GameState
         float heroSightRange = 7.5f;
         float heroConeRad = MathF.PI / 2; // 90-degree cone
         var heroVisibleCells = GetDirectionalSightCone(Hero.X, Hero.Y, heroFacing, heroSightRange, heroConeRad);
-        
+
         // Automatically pick up nearby items (larger pickup radius than interaction)
         foreach (var feature in CurrentMaze.Features.Where(f => !f.IsUsed && !f.IsOpening).ToList())
         {
             float dx = Hero.X - feature.X;
             float dy = Hero.Y - feature.Y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
-            
+
             // Auto-pickup radius of 0.7 tiles
             if (distance < 0.7f && feature.Type == MazeFeatureType.Chest)
             {
-                // Start chest opening animation
-                Hero.IsOpeningChest = true;
-                Hero.ChestOpeningTicks = 0;
-                feature.IsOpening = true;
-                feature.OpeningTicks = 0;
-                feature.LightRadius = 0f;
+                StartActivity(new ChestOpenActivity(feature, _chestOpeningTicks));
                 continue; // Skip to next feature
             }
-            
-            // For stairs, allow close interaction regardless of cone visibility
+
+            if (feature.Type == MazeFeatureType.Trap && distance < 0.5f)
+            {
+                feature.IsUsed = true;
+                TriggerTrap(feature);
+                continue;
+            }
+
+            // Overworld: reaching the dungeon entrance starts a fresh dive (the return trip).
+            if (feature.Type == MazeFeatureType.DungeonEntrance && distance < 0.6f && IsInOverworld)
+            {
+                StartFreshDungeonDive();
+                return; // state just reset — stop processing this tick's features
+            }
+
+            // Overworld: mining at the MineEntrance.
+            if (feature.Type == MazeFeatureType.MineEntrance && distance < 0.6f
+                && CurrentOverworldGoal == OverworldGoal.ToMine)
+            {
+                CurrentOverworldGoal = OverworldGoal.Mining;
+                StartActivity(new MineOreActivity("iron-ore", 3, GameSettings.Current.SecondsToTicks(5f),
+                    gs => gs.AdvanceOverworldGoal(OverworldGoal.ToSmithy)));
+                continue;
+            }
+
+            // Overworld: smelt then craft at the Smithy — two chained recipes, proving the
+            // recipe system generalizes rather than being a single hardcoded transformation.
+            if (feature.Type == MazeFeatureType.Smithy && distance < 0.6f
+                && CurrentOverworldGoal == OverworldGoal.ToSmithy)
+            {
+                CurrentOverworldGoal = OverworldGoal.Crafting;
+                var smelt = RecipeDataService.Instance.Get("smelt-iron")!;
+                StartActivity(new CraftActivity(smelt, GameSettings.Current.SecondsToTicks(smelt.DurationSeconds), gs =>
+                {
+                    var craft = RecipeDataService.Instance.Get("craft-iron-sword")!;
+                    gs.StartActivity(new CraftActivity(craft, GameSettings.Current.SecondsToTicks(craft.DurationSeconds),
+                        gs2 => gs2.AdvanceOverworldGoal(OverworldGoal.ToStall)));
+                }));
+                continue;
+            }
+
+            // Overworld: sell the crafted item at the Stall (instant — unlike mining/crafting,
+            // "handing an item to a merchant" doesn't need a multi-tick Activity for v1).
+            if (feature.Type == MazeFeatureType.Stall && distance < 0.6f
+                && CurrentOverworldGoal == OverworldGoal.ToStall)
+            {
+                var sword = Hero.Inventory.Concat(Hero.Loadout).OfType<Weapon>()
+                    .FirstOrDefault(w => w.Id == "iron-sword");
+                if (sword != null)
+                {
+                    SellItem(sword);
+                }
+                CurrentOverworldGoal = OverworldGoal.ToDungeonEntrance;
+                continue;
+            }
+
+            if (feature.Type == MazeFeatureType.Shrine)
+            {
+                // Only meaningful in a safe room; touching it exits the dungeon.
+                if (distance < 0.6f && IsInSafeRoom)
+                {
+                    feature.IsUsed = true;
+                    EnterOverworld();
+                    return; // state just reset — stop processing this tick's features
+                }
+                continue;
+            }
+
+            if (feature.Type == MazeFeatureType.GuardianDoor)
+            {
+                if (distance < 0.9f)
+                {
+                    feature.IsUsed = true;
+                    SpawnGuardian(feature.X, feature.Y);
+                }
+                continue;
+            }
+
+            // For stairs, allow close interaction regardless of cone visibility. No key needed —
+            // reaching the stairs is enough; the challenge is the maze distance to get there.
             if (feature.Type == MazeFeatureType.Stairs)
             {
-                // Close proximity usage (no cone requirement)
                 if (distance < 0.6f)
                 {
-                    if (HasKey)
-                    {
-                        feature.IsUsed = true;
-                        StartNewFloor();
-                    }
-                    else
-                    {
-                        StairsLocation = (feature.X, feature.Y);
-                    }
-                    continue;
+                    feature.IsUsed = true;
+                    AdvancePastFloor();
+                    return; // state just reset (new floor or safe room) — stop this tick
                 }
                 // Far awareness: remember stairs location if in cone OR clear LOS
                 int featureCellX = (int)MathF.Round(feature.X);
@@ -788,24 +1053,224 @@ public class GameState
                 continue;
             }
         }
-        // If hero has key and remembers stairs, auto move to stairs
-        if (HasKey && StairsLocation.HasValue)
+    }
+
+    /// <summary>
+    /// Called when the hero reaches the stairs on a regular floor. The floor just before each
+    /// Guardian floor (4, 9, 14, ... — one shy of a multiple of GuardianFloorInterval) leads to
+    /// the interstitial safe room ("floor 4.5") instead of straight to the next floor.
+    /// </summary>
+    private void AdvancePastFloor()
+    {
+        if (CurrentFloor % GuardianFloorInterval == GuardianFloorInterval - 1)
         {
-            float dx = Hero.X - StairsLocation.Value.x;
-            float dy = Hero.Y - StairsLocation.Value.y;
-            float distance = MathF.Sqrt(dx * dx + dy * dy);
-            if (distance < 0.6f)
-            {
-                var stairsFeature = CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.Stairs && !f.IsUsed);
-                if (stairsFeature != null)
-                {
-                    stairsFeature.IsUsed = true;
-                    StartNewFloor();
-                }
-            }
+            EnterSafeRoom();
+        }
+        else
+        {
+            StartNewFloor();
         }
     }
-    
+
+    /// <summary>
+    /// One-shot environmental hazard: unmitigated burst damage (bypasses defense, unlike combat)
+    /// plus a hit flash and a screen-shake bump for feedback.
+    /// </summary>
+    private void TriggerTrap(MazeFeature trap)
+    {
+        int damage = 8 + CurrentFloor * 2;
+        Hero.CurrentHp = Math.Max(0, Hero.CurrentHp - damage);
+        ScreenShake = MathF.Max(ScreenShake, 4f);
+        HitEffects.Add(new HitEffect
+        {
+            X = trap.X,
+            Y = trap.Y,
+            LifeTime = 0,
+            MaxLifeTime = 10,
+            Type = HitEffectType.Impact,
+            Team = ProjectileTeam.Enemy
+        });
+        GameLog.Debug($"Trap triggered! {damage} damage.");
+    }
+
+    /// <summary>Spawns the gate Guardian once the hero approaches the safe room's door.
+    /// Reuses the same boss-tier generation regular floors used to use — a Guardian is simply
+    /// the dungeon's boss concept, now confined to its own room instead of wandering a maze.
+    /// The fight itself IS the Guardian floor (5, 10, 15, ...): entering it advances
+    /// CurrentFloor from e.g. 4 (safe room "4.5") to 5, so the Guardian's level scales off the
+    /// Guardian floor and victory proceeds to floor 6.</summary>
+    private void SpawnGuardian(float x, float y)
+    {
+        CurrentFloor++;
+        Boss = EnemyFactory.RandomBoss(CurrentFloor, _characterDataService, _random);
+        Boss.X = x;
+        Boss.Y = y;
+        Boss.TargetX = x;
+        Boss.TargetY = y;
+        Enemies.Add(Boss);
+        GameLog.Debug($"Guardian spawned: {Boss.Race} {Boss.Class} (Level {Boss.Level})");
+    }
+
+    /// <summary>
+    /// Enter the interstitial safe room between floor groups. A small, fully-open, already-lit
+    /// room (not another maze) with a shrine and a Guardian door on the far side.
+    /// </summary>
+    private void EnterSafeRoom()
+    {
+        IsInSafeRoom = true;
+        Boss = null;
+        Enemies.Clear();
+        Projectiles.Clear();
+        HitEffects.Clear();
+        StairsLocation = null;
+
+        CurrentMaze = GenerateSafeRoomMaze();
+        Hero.X = 1;
+        Hero.Y = CurrentMaze.Height / 2;
+
+        // Safe rooms are the only mid-dungeon save points: checkpoint automatically on entry.
+        // Continuing this save resumes back in this safe room (SaveData.SafeRoomFloor).
+        SaveService.Save(this);
+    }
+
+    private Maze GenerateSafeRoomMaze()
+    {
+        const int width = 15;
+        const int height = 9;
+        int midY = height / 2;
+
+        var maze = new Maze(width, height) { FloorNumber = CurrentFloor };
+        for (int x = 0; x < width; x++)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                bool isBorder = x == 0 || x == width - 1 || y == 0 || y == height - 1;
+                maze.Walls[x, y] = isBorder;
+                if (!isBorder) maze.Explored[x, y] = true; // fully lit; nothing to explore
+            }
+        }
+
+        maze.Features.Add(new MazeFeature { X = width / 2, Y = midY, Type = MazeFeatureType.Shrine });
+        maze.Features.Add(new MazeFeature { X = width - 2, Y = midY, Type = MazeFeatureType.GuardianDoor });
+        return maze;
+    }
+
+    /// <summary>
+    /// Leaving the dungeon via a safe-room shrine. Places the hero at the Overworld's dungeon
+    /// entrance, preserving the hero completely (level/stats/gear — unlike death, which resets
+    /// everything). This is the real Overworld hand-off the old placeholder comment anticipated.
+    /// </summary>
+    private void EnterOverworld()
+    {
+        CodexService.Instance.RecordDungeonExit(CurrentFloor);
+
+        IsInSafeRoom = false;
+        Boss = null;
+        Enemies.Clear();
+        Projectiles.Clear();
+        HitEffects.Clear();
+        StairsLocation = null;
+
+        IsInOverworld = true;
+        CurrentOverworldGoal = OverworldGoal.ToMine;
+        CurrentMaze = OverworldGenerator.Generate();
+        var entrance = CurrentMaze.Features.First(f => f.Type == MazeFeatureType.DungeonEntrance);
+        // Placed one tile away, not exactly on the entrance — it's also the return-trip trigger
+        // (see CheckFeatures), so arriving directly on top of it would immediately re-trigger a
+        // new dive before the Overworld goal logic gets a turn.
+        Hero.X = entrance.X + 1;
+        Hero.Y = entrance.Y;
+
+        // Auto-save checkpoint: the hero just survived leaving the dungeon, bank that progress
+        // to disk. There's no player-driven "Save" action yet (no input system at all), so this
+        // is the natural automatic checkpoint until one exists.
+        SaveService.Save(this);
+    }
+
+    /// <summary>
+    /// Restore a hero's progress from a save. Call after constructing a GameState normally (with
+    /// the saved class/race, so class-derived setup like effectiveness/starting loadout is
+    /// computed correctly), then this overwrites the fresh stats/inventory with the saved ones
+    /// and resumes where the save was made: a safe-room checkpoint (SaveData.SafeRoomFloor), or
+    /// otherwise the Overworld's dungeon entrance. Regular dungeon floors are never saved, so a
+    /// mid-dive quit resumes from the entry-time snapshot at the entrance.
+    /// </summary>
+    public void LoadFrom(SaveData data)
+    {
+        SaveId = data.SaveId;
+        _priorPlaytimeSeconds = data.PlaytimeSeconds;
+
+        Hero.Level = data.Level;
+        Hero.Experience = data.Experience;
+        Hero.ExperienceToNext = data.ExperienceToNext;
+        Hero.MaxHp = data.MaxHp;
+        Hero.CurrentHp = data.CurrentHp;
+        Hero.Strength = data.Strength;
+        Hero.Constitution = data.Constitution;
+        Hero.Agility = data.Agility;
+        Hero.Dexterity = data.Dexterity;
+        Hero.Intelligence = data.Intelligence;
+        Hero.Wisdom = data.Wisdom;
+        Hero.Charisma = data.Charisma;
+        Hero.Gold = data.Gold;
+        Hero.Resources = new Dictionary<string, int>(data.Resources);
+        Hero.Loadout = new List<Combinable>(data.Loadout);
+        Hero.Inventory = new List<Combinable>(data.Inventory);
+        RefreshAttacks();
+
+        if (data.SafeRoomFloor.HasValue)
+        {
+            // Resume at the safe-room checkpoint (e.g. floor "4.5"). EnterSafeRoom rebuilds the
+            // room, places the hero, and re-checkpoints (a harmless identical re-save).
+            CurrentFloor = data.SafeRoomFloor.Value;
+            IsInOverworld = false;
+            EnterSafeRoom();
+        }
+        else
+        {
+            IsInOverworld = true;
+            CurrentOverworldGoal = OverworldGoal.ToMine;
+            CurrentMaze = OverworldGenerator.Generate();
+            var entrance = CurrentMaze.Features.First(f => f.Type == MazeFeatureType.DungeonEntrance);
+            Hero.X = entrance.X + 1;
+            Hero.Y = entrance.Y;
+        }
+    }
+
+    /// <summary>The map feature (if any) the hero should walk toward for a given Overworld goal.
+    /// Goals with no target (Mining/Crafting/Selling) mean the hero is mid-Activity and should
+    /// stay put — movement is left alone in that case.</summary>
+    private static MazeFeatureType? OverworldGoalTarget(OverworldGoal goal) => goal switch
+    {
+        OverworldGoal.ToMine => MazeFeatureType.MineEntrance,
+        OverworldGoal.ToSmithy => MazeFeatureType.Smithy,
+        OverworldGoal.ToStall => MazeFeatureType.Stall,
+        OverworldGoal.ToDungeonEntrance => MazeFeatureType.DungeonEntrance,
+        _ => null
+    };
+
+    /// <summary>
+    /// The return trip: walking onto the Overworld's dungeon entrance starts a fresh dive.
+    /// This is the reseed-and-restart logic that used to run immediately on shrine-exit, before
+    /// the Overworld existed to place the hero in instead.
+    /// </summary>
+    private void StartFreshDungeonDive()
+    {
+        IsInOverworld = false;
+        CurrentFloor = 0; // StartNewFloor increments to 1
+        Seed = new Random().Next();
+        _random = new Random(Seed);
+        _mazeGenerator = new MazeGenerator(Seed);
+        _movementSystem = new MovementSystem(Seed);
+        _combatSystem = new CombatSystem(Seed);
+
+        StartNewFloor();
+
+        // Entry-time snapshot: closing the game mid-dungeon reverts to the dungeon entrance
+        // with the state the hero carried in (regular floors themselves are never saved).
+        SaveService.Save(this);
+    }
+
     /// <summary>
     /// Returns true if the enemy can see the hero by scanning multiple facing angles
     /// </summary>
@@ -1001,8 +1466,8 @@ public class GameState
         // Reset game state (StartNewFloor increments CurrentFloor to 1 for the first floor)
         TickCount = 0;
         CurrentFloor = 0;
-        HasKey = false;
         StairsLocation = null;
+        IsInSafeRoom = false;
 
         // Recreate systems with the new seed
         _random = new Random(Seed);
@@ -1032,7 +1497,6 @@ public class GameState
         Hero.CurrentStamina = Hero.MaxStamina;
         Hero.CurrentMana = Hero.MaxMana;
         Hero.CurrentFaith = Hero.MaxFaith;
-        Hero.ChestOpeningDuration = _chestOpeningTicks;
 
         // Equip the class starting loadout and project it into executable attacks
         Hero.Loadout = AttackFactory.GetStartingLoadout(_className);
@@ -1047,6 +1511,13 @@ public class GameState
     
     public void StartNewFloor()
     {
+        // Record the floor being left behind (skip on the very first call, where CurrentFloor
+        // is still 0 and there's nothing to "clear" yet).
+        if (CurrentFloor > 0)
+        {
+            CodexService.Instance.RecordFloorCleared(CurrentFloor);
+        }
+
         CurrentFloor++;
         CurrentMaze = _mazeGenerator.Generate(41, 31, CurrentFloor);
         
@@ -1071,18 +1542,28 @@ public class GameState
         Projectiles.Clear();   // don't let a lingering projectile carry into the new floor
         HitEffects.Clear();
         Boss = null;
-        HasKey = false;
+        IsInSafeRoom = false;
         StairsLocation = null;
         int enemyCount = 3 + CurrentFloor;
-        // Place stairs
+
+        // Place stairs genuinely far from the entrance (real maze-solving distance via BFS, not
+        // straight-line) so the floor is an actual maze-solving challenge rather than a coin flip.
+        var distances = CurrentMaze.BfsDistancesFrom(1, 1);
         if (emptyCells.Count > 0)
         {
-            int stairsIdx = _random.Next(emptyCells.Count);
-            var stairsCell = emptyCells[stairsIdx];
-            emptyCells.RemoveAt(stairsIdx);
+            var reachable = emptyCells.Where(c => distances.ContainsKey(c)).ToList();
+            var candidates = reachable.Count > 0 ? reachable : emptyCells;
+            int farThreshold = candidates.Count > 0
+                ? candidates.Select(c => distances.GetValueOrDefault(c, 0)).OrderByDescending(d => d)
+                    .ElementAt(Math.Max(0, candidates.Count / 4 - 1)) // top 25% farthest
+                : 0;
+            var farCandidates = candidates.Where(c => distances.GetValueOrDefault(c, 0) >= farThreshold).ToList();
+            var stairsPool = farCandidates.Count > 0 ? farCandidates : candidates;
+            var stairsCell = stairsPool[_random.Next(stairsPool.Count)];
+            emptyCells.Remove(stairsCell);
             CurrentMaze.Features.Add(new MazeFeature { X = stairsCell.x, Y = stairsCell.y, Type = MazeFeatureType.Stairs });
         }
-        // Place chest
+        // Place chest (loot + XP only — no key/gating)
         if (emptyCells.Count > 0)
         {
             int chestIdx = _random.Next(emptyCells.Count);
@@ -1090,19 +1571,15 @@ public class GameState
             emptyCells.RemoveAt(chestIdx);
             CurrentMaze.Features.Add(new MazeFeature { X = chestCell.x, Y = chestCell.y, Type = MazeFeatureType.Chest });
         }
-        // Place boss (rarer class, top level for the floor)
-        if (emptyCells.Count > 0)
+        // Occasionally place a trap (environmental hazard, not every floor)
+        if (emptyCells.Count > 0 && _random.NextDouble() < 0.4)
         {
-            int bossIdx = _random.Next(emptyCells.Count);
-            var bossCell = emptyCells[bossIdx];
-            emptyCells.RemoveAt(bossIdx);
-            Boss = EnemyFactory.RandomBoss(CurrentFloor, _characterDataService, _random);
-            Boss.X = bossCell.x;
-            Boss.Y = bossCell.y;
-            Boss.TargetX = bossCell.x;
-            Boss.TargetY = bossCell.y;
-            Enemies.Add(Boss);
+            int trapIdx = _random.Next(emptyCells.Count);
+            var trapCell = emptyCells[trapIdx];
+            emptyCells.RemoveAt(trapIdx);
+            CurrentMaze.Features.Add(new MazeFeature { X = trapCell.x, Y = trapCell.y, Type = MazeFeatureType.Trap });
         }
+        // No per-floor boss anymore — the significant fight is the Guardian at each safe-room gate.
         // Spawn regular enemies (weighted class, random race, random level in the floor's range)
         for (int i = 0; i < enemyCount && emptyCells.Count > 0; i++)
         {

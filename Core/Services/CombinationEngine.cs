@@ -168,7 +168,9 @@ public static class CombinationEngine
     }
 
     // Rarity as a point band: Common=3, Uncommon=8, Rare=13, ... (band width 5).
-    private static int RarityPoints(Rarity r) => (int)r * 5 + 3;
+    // Internal (not private) so other systems needing a consistent rarity->value scale (e.g.
+    // the Overworld's sell-price formula) reuse this instead of duplicating the formula.
+    internal static int RarityPoints(Rarity r) => (int)r * 5 + 3;
 
     private static Rarity RarityFromPoints(int points)
     {

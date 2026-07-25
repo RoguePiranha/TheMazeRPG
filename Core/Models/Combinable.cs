@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace TheMazeRPG.Core.Models;
 
@@ -65,12 +66,19 @@ public enum GameAttribute
 /// <summary>
 /// Base type for everything the player can hold, equip, cast, or merge: items,
 /// weapons, armor, spells, and abilities. The unified shape is what makes the
-/// merge/combine system (see CombinationEngine) possible across kinds.
+/// merge/combine system (see CombinationEngine) possible across kinds, and lets
+/// AttackFactory project a hero's equipped Weapon/Spell into an executable Attack.
 ///
-/// This layer is intentionally decoupled from live combat for now — nothing here is
-/// wired into GameState yet. Attacks are still produced by AttackFactory; the planned
-/// next step is to project a hero's equipped Weapon/Spell into an Attack.
+/// [JsonPolymorphic]/[JsonDerivedType] preserve the concrete type (Weapon vs. Spell vs. ...)
+/// when a List&lt;Combinable&gt; (Hero.Loadout/Inventory) round-trips through JSON — needed
+/// for SaveService, since deserializing into the abstract base alone would lose which
+/// concrete fields (BaseDamage, ManaCost, Modifiers, ...) actually apply.
 /// </summary>
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "$kind")]
+[JsonDerivedType(typeof(Weapon), "weapon")]
+[JsonDerivedType(typeof(Spell), "spell")]
+[JsonDerivedType(typeof(Ability), "ability")]
+[JsonDerivedType(typeof(Item), "item")]
 public abstract class Combinable
 {
     /// <summary>Stable identifier (kebab-case), independent of the display name.</summary>

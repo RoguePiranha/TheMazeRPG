@@ -2,6 +2,18 @@ using System.Collections.Generic;
 namespace TheMazeRPG.Core.Models;
 
 /// <summary>
+/// Threat tier of an enemy. Basic is the common case; Elite is a rarer, tougher regular
+/// enemy; Boss is the one-per-floor set piece. Drives XP reward multiplier (xlsx: Basic 1x /
+/// Elite 1.5x / Boss 2x), loot-drop chance, and a visual distinction in the renderer.
+/// </summary>
+public enum EnemyTier
+{
+    Basic,
+    Elite,
+    Boss
+}
+
+/// <summary>
 /// Represents an enemy in the maze
 /// </summary>
 public class Enemy
@@ -33,7 +45,18 @@ public class Enemy
     public string Type { get; set; } = "Slime";
     public string Class { get; set; } = "Warrior"; // Character class (Warrior/Mage/Rogue/...) — drives gear, stats, shape
     public string Race { get; set; } = "Human";
-    public bool IsBoss { get; set; }
+    public EnemyTier Tier { get; set; } = EnemyTier.Basic;
+    public bool IsBoss => Tier == EnemyTier.Boss;
+    public bool IsElite => Tier == EnemyTier.Elite;
+
+    /// <summary>XP reward multiplier for this tier, from the "Monster Tier / XP Reward" table in
+    /// Levels and Stats.xlsx (Basic ≈25.08, Elite ≈37.625, Boss ≈50.17 → exactly 1x / 1.5x / 2x).</summary>
+    public float XpMultiplier => Tier switch
+    {
+        EnemyTier.Elite => 1.5f,
+        EnemyTier.Boss => 2.0f,
+        _ => 1.0f
+    };
 
     // The enemy's equipped/primary attack (from its class loadout); drives damage scaling + visual.
     public Attack? CurrentAttack { get; set; }

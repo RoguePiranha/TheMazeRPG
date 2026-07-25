@@ -330,10 +330,127 @@ public class MazeRenderer
                 case MazeFeatureType.Chest:
                     DrawChest(canvas, px, py, feature);
                     break;
+
+                case MazeFeatureType.Shrine:
+                    DrawShrine(canvas, px, py);
+                    break;
+
+                case MazeFeatureType.GuardianDoor:
+                    DrawGuardianDoor(canvas, px, py);
+                    break;
+
+                case MazeFeatureType.Trap:
+                    DrawTrap(canvas, px, py);
+                    break;
+
+                case MazeFeatureType.DungeonEntrance:
+                    DrawOverworldPoint(canvas, px, py, new SKColor(90, 90, 100), "▲"); // mountain-ish triangle glyph
+                    break;
+
+                case MazeFeatureType.MineEntrance:
+                    DrawOverworldPoint(canvas, px, py, new SKColor(120, 90, 60), "⛏"); // pickaxe glyph
+                    break;
+
+                case MazeFeatureType.Smithy:
+                    DrawOverworldPoint(canvas, px, py, new SKColor(200, 100, 40), "⚒"); // hammer-and-pick glyph
+                    break;
+
+                case MazeFeatureType.Stall:
+                    DrawOverworldPoint(canvas, px, py, new SKColor(210, 180, 60), "$");
+                    break;
             }
         }
     }
-    
+
+    // Simple placeholder marker for Overworld points of interest: a colored circle with a glyph.
+    // Deliberately minimal — this is a first-slice visual, not final town art.
+    private void DrawOverworldPoint(SKCanvas canvas, float x, float y, SKColor color, string glyph)
+    {
+        using var circlePaint = new SKPaint
+        {
+            Color = color,
+            Style = SKPaintStyle.Fill,
+            IsAntialias = true
+        };
+        canvas.DrawCircle(x, y, 12, circlePaint);
+
+        using var ringPaint = new SKPaint
+        {
+            Color = SKColors.White,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 1.5f,
+            IsAntialias = true
+        };
+        canvas.DrawCircle(x, y, 12, ringPaint);
+
+        using var glyphPaint = new SKPaint
+        {
+            Color = SKColors.White,
+            TextSize = 14,
+            TextAlign = SKTextAlign.Center,
+            IsAntialias = true
+        };
+        canvas.DrawText(glyph, x, y + 5, glyphPaint);
+    }
+
+    // Faint mana-blue glow, per spec: a soft pulsing halo around a small bright core.
+    private void DrawShrine(SKCanvas canvas, float x, float y)
+    {
+        using var glowPaint = new SKPaint
+        {
+            Color = new SKColor(90, 140, 255, 60),
+            Style = SKPaintStyle.Fill,
+            IsAntialias = true
+        };
+        canvas.DrawCircle(x, y, 14, glowPaint);
+
+        using var corePaint = new SKPaint
+        {
+            Color = new SKColor(130, 170, 255, 220),
+            Style = SKPaintStyle.Fill,
+            IsAntialias = true
+        };
+        canvas.DrawCircle(x, y, 5, corePaint);
+    }
+
+    // A dark archway hinting at what's beyond it.
+    private void DrawGuardianDoor(SKCanvas canvas, float x, float y)
+    {
+        using var paint = new SKPaint
+        {
+            Color = new SKColor(140, 30, 30),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 3,
+            IsAntialias = true
+        };
+        canvas.DrawRect(x - 10, y - 14, 20, 28, paint);
+        using var fillPaint = new SKPaint
+        {
+            Color = new SKColor(60, 10, 10, 150),
+            Style = SKPaintStyle.Fill,
+            IsAntialias = true
+        };
+        canvas.DrawRect(x - 8, y - 12, 16, 24, fillPaint);
+    }
+
+    // A subtle warning glyph — visible but easy to miss, consistent with "hazard" framing.
+    private void DrawTrap(SKCanvas canvas, float x, float y)
+    {
+        using var paint = new SKPaint
+        {
+            Color = new SKColor(220, 160, 40, 140),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 1.5f,
+            IsAntialias = true
+        };
+        var path = new SKPath();
+        path.MoveTo(x, y - 7);
+        path.LineTo(x + 7, y + 5);
+        path.LineTo(x - 7, y + 5);
+        path.Close();
+        canvas.DrawPath(path, paint);
+    }
+
     private void DrawStairs(SKCanvas canvas, float x, float y)
     {
         using var paint = new SKPaint
@@ -442,49 +559,43 @@ public class MazeRenderer
             canvas.DrawCircle(x, y - chestHeight/2 + lidHeight/2, 2, lockPaint);
         }
         
-        // Draw golden key inside when opening (appears as lid opens)
+        // Loot glow rising out of the chest as the lid opens. Chests drop rolled gear
+        // (see LootService), so the reveal is a generic golden glint rather than any
+        // specific item shape.
         if (openProgress > 0.3f)
         {
-            float keyAlpha = Math.Min((openProgress - 0.3f) / 0.7f, 1.0f);
-            
-            using var keyPaint = new SKPaint
+            float glowAlpha = Math.Min((openProgress - 0.3f) / 0.7f, 1.0f);
+            float glowX = x;
+            float glowY = y - 2 - (openProgress * 8); // Rises up as it opens
+
+            using var glowPaint = new SKPaint
             {
-                Color = new SKColor(255, 215, 0, (byte)(255 * keyAlpha)),
-                Style = SKPaintStyle.Stroke,
-                StrokeWidth = 2f,
-                IsAntialias = true,
-                StrokeCap = SKStrokeCap.Round
-            };
-            
-            using var keyFillPaint = new SKPaint
-            {
-                Color = new SKColor(255, 215, 0, (byte)(150 * keyAlpha)),
+                Color = new SKColor(255, 215, 0, (byte)(90 * glowAlpha)),
                 Style = SKPaintStyle.Fill,
                 IsAntialias = true
             };
-            
-            // Key position (floats up as chest opens)
-            float keyX = x;
-            float keyY = y - 2 - (openProgress * 8); // Rises up as it opens
-            
-            // Draw key
-            using var keyPath = new SKPath();
-            
-            // Key bow (circular top)
-            keyPath.AddCircle(keyX, keyY - 4, 3);
-            
-            // Key shaft
-            keyPath.MoveTo(keyX, keyY - 1);
-            keyPath.LineTo(keyX, keyY + 6);
-            
-            // Key teeth
-            keyPath.MoveTo(keyX, keyY + 6);
-            keyPath.LineTo(keyX + 2, keyY + 6);
-            keyPath.MoveTo(keyX, keyY + 4);
-            keyPath.LineTo(keyX + 2, keyY + 4);
-            
-            canvas.DrawPath(keyPath, keyFillPaint);
-            canvas.DrawPath(keyPath, keyPaint);
+            canvas.DrawCircle(glowX, glowY, 5f, glowPaint);
+
+            using var corePaint = new SKPaint
+            {
+                Color = new SKColor(255, 240, 160, (byte)(220 * glowAlpha)),
+                Style = SKPaintStyle.Fill,
+                IsAntialias = true
+            };
+            canvas.DrawCircle(glowX, glowY, 2.2f, corePaint);
+
+            // Four-point sparkle
+            using var sparklePaint = new SKPaint
+            {
+                Color = new SKColor(255, 255, 220, (byte)(255 * glowAlpha)),
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = 1.2f,
+                IsAntialias = true,
+                StrokeCap = SKStrokeCap.Round
+            };
+            float r = 4.5f;
+            canvas.DrawLine(glowX - r, glowY, glowX + r, glowY, sparklePaint);
+            canvas.DrawLine(glowX, glowY - r, glowX, glowY + r, sparklePaint);
         }
     }
     
@@ -545,7 +656,22 @@ public class MazeRenderer
                     canvas.DrawPath(penta, paint);
                     break;
             }
-            
+
+            // Elite/Boss get a distinguishing halo ring (gold for Boss, silver for Elite) on top
+            // of the shape, independent of which shape it is.
+            if (enemy.IsAlive && (enemy.IsElite || enemy.IsBoss))
+            {
+                SKColor ringColor = enemy.IsBoss ? new SKColor(255, 215, 0) : new SKColor(220, 220, 230);
+                using var ringPaint = new SKPaint
+                {
+                    Color = ringColor,
+                    Style = SKPaintStyle.Stroke,
+                    StrokeWidth = enemy.IsBoss ? 2.5f : 1.5f,
+                    IsAntialias = true
+                };
+                canvas.DrawCircle(px, py, sz + 4f, ringPaint);
+            }
+
             // Draw health bar for living enemies
             if (enemy.IsAlive)
             {
@@ -1259,59 +1385,6 @@ public class MazeRenderer
         string faithText = $"Faith: {gameState.Hero.CurrentFaith}/{gameState.Hero.MaxFaith}";
         canvas.DrawText(faithText, barX + 5, faithBarY + 12, textOutlinePaint);
         canvas.DrawText(faithText, barX + 5, faithBarY + 12, textPaint);
-        
-        // Key icon (next to resource bars on the right) - only show if hero has the key
-        if (gameState.HasKey)
-        {
-            float keyX = barX + barWidth + 15;
-            float keyY = resourceBarY + 20; // Center vertically with resource bars
-            
-            using var keyPaint = new SKPaint
-            {
-                Color = new SKColor(255, 215, 0), // Gold color
-                Style = SKPaintStyle.Stroke,
-                StrokeWidth = 2.5f,
-                IsAntialias = true,
-                StrokeCap = SKStrokeCap.Round,
-                StrokeJoin = SKStrokeJoin.Round
-            };
-            
-            using var keyFillPaint = new SKPaint
-            {
-                Color = new SKColor(255, 215, 0, 100), // Semi-transparent gold fill
-                Style = SKPaintStyle.Fill,
-                IsAntialias = true
-            };
-            
-            // Draw key icon (simple line-based key shape)
-            using var keyPath = new SKPath();
-            
-            // Key shaft (vertical line)
-            keyPath.MoveTo(keyX, keyY);
-            keyPath.LineTo(keyX, keyY + 15);
-            
-            // Key bow (circular top)
-            keyPath.AddCircle(keyX, keyY, 4);
-            
-            // Key teeth (small notches at bottom)
-            keyPath.MoveTo(keyX, keyY + 15);
-            keyPath.LineTo(keyX + 3, keyY + 15);
-            keyPath.MoveTo(keyX, keyY + 12);
-            keyPath.LineTo(keyX + 3, keyY + 12);
-            
-            canvas.DrawPath(keyPath, keyFillPaint);
-            canvas.DrawPath(keyPath, keyPaint);
-            
-            // "Key" label below icon
-            using var keyLabelPaint = new SKPaint
-            {
-                Color = new SKColor(255, 215, 0),
-                TextSize = 10,
-                IsAntialias = true,
-                Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
-            };
-            canvas.DrawText("Key", keyX - 8, keyY + 25, keyLabelPaint);
-        }
         
         // XP Bar
         float xpBarY = faithBarY + 22;

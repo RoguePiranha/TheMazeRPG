@@ -1,0 +1,18 @@
+{
+  "smelt-iron": {
+    "name": "Smelt Iron Ore",
+    "inputs": { "iron-ore": 2 },
+    "outputType": "material",
+    "outputId": "iron-ingot",
+    "outputAmount": 1,
+    "durationSeconds": 4
+  },
+  "craft-iron-sword": {
+    "name": "Craft Iron Sword",
+    "inputs": { "iron-ingot": 1 },
+    "outputType": "weapon",
+    "outputId": "iron-sword",
+    "outputAmount": 1,
+    "durationSeconds": 6
+  }
+}

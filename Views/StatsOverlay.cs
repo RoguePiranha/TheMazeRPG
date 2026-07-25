@@ -5,6 +5,7 @@ using Avalonia.Media;
 using TheMazeRPG.Core.Models;
 using TheMazeRPG.Core.Services;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace TheMazeRPG.Views;
 
@@ -17,6 +18,15 @@ public class StatsOverlay : Control
     private GameState? _gameState;
     private Point _lastMousePosition;
     private readonly Dictionary<string, (Rect bounds, string description)> _statHoverAreas = new();
+
+    // For the bestiary "discovered/total" denominator: every "{Race} {Class}" combo an enemy can
+    // spawn as. Derived from the loaded content data so it stays correct as races/classes grow.
+    private static readonly int TotalSpeciesCount = ComputeTotalSpeciesCount();
+    private static int ComputeTotalSpeciesCount()
+    {
+        var cds = new CharacterDataService();
+        return cds.Races.Count * cds.Classes.Count;
+    }
     
     public static readonly StyledProperty<string> HeroNameProperty =
         AvaloniaProperty.Register<StatsOverlay, string>(nameof(HeroName), "Hero");
@@ -305,6 +315,38 @@ public class StatsOverlay : Control
                     normalFont, 13, new SolidColorBrush(RarityColor(item.Rarity)));
                 context.DrawText(itemText, new Point(invX, invY));
                 invY += 20;
+            }
+        }
+
+        // Codex summary: cross-run stats + bestiary discovery count (minimal for now —
+        // a full per-species bestiary view can come later once there's more to show).
+        {
+            var codex = CodexService.Instance.Data;
+            invY += 18;
+            var codexHeader = new FormattedText(
+                "CODEX",
+                System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                headerFont, 18, headerBrush);
+            context.DrawText(codexHeader, new Point(invX, invY));
+            invY += 26;
+
+            int discovered = codex.Bestiary.Count;
+            var lines = new[]
+            {
+                $"Kills: {codex.PlayStats.TotalKills}   Deaths: {codex.PlayStats.TotalDeaths}",
+                $"Deepest Floor: {codex.PlayStats.DeepestFloor}",
+                $"Bestiary: {discovered}/{TotalSpeciesCount} discovered"
+            };
+            foreach (var line in lines)
+            {
+                var lineText = new FormattedText(
+                    line,
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight,
+                    normalFont, 13, statLabelBrush);
+                context.DrawText(lineText, new Point(invX, invY));
+                invY += 18;
             }
         }
 

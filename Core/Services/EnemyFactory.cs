@@ -37,26 +37,45 @@ public static class EnemyFactory
         ["Warrior"] = 1,
     };
 
+    // Chance a regular spawn rolls as Elite instead of Basic.
+    private const float EliteChance = 0.18f;
+
+    // HP multiplier and visual radius by tier. Boss values match the original hand-tuned boss.
+    private static float TierHpMultiplier(EnemyTier tier) => tier switch
+    {
+        EnemyTier.Elite => 1.5f,
+        EnemyTier.Boss => 2.2f,
+        _ => 1.0f
+    };
+    private static float TierRadius(EnemyTier tier) => tier switch
+    {
+        EnemyTier.Elite => 0.40f,
+        EnemyTier.Boss => 0.45f,
+        _ => 0.35f
+    };
+
     /// <summary>Level range for regular enemies on a floor. Boss uses the top of this + 1.</summary>
     public static (int min, int max) LevelRange(int floor) => (floor, floor + 2);
 
-    /// <summary>A random regular enemy for a floor (weighted class, random race, random level in range).</summary>
+    /// <summary>A random regular enemy for a floor (weighted class, random race, random level in range,
+    /// small chance to roll Elite).</summary>
     public static Enemy RandomRegular(int floor, CharacterDataService cds, Random rng)
     {
         var (min, max) = LevelRange(floor);
         int level = rng.Next(min, max + 1);
-        return Create(PickWeighted(RegularClassWeights, rng), PickRace(cds, rng), level, isBoss: false, cds, rng);
+        var tier = rng.NextDouble() < EliteChance ? EnemyTier.Elite : EnemyTier.Basic;
+        return Create(PickWeighted(RegularClassWeights, rng), PickRace(cds, rng), level, tier, cds, rng);
     }
 
     /// <summary>The floor boss: rarer class, top level for the floor.</summary>
     public static Enemy RandomBoss(int floor, CharacterDataService cds, Random rng)
     {
         int level = LevelRange(floor).max + 1;
-        return Create(PickWeighted(BossClassWeights, rng), PickRace(cds, rng), level, isBoss: true, cds, rng);
+        return Create(PickWeighted(BossClassWeights, rng), PickRace(cds, rng), level, EnemyTier.Boss, cds, rng);
     }
 
-    /// <summary>Build an enemy of a specific class/race/level.</summary>
-    public static Enemy Create(string className, string raceName, int level, bool isBoss,
+    /// <summary>Build an enemy of a specific class/race/level/tier.</summary>
+    public static Enemy Create(string className, string raceName, int level, EnemyTier tier,
         CharacterDataService cds, Random rng)
     {
         cds.Classes.TryGetValue(className, out var classData);
@@ -88,8 +107,7 @@ public static class EnemyFactory
         var primary = attacks.Count > 0 ? attacks[0] : null;
 
         // Derived combat values (Constitution → health/defense; a small flat attack scales with level).
-        int maxHp = 30 + con * 5 + level * 6;
-        if (isBoss) maxHp = (int)(maxHp * 2.2f);
+        int maxHp = (int)((30 + con * 5 + level * 6) * TierHpMultiplier(tier));
 
         var enemy = new Enemy
         {
@@ -97,7 +115,7 @@ public static class EnemyFactory
             Class = className,
             Race = raceName,
             Type = className,
-            IsBoss = isBoss,
+            Tier = tier,
             Strength = str,
             Constitution = con,
             Agility = agi,
@@ -115,7 +133,7 @@ public static class EnemyFactory
             AttackSpeed = (primary?.Cooldown ?? 25) + 15,
             NoiseOffsetX = rng.NextDouble() * 100,
             NoiseOffsetY = rng.NextDouble() * 100,
-            Radius = isBoss ? 0.45f : 0.35f,
+            Radius = TierRadius(tier),
         };
         return enemy;
     }

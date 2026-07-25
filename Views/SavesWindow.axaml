@@ -1,0 +1,54 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="480" d:DesignHeight="420"
+        x:Class="TheMazeRPG.Views.SavesWindow"
+        Title="Continue"
+        Width="480"
+        Height="420"
+        CanResize="False"
+        WindowStartupLocation="CenterScreen">
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="Select a Character"
+                   FontSize="24"
+                   FontWeight="Bold"
+                   HorizontalAlignment="Center"
+                   Margin="0,0,0,20"/>
+
+        <ListBox x:Name="SavesListBox"
+                 Grid.Row="1"
+                 SelectionMode="Single"
+                 SelectionChanged="SavesListBox_SelectionChanged"
+                 Margin="0,0,0,20"/>
+
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Center"
+                    Spacing="20">
+            <Button x:Name="LoadButton"
+                    Content="Load"
+                    Padding="40,10"
+                    FontSize="16"
+                    Click="LoadButton_Click"/>
+            <Button x:Name="DeleteButton"
+                    Content="Delete"
+                    Padding="30,10"
+                    FontSize="16"
+                    Click="DeleteButton_Click"/>
+            <Button x:Name="CancelButton"
+                    Content="Back"
+                    Padding="40,10"
+                    FontSize="16"
+                    Click="CancelButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

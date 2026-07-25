@@ -1,0 +1,10 @@
+{
+  "iron-ore": {
+    "name": "Iron Ore",
+    "description": "Raw ore, ready to be smelted into an ingot."
+  },
+  "iron-ingot": {
+    "name": "Iron Ingot",
+    "description": "Smelted iron, ready to be forged into gear."
+  }
+}

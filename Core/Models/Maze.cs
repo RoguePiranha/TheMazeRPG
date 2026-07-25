@@ -56,4 +56,33 @@ public class Maze
             return false;
         return !Walls[x, y];
     }
+
+    /// <summary>
+    /// BFS distance in steps (via the actual walkable maze graph, not straight-line) from a start
+    /// cell to every reachable cell. Cells not reachable from the start are absent from the map.
+    /// Used to place the exit genuinely far from the entrance (real maze-solving distance).
+    /// </summary>
+    public Dictionary<(int x, int y), int> BfsDistancesFrom(int startX, int startY)
+    {
+        var distances = new Dictionary<(int x, int y), int> { [(startX, startY)] = 0 };
+        var queue = new Queue<(int x, int y)>();
+        queue.Enqueue((startX, startY));
+        var directions = new[] { (0, 1), (1, 0), (0, -1), (-1, 0) };
+
+        while (queue.Count > 0)
+        {
+            var (x, y) = queue.Dequeue();
+            int d = distances[(x, y)];
+            foreach (var (dx, dy) in directions)
+            {
+                var next = (x + dx, y + dy);
+                if (IsWalkable(next.Item1, next.Item2) && !distances.ContainsKey(next))
+                {
+                    distances[next] = d + 1;
+                    queue.Enqueue(next);
+                }
+            }
+        }
+        return distances;
+    }
 }

@@ -86,12 +86,7 @@ public class Hero
     public bool InCombat { get; set; }
     public int AttackSpeed { get; set; } = 30; // Ticks between attacks
     public int AttackCooldown { get; set; }
-    
-    // Chest opening state
-    public bool IsOpeningChest { get; set; }
-    public int ChestOpeningTicks { get; set; }
-    public int ChestOpeningDuration { get; set; } = 90; // ticks; set by GameState from the tick rate
-    
+
     // Attack system
     // Loadout = the equipped weapons/spells (Combinables) the hero carries. Attacks are
     // projected from these, so combat is driven by equipped data rather than a class switch.
@@ -103,7 +98,16 @@ public class Hero
     // items (weapons/spells) can be equipped in the Loadout at once.
     public List<Combinable> Inventory { get; set; } = new();
     public int HotbarCapacity { get; set; } = 4;
-    
+
+    // Overworld: raw/refined materials (ore, ingots, ...), keyed by material id. Stackable/
+    // countable, unlike Inventory's unique Combinables. Written only via
+    // GameState.AddHeroResource, which validates the id against MaterialDataService — this stays
+    // a plain dictionary here since Hero (a Model) doesn't depend on Services.
+    public Dictionary<string, int> Resources { get; set; } = new();
+
+    // Overworld currency, earned by selling items at a Stall.
+    public int Gold { get; set; } = 0;
+
     // Animation state for combat movement
     public float AnimationOffsetX { get; set; }
     public float AnimationOffsetY { get; set; }

@@ -58,13 +58,21 @@
                  SelectionMode="Single"
                  Margin="0,0,0,20"/>
 
-        <!-- Start Button -->
-        <Button Grid.Row="6"
-                x:Name="StartButton"
-                Content="Start Adventure"
-                HorizontalAlignment="Center"
-                Padding="40,10"
-                FontSize="16"
-                Click="StartButton_Click"/>
+        <!-- Start / Continue Buttons -->
+        <StackPanel Grid.Row="6"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Center"
+                    Spacing="20">
+            <Button x:Name="StartButton"
+                    Content="Start Adventure"
+                    Padding="40,10"
+                    FontSize="16"
+                    Click="StartButton_Click"/>
+            <Button x:Name="ContinueButton"
+                    Content="Continue"
+                    Padding="40,10"
+                    FontSize="16"
+                    Click="ContinueButton_Click"/>
+        </StackPanel>
     </Grid>
 </Window>

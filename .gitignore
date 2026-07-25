@@ -4,6 +4,7 @@ Debug/
 info/
 TestResults/
 out/
+Saves/
 .vs/
 .vscode/
 *.user
