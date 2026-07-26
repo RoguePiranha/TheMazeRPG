@@ -990,6 +990,35 @@ public class MazeRenderer
         }
     }
     
+    /// <summary>
+    /// (glow, core) base colors for a magic projectile's element. Returns the supplied defaults
+    /// for <see cref="MagicElement.None"/> so non-elemental spells keep their original look. The
+    /// caller re-applies its own per-layer alpha.
+    /// </summary>
+    private static (SKColor glow, SKColor core) MagicColors(MagicElement e, SKColor defGlow, SKColor defCore) => e switch
+    {
+        MagicElement.Mana => (new SKColor(150, 190, 255), new SKColor(210, 230, 255)),
+        MagicElement.Arcane => (new SKColor(170, 100, 255), new SKColor(215, 170, 255)),
+        MagicElement.Fire => (new SKColor(255, 110, 40), new SKColor(255, 200, 130)),
+        MagicElement.Ice => (new SKColor(150, 220, 255), new SKColor(225, 248, 255)),
+        MagicElement.Poison => (new SKColor(120, 255, 60), new SKColor(205, 255, 150)),
+        MagicElement.Water => (new SKColor(60, 130, 255), new SKColor(150, 195, 255)),
+        MagicElement.Lightning => (new SKColor(255, 230, 60), new SKColor(255, 255, 190)),
+        MagicElement.Life => (new SKColor(89, 214, 111), new SKColor(216, 255, 210)),
+        MagicElement.Light => (new SKColor(255, 243, 166), new SKColor(255, 255, 255)),
+        MagicElement.Void => (new SKColor(59, 49, 90), new SKColor(0, 0, 0)),
+        MagicElement.Holy => (new SKColor(255, 210, 90), new SKColor(255, 242, 185)),
+        // Black cores (opaque, so they read on any background) with a colored glow halo — dark
+        // gray for Death, purple for Shadow. The glow uses a Screen blend, so it needs a
+        // non-black color to show; the core does not, so black stays black.
+        MagicElement.Death => (new SKColor(120, 120, 120), new SKColor(0, 0, 0)),
+        MagicElement.Shadow => (new SKColor(150, 90, 200), new SKColor(0, 0, 0)),
+        MagicElement.Earth => (new SKColor(170, 120, 60), new SKColor(215, 185, 130)),
+        MagicElement.Air => (new SKColor(225, 225, 220), new SKColor(248, 248, 245)),
+        MagicElement.Sonic => (new SKColor(100, 200, 255), new SKColor(205, 238, 255)),
+        _ => (defGlow, defCore)
+    };
+
     private void DrawProjectiles(SKCanvas canvas, GameState gameState)
     {
         var projectiles = gameState.Projectiles;
@@ -1264,10 +1293,11 @@ public class MazeRenderer
                 case AttackAnimation.Magic:
                     if (projectile.Visual == VisualStyle.MagicMissile)
                     {
-                        // Magic Missile - Purple glowing orb with sparkles
+                        // Glowing orb with sparkles — purple by default, tinted by element.
+                        var (mmGlow, mmCore) = MagicColors(projectile.Element, new SKColor(138, 43, 226), new SKColor(255, 105, 255));
                         using (var magicGlow = new SKPaint
                         {
-                            Color = new SKColor(138, 43, 226, (byte)(alphaVal * 0.5f)), // Purple glow
+                            Color = mmGlow.WithAlpha((byte)(alphaVal * 0.5f)),
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true,
                             MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 4),
@@ -1276,17 +1306,17 @@ public class MazeRenderer
                         {
                             canvas.DrawCircle(px, py, 10, magicGlow);
                         }
-                        
+
                         using (var magicCore = new SKPaint
                         {
-                            Color = new SKColor(255, 105, 255, alphaVal), // Bright pink
+                            Color = mmCore.WithAlpha(alphaVal),
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true
                         })
                         {
                             canvas.DrawCircle(px, py, 5, magicCore);
                         }
-                        
+
                         // Sparkle trail
                         float trailDx = px - startPx;
                         float trailDy = py - startPy;
@@ -1297,7 +1327,7 @@ public class MazeRenderer
                             float sparkleY = startPy + trailDy * t;
                             using var sparklePaint = new SKPaint
                             {
-                                Color = new SKColor(200, 100, 255, (byte)(alphaVal * 0.4f)),
+                                Color = mmGlow.WithAlpha((byte)(alphaVal * 0.4f)),
                                 Style = SKPaintStyle.Fill,
                                 IsAntialias = true
                             };
@@ -1313,9 +1343,11 @@ public class MazeRenderer
                         float nx = len > 0 ? trailDx / len : 0f;
                         float ny = len > 0 ? trailDy / len : 0f;
 
+                        // Comet with tapered trail — cyan by default, tinted by element.
+                        var (cometGlow, cometCore) = MagicColors(projectile.Element, new SKColor(100, 255, 255), new SKColor(180, 255, 255));
                         using (var glow = new SKPaint
                         {
-                            Color = new SKColor(100, 255, 255, (byte)(alphaVal * 160)), // Cyan glow
+                            Color = cometGlow.WithAlpha((byte)(alphaVal * 160)),
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true,
                             MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 4),
@@ -1326,7 +1358,7 @@ public class MazeRenderer
                         }
                         using (var core = new SKPaint
                         {
-                            Color = new SKColor(180, 255, 255, (byte)alphaVal),
+                            Color = cometCore.WithAlpha(alphaVal),
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true
                         })
@@ -1342,7 +1374,7 @@ public class MazeRenderer
                             float size = 3.2f - i * 0.5f;
                             using var trail = new SKPaint
                             {
-                                Color = new SKColor(120, 240, 255, (byte)(alphaVal * (200 - i * 30) / 255f * 255)),
+                                Color = cometGlow.WithAlpha((byte)(alphaVal * (200 - i * 30) / 255f * 255)),
                                 Style = SKPaintStyle.Fill,
                                 IsAntialias = true,
                                 MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 2),
@@ -1356,9 +1388,10 @@ public class MazeRenderer
                         // Arcane Blast - expanding teal ring (shockwave)
                         float progress = (float)projectile.LifeTime / projectile.MaxLifeTime;
                         float radius = 6 + progress * 18f;
+                        var (ringColor, _) = MagicColors(projectile.Element, new SKColor(100, 220, 220), new SKColor(100, 220, 220));
                         using var ring = new SKPaint
                         {
-                            Color = new SKColor(100, 220, 220, (byte)(alphaVal * 0.8f)),
+                            Color = ringColor.WithAlpha((byte)(alphaVal * 0.8f)),
                             Style = SKPaintStyle.Stroke,
                             StrokeWidth = 3,
                             IsAntialias = true,
@@ -1369,14 +1402,15 @@ public class MazeRenderer
                     }
                     else if (projectile.Visual == VisualStyle.Sonic)
                     {
-                        // Sonic Blast - Sound wave rings
+                        // Sonic Blast - Sound wave rings (tinted by element if any)
+                        var (waveColor, noteColor) = MagicColors(projectile.Element, new SKColor(100, 200, 255), new SKColor(150, 220, 255));
                         float waveProgress = (float)projectile.LifeTime / projectile.MaxLifeTime;
                         for (int i = 0; i < 3; i++)
                         {
                             float waveRadius = (waveProgress + i * 0.3f) * 20f;
                             using var wavePaint = new SKPaint
                             {
-                                Color = new SKColor(100, 200, 255, (byte)(alphaVal * 0.5f)),
+                                Color = waveColor.WithAlpha((byte)(alphaVal * 0.5f)),
                                 Style = SKPaintStyle.Stroke,
                                 StrokeWidth = 2,
                                 IsAntialias = true,
@@ -1384,11 +1418,11 @@ public class MazeRenderer
                             };
                             canvas.DrawCircle(px, py, waveRadius, wavePaint);
                         }
-                        
+
                         // Central note symbol
                         using var notePaint = new SKPaint
                         {
-                            Color = new SKColor(150, 220, 255, alphaVal),
+                            Color = noteColor.WithAlpha(alphaVal),
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true,
                             BlendMode = SKBlendMode.Screen

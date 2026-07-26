@@ -135,6 +135,12 @@ public static class EnemyFactory
             NoiseOffsetY = rng.NextDouble() * 100,
             Radius = TierRadius(tier),
         };
+
+        // Seed the enemy's affinities from its class + race (same data the hero uses). Static —
+        // enemies don't grow — but it gives their magic attacks scaling and grants resistances.
+        cds.Races.TryGetValue(raceName, out var raceData);
+        AffinityService.SeedFrom(enemy.Affinities, classData?.Affinities, raceData?.Affinities);
+
         return enemy;
     }
 

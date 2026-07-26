@@ -19,6 +19,9 @@ public class Projectile
     // Stable visual style, chosen from the attack's id (not name substrings) — the renderer
     // switches on this so renaming an attack never changes/breaks its effect.
     public VisualStyle Visual { get; set; } = VisualStyle.Blade;
+    // Elemental flavor (magic attacks) — drives the projectile's color; None = the visual's own
+    // default color. See MagicElements.For.
+    public MagicElement Element { get; set; } = MagicElement.None;
     // Combat fields
     public ProjectileTeam Team { get; set; } = ProjectileTeam.Neutral;
     public int Damage { get; set; } = 0;

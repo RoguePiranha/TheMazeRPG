@@ -23,6 +23,10 @@
       "Intelligence": 1.25,
       "Wisdom": 1.1,
       "Charisma": 1.0
+    },
+    "affinities": {
+      "Arcane": 8,
+      "Light": 5
     }
   },
   "Dwarf": {
@@ -36,6 +40,10 @@
       "Intelligence": 0.8,
       "Wisdom": 1.0,
       "Charisma": 0.9
+    },
+    "affinities": {
+      "Earth": 10,
+      "Fire": 5
     }
   },
   "Halfling": {
@@ -88,6 +96,9 @@
       "Intelligence": 0.9,
       "Wisdom": 1.0,
       "Charisma": 1.1
+    },
+    "affinities": {
+      "Fire": 12
     }
   },
   "Orc": {
@@ -114,6 +125,10 @@
       "Intelligence": 1.2,
       "Wisdom": 0.9,
       "Charisma": 1.3
+    },
+    "affinities": {
+      "Fire": 8,
+      "Shadow": 6
     }
   },
   "Debug": {

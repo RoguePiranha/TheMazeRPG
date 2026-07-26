@@ -87,6 +87,13 @@ sealed class Program
             return;
         }
 
+        // If TEST_AFFINITY is set, verify the elemental affinity system and exit
+        if (Environment.GetEnvironmentVariable("TEST_AFFINITY") == "1")
+        {
+            RunAffinityDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 
@@ -171,7 +178,60 @@ sealed class Program
             var first = hb.Hero.CurrentAttack;
             hb.SelectAttack(1);
             Console.WriteLine($"Hotbar select: attack '{first?.Name}' -> '{hb.Hero.CurrentAttack?.Name}' (expect different)");
+
+            // Scroll-wheel cycle wraps around the hotbar.
+            hb.SelectAttack(0);
+            hb.CycleAttack(-1); // wrap backwards from the first slot to the last
+            Console.WriteLine($"Scroll cycle -1 from slot 0 -> '{hb.Hero.CurrentAttack?.Name}' (expect last: '{hb.Hero.Attacks[^1].Name}')");
         }
+
+        // Magic element mapping (drives spell projectile colors).
+        Console.WriteLine("Element mapping:");
+        foreach (var (id, name) in new[] { ("fireball", "Fireball"), ("ice-shard", "Ice Shard"), ("magic-dart", "Magic Dart"), ("holy-touch", "Holy Touch"), ("mana-bolt", "Mana Bolt"), ("quick-slash", "Quick Slash") })
+        {
+            var el = MagicElements.For(new Attack { Id = id, Name = name });
+            Console.WriteLine($"  {name,-12} -> {el}");
+        }
+    }
+
+    // Debug/test entrypoint: verify the elemental affinity system.
+    public static void RunAffinityDemo()
+    {
+        Console.WriteLine("=== Affinity ===");
+
+        // Seeding from race + class.
+        var mage = new GameState(1, "Wiz", "Mage Apprentice", "Elf");
+        var seed = mage.Hero.Affinities;
+        Console.WriteLine($"Mage/Elf seeded: Arcane {seed.Get(MagicElement.Arcane):0}, Fire {seed.Get(MagicElement.Fire):0}, Water {seed.Get(MagicElement.Water):0} (neutral is {Affinities.Neutral:0})");
+
+        // (a) Caster power: higher affinity hits harder; neutral is identity.
+        Console.WriteLine($"Power x: affinity 80={AffinityService.PowerMultiplier(80):0.00}, 20(neutral)={AffinityService.PowerMultiplier(20):0.00}, 0={AffinityService.PowerMultiplier(0):0.00} (expect >1, =1.00, <1)");
+
+        // (b) Resistance: a fire-affine target takes less fire damage.
+        var fireAffine = new Affinities();
+        fireAffine.Set(MagicElement.Fire, 90);
+        int vsNeutral = AffinityService.ApplyResistance(100, new Affinities(), MagicElement.Fire);
+        int vsResist = AffinityService.ApplyResistance(100, fireAffine, MagicElement.Fire);
+        Console.WriteLine($"100 fire damage: vs neutral target={vsNeutral}, vs fire-affine(90) target={vsResist} (expect reduced)");
+
+        // (c) Mana cost: cheaper when affine, costlier when unattuned.
+        var unattuned = new Affinities();
+        unattuned.Set(MagicElement.Fire, 0);
+        Console.WriteLine($"Mana cost of a 10-mana fire spell: affine(90)={AffinityService.EffectiveManaCost(fireAffine, MagicElement.Fire, 10)}, neutral={AffinityService.EffectiveManaCost(new Affinities(), MagicElement.Fire, 10)}, unattuned(0)={AffinityService.EffectiveManaCost(unattuned, MagicElement.Fire, 10)} (expect <10, =10, >10)");
+
+        // (d) Grow-with-use. Casual casting (below the elementalist threshold) raises Fire but does
+        // NOT lower opposed Water/Ice; only a committed Fire elementalist's practice erodes them.
+        var dabbler = new Affinities();
+        for (int i = 0; i < 30; i++) AffinityService.OnElementCast(dabbler, MagicElement.Fire);
+        Console.WriteLine($"Dabbler, 30 fire casts (never reaches elementalist {AffinityService.ElementalistThreshold:0}): Fire {Affinities.Neutral:0}->{dabbler.Get(MagicElement.Fire):0} (up), Water {dabbler.Get(MagicElement.Water):0}, Ice {dabbler.Get(MagicElement.Ice):0} (expect still {Affinities.Neutral:0} — no drain)");
+
+        var elementalist = new Affinities();
+        elementalist.Set(MagicElement.Fire, 60); // already a Fire elementalist
+        for (int i = 0; i < 10; i++) AffinityService.OnElementCast(elementalist, MagicElement.Fire);
+        Console.WriteLine($"Fire elementalist(60), 10 fire casts: Fire ->{elementalist.Get(MagicElement.Fire):0} (up), Water ->{elementalist.Get(MagicElement.Water):0}, Ice ->{elementalist.Get(MagicElement.Ice):0} (opposed, now below neutral)");
+
+        // (e) Tier gate.
+        Console.WriteLine($"Learnable tier by affinity: 10->{AffinityService.LearnableTier(10)}, 50->{AffinityService.LearnableTier(50)}, 95->{AffinityService.LearnableTier(95)} (expect rising)");
     }
 
     // Debug/test entrypoint: if TEST_SIM=1 is set, run a short simulation and exit

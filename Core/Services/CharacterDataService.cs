@@ -136,6 +136,11 @@ public class CharacterDataService
             if (race.StatOverrides.TryGetValue("Charisma", out var oCha)) hero.Charisma = oCha;
         }
 
+        // Seed the hero's elemental affinity leanings from class + race (added over the neutral
+        // baseline). Play shifts them from here via AffinityService.OnElementCast.
+        hero.Affinities = new Affinities();
+        AffinityService.SeedFrom(hero.Affinities, characterClass.Affinities, race.Affinities);
+
         // Apply racial effectiveness multipliers. These do NOT alter the base stats above;
         // they scale how effectively each stat translates into results (Info/Racial Effectiveness.md).
         hero.StrengthEffectiveness = Effectiveness(race, "Strength");

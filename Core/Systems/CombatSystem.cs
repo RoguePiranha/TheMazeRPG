@@ -67,7 +67,7 @@ public class CombatSystem
                 // Check if we have enough resources for this attack
                 bool canAfford = !attack.IsHeavyAttack ||
                     (hero.CurrentStamina >= attack.StaminaCost &&
-                     hero.CurrentMana >= attack.ManaCost &&
+                     hero.CurrentMana >= AffinityService.EffectiveManaCost(hero.Affinities, MagicElements.For(attack), attack.ManaCost) &&
                      hero.CurrentFaith >= attack.FaithCost);
                 
                 if (canAfford)
@@ -159,8 +159,13 @@ public class CombatSystem
         if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0 || attack.FaithCost > 0)
             enemyDefense += (int)(enemyDefense * 0.2f); // base 20% magic resist
         int finalDamage = CalculateDamage(statDamage, enemyDefense);
+        // Target's elemental resistance to this attack's element.
+        finalDamage = AffinityService.ApplyResistance(finalDamage, enemy.Affinities, MagicElements.For(attack));
 
         SpawnHeroProjectile(hero, attack, dx, dy, enemy.X, enemy.Y, finalDamage, isStatDamage: false, projectiles);
+
+        // Practice develops the hero's affinity to the element cast (and shifts opposed/harmonious).
+        AffinityService.OnElementCast(hero.Affinities, MagicElements.For(attack));
     }
 
     /// <summary>
@@ -189,13 +194,17 @@ public class CombatSystem
         float targetY = hero.Y + dirY * travel;
 
         SpawnHeroProjectile(hero, attack, dirX, dirY, targetX, targetY, statDamage, isStatDamage: true, projectiles);
+
+        // Practice develops the hero's affinity to the element cast (and shifts opposed/harmonious).
+        AffinityService.OnElementCast(hero.Affinities, MagicElements.For(attack));
     }
 
     private static void DeductAttackCost(Hero hero, Attack attack)
     {
         if (!attack.IsHeavyAttack) return;
         hero.CurrentStamina -= attack.StaminaCost;
-        hero.CurrentMana -= attack.ManaCost;
+        // Only the mana portion is affinity-discounted (elemental spellcasting); stamina/faith aren't.
+        hero.CurrentMana -= AffinityService.EffectiveManaCost(hero.Affinities, MagicElements.For(attack), attack.ManaCost);
         hero.CurrentFaith -= attack.FaithCost;
     }
 
@@ -214,6 +223,11 @@ public class CombatSystem
         float critChance = attack.CritChance + hero.EffectiveDexterity * 0.005f;
         if ((float)_random.NextDouble() < critChance)
             statDamage = (int)(statDamage * 1.5f);
+
+        // Elemental affinity: a caster hits harder with elements they're attuned to (identity at
+        // neutral, so non-elemental / unattuned attacks are unchanged).
+        var element = MagicElements.For(attack);
+        statDamage = (int)(statDamage * AffinityService.PowerMultiplier(hero.Affinities.Get(element)));
         return statDamage;
     }
 
@@ -228,6 +242,7 @@ public class CombatSystem
         float targetX, float targetY, int damage, bool isStatDamage, List<Projectile> projectiles)
     {
         var visual = AttackVisuals.For(attack);
+        var element = MagicElements.For(attack);
 
         void Spawn(float speed, AttackAnimation type, int maxLife, float radius, float dmgMul, bool multi)
         {
@@ -244,6 +259,7 @@ public class CombatSystem
                 Type = type,
                 AttackName = attack.Name,
                 Visual = visual,
+                Element = element,
                 MaxLifeTime = maxLife,
                 Team = ProjectileTeam.Hero,
                 Damage = isStatDamage ? 0 : d,
@@ -318,6 +334,10 @@ public class CombatSystem
         else
             statDamage += (int)(enemy.Strength * 1.2f) + (int)(enemy.Dexterity * 0.5f);
 
+        // Attacker's elemental affinity power (identity at neutral, so physical attacks unchanged).
+        var element = atk != null ? MagicElements.For(atk) : MagicElement.None;
+        statDamage = (int)(statDamage * AffinityService.PowerMultiplier(enemy.Affinities.Get(element)));
+
         int finalDamage = CalculateDamage(statDamage, hero.Defense + (int)(hero.EffectiveConstitution * 0.7f));
         if (enemy.IsBoss)
         {
@@ -326,6 +346,10 @@ public class CombatSystem
             finalDamage = (int)(finalDamage * 1.35f);
             finalDamage = Math.Max(finalDamage, 12 + enemy.Level * 2);
         }
+
+        // Hero's elemental resistance to this attack's element (baked in; the enemy projectile's
+        // Damage is applied directly on hit).
+        finalDamage = AffinityService.ApplyResistance(finalDamage, hero.Affinities, element);
 
         // Lunge animation toward the hero.
         float dx = hero.X - enemy.X;
@@ -358,6 +382,7 @@ public class CombatSystem
             Type = animation,
             AttackName = atk?.Name ?? "Enemy Attack",
             Visual = atk != null ? AttackVisuals.For(atk) : VisualStyle.Blade,
+            Element = atk != null ? MagicElements.For(atk) : MagicElement.None,
             MaxLifeTime = maxLife,
             Team = ProjectileTeam.Enemy,
             Damage = finalDamage,

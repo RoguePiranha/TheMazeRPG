@@ -9,6 +9,11 @@ public class CharacterClass
     public Dictionary<string, int> StatModifiers { get; set; } = new();
     public Dictionary<string, int> StartingStats { get; set; } = new();
     public Dictionary<string, int> StatGrowth { get; set; } = new();
+
+    /// <summary>Optional starting elemental affinity leanings, keyed by MagicElement name
+    /// ("Fire", "Arcane", ...). Added over the neutral baseline when a character of this class is
+    /// created (a lean, not a full specialization). See AffinityService / Affinities.</summary>
+    public Dictionary<string, float> Affinities { get; set; } = new();
 }
 
 public class CharacterRace
@@ -37,4 +42,8 @@ public class CharacterRace
     /// attribute name ("Strength", ...); applied after the class's starting stats. Null = use the
     /// class stats unchanged.</summary>
     public Dictionary<string, int>? StatOverrides { get; set; }
+
+    /// <summary>Optional starting elemental affinity leanings, keyed by MagicElement name; added
+    /// over the neutral baseline (stacks with the class's leanings). See AffinityService.</summary>
+    public Dictionary<string, float> Affinities { get; set; } = new();
 }

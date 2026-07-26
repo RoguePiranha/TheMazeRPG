@@ -60,6 +60,10 @@ public class Enemy
 
     // The enemy's equipped/primary attack (from its class loadout); drives damage scaling + visual.
     public Attack? CurrentAttack { get; set; }
+
+    // Elemental affinity profile (seeded from race+class, static — enemies don't grow). Gives its
+    // magic attacks damage/cost scaling and grants it resistance to matching incoming elements.
+    public Affinities Affinities { get; set; } = new();
     
     // Combat state
     public bool InCombat { get; set; }

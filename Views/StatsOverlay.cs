@@ -364,6 +364,39 @@ public class StatsOverlay : Control
             }
         }
 
+        // Affinities: the character's non-neutral elemental leanings, element-colored, with the
+        // learnable spell tier. Neutral (baseline) elements are omitted.
+        if (_gameState?.Hero?.Affinities is { } affinities)
+        {
+            var shown = affinities.Values
+                .Where(kv => System.Math.Abs(kv.Value - Affinities.Neutral) > 0.5f)
+                .OrderByDescending(kv => kv.Value)
+                .ToList();
+            if (shown.Count > 0)
+            {
+                invY += 18;
+                var affHeader = new FormattedText(
+                    "AFFINITIES",
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight,
+                    headerFont, 18, headerBrush);
+                context.DrawText(affHeader, new Point(invX, invY));
+                invY += 26;
+
+                foreach (var kv in shown)
+                {
+                    int tier = AffinityService.LearnableTier(kv.Value);
+                    var line = new FormattedText(
+                        $"{kv.Key,-10} {kv.Value,5:0}   (tier {tier})",
+                        System.Globalization.CultureInfo.CurrentCulture,
+                        FlowDirection.LeftToRight,
+                        normalFont, 13, new SolidColorBrush(ElementColor(kv.Key)));
+                    context.DrawText(line, new Point(invX, invY));
+                    invY += 18;
+                }
+            }
+        }
+
         // Footer hint
         var hintText = new FormattedText(
             "Press [Tab] to close",
@@ -453,6 +486,28 @@ public class StatsOverlay : Control
         Rarity.Epic => Color.FromRgb(190, 120, 255),
         Rarity.Legendary => Color.FromRgb(255, 165, 60),
         Rarity.Mythic => Color.FromRgb(255, 215, 90),
+        _ => Colors.White
+    };
+
+    // Element display colors (the "glow" tone from the renderer's magic palette).
+    private static Color ElementColor(MagicElement element) => element switch
+    {
+        MagicElement.Mana => Color.FromRgb(150, 190, 255),
+        MagicElement.Arcane => Color.FromRgb(170, 100, 255),
+        MagicElement.Fire => Color.FromRgb(255, 110, 40),
+        MagicElement.Ice => Color.FromRgb(150, 220, 255),
+        MagicElement.Poison => Color.FromRgb(120, 255, 60),
+        MagicElement.Water => Color.FromRgb(60, 130, 255),
+        MagicElement.Lightning => Color.FromRgb(255, 230, 60),
+        MagicElement.Life => Color.FromRgb(89, 214, 111),
+        MagicElement.Death => Color.FromRgb(150, 150, 150),
+        MagicElement.Light => Color.FromRgb(255, 243, 166),
+        MagicElement.Shadow => Color.FromRgb(150, 90, 200),
+        MagicElement.Earth => Color.FromRgb(170, 120, 60),
+        MagicElement.Air => Color.FromRgb(225, 225, 220),
+        MagicElement.Sonic => Color.FromRgb(100, 200, 255),
+        MagicElement.Void => Color.FromRgb(120, 105, 170),
+        MagicElement.Holy => Color.FromRgb(255, 210, 90),
         _ => Colors.White
     };
 

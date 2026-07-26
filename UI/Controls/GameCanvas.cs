@@ -35,6 +35,8 @@ public class GameCanvas : Control
 
         // Click-to-fire: aim the hero's current attack toward the clicked point (Manual mode).
         PointerPressed += OnPointerPressed;
+        // Scroll wheel cycles the selected hotbar attack.
+        PointerWheelChanged += OnPointerWheel;
     }
 
     public void SetGameState(GameState gameState)
@@ -53,6 +55,14 @@ public class GameCanvas : Control
 
         // No-op in Auto mode / on cooldown / when unaffordable (FireManualAttack guards all that).
         _gameState.FireManualAttack(dx, dy);
+    }
+
+    private void OnPointerWheel(object? sender, PointerWheelEventArgs e)
+    {
+        if (_gameState == null) return;
+        // Wheel up (Delta.Y > 0) → previous slot; wheel down → next.
+        _gameState.CycleAttack(e.Delta.Y > 0 ? -1 : 1);
+        e.Handled = true;
     }
     
     public override void Render(DrawingContext context)

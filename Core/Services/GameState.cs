@@ -114,7 +114,7 @@ public class GameState
         var attack = Hero.CurrentAttack;
         if (attack != null && attack.IsHeavyAttack &&
             (Hero.CurrentStamina < attack.StaminaCost ||
-             Hero.CurrentMana < attack.ManaCost ||
+             Hero.CurrentMana < AffinityService.EffectiveManaCost(Hero.Affinities, MagicElements.For(attack), attack.ManaCost) ||
              Hero.CurrentFaith < attack.FaithCost))
         {
             return; // can't afford this attack right now
@@ -131,6 +131,17 @@ public class GameState
         {
             Hero.CurrentAttack = Hero.Attacks[index];
         }
+    }
+
+    /// <summary>Cycle the selected hotbar attack by <paramref name="delta"/> slots, wrapping around
+    /// Hero.Attacks (the scroll wheel steps by ±1).</summary>
+    public void CycleAttack(int delta)
+    {
+        int count = Hero.Attacks.Count;
+        if (count == 0) return;
+        int current = Hero.CurrentAttack != null ? Hero.Attacks.IndexOf(Hero.CurrentAttack) : -1;
+        int next = (((current + delta) % count) + count) % count;
+        Hero.CurrentAttack = Hero.Attacks[next];
     }
 
     /// <summary>Move an attack-bearing item from Inventory into the equipped Loadout (hotbar), if
@@ -736,13 +747,16 @@ public class GameState
     /// mirrors CombatSystem's target-locked math (defense = Defense + 0.7·Con, +20% magic resist
     /// for magic, then a ±25% variance), so manual and auto attacks hit for comparable amounts.
     /// </summary>
-    private int ResolveStatDamage(int statDamage, Enemy enemy, bool magic)
+    private int ResolveStatDamage(int statDamage, Enemy enemy, bool magic, MagicElement element)
     {
         int enemyDefense = enemy.Defense + (int)(enemy.Constitution * 0.7f);
         if (magic) enemyDefense += (int)(enemyDefense * 0.2f);
         int baseDamage = Math.Max(1, statDamage - enemyDefense / 2);
         int variance = _random.Next(-baseDamage / 4, baseDamage / 4 + 1);
-        return Math.Max(1, baseDamage + variance);
+        int rolled = Math.Max(1, baseDamage + variance);
+        // Target's elemental resistance to the shot's element (the caster's power was already
+        // baked into statDamage at fire time).
+        return AffinityService.ApplyResistance(rolled, enemy.Affinities, element);
     }
 
     /// <summary>
@@ -783,7 +797,7 @@ public class GameState
                         // Directional (manual) shots resolve their damage here against the enemy
                         // actually struck; auto-combat shots use the damage pre-baked at spawn.
                         int applied = p.StatDamage > 0
-                            ? ResolveStatDamage(p.StatDamage, enemy, p.Type == AttackAnimation.Magic)
+                            ? ResolveStatDamage(p.StatDamage, enemy, p.Type == AttackAnimation.Magic, p.Element)
                             : Math.Max(1, p.Damage);
                         enemy.Hp -= applied;
                         // Spawn tiny on-hit flash
