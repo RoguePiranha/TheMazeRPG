@@ -19,6 +19,13 @@ public class StatsOverlay : Control
     private Point _lastMousePosition;
     private readonly Dictionary<string, (Rect bounds, string description)> _statHoverAreas = new();
 
+    // Clickable "+" spend buttons for manual stat allocation, in panel-local coordinates, plus the
+    // panel's screen origin so a pointer press (which arrives in control coordinates) can be mapped
+    // into that local space. Populated during Render only while there are unspent points.
+    private readonly List<(Rect bounds, string stat)> _statPlusAreas = new();
+    private double _panelOriginX;
+    private double _panelOriginY;
+
     // The game's pixel font (same file the XAML side references) for all overlay text.
     private static readonly FontFamily GameFontFamily =
         new("avares://TheMazeRPG/Assets/Fonts#Odderf Basic");
@@ -133,10 +140,12 @@ public class StatsOverlay : Control
             if (value)
             {
                 PointerMoved += OnPointerMoved;
+                PointerPressed += OnPointerPressed;
             }
             else
             {
                 PointerMoved -= OnPointerMoved;
+                PointerPressed -= OnPointerPressed;
             }
             InvalidateVisual();
         }
@@ -146,6 +155,26 @@ public class StatsOverlay : Control
     {
         _lastMousePosition = e.GetPosition(this);
         InvalidateVisual();
+    }
+
+    private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_gameState == null) return;
+        // Map the press into the panel's local space (Render draws under a translate transform).
+        var local = new Point(e.GetPosition(this).X - _panelOriginX, e.GetPosition(this).Y - _panelOriginY);
+        foreach (var (bounds, stat) in _statPlusAreas)
+        {
+            if (bounds.Contains(local))
+            {
+                if (_gameState.SpendStatPoint(stat))
+                {
+                    UpdateStats();
+                    InvalidateVisual();
+                }
+                e.Handled = true;
+                return;
+            }
+        }
     }
     
     public void SetGameState(GameState gameState)
@@ -198,6 +227,7 @@ public class StatsOverlay : Control
         try
         {
             _statHoverAreas.Clear();
+            _statPlusAreas.Clear();
 
             // Dim the whole screen, then draw a centered, fixed-size modal panel (not full-screen).
             context.FillRectangle(
@@ -208,6 +238,10 @@ public class StatsOverlay : Control
             double panelH = System.Math.Min(600, System.Math.Max(240, Bounds.Height - 40));
             double originX = (Bounds.Width - panelW) / 2;
             double originY = (Bounds.Height - panelH) / 2;
+            // Remember the origin so OnPointerPressed can map screen clicks into panel-local space.
+            _panelOriginX = originX;
+            _panelOriginY = originY;
+            int unspent = _gameState?.Hero?.UnspentStatPoints ?? 0;
             // Mouse position relative to the panel, for hover hit-testing under the transform below.
             var localMouse = new Point(_lastMousePosition.X - originX, _lastMousePosition.Y - originY);
 
@@ -244,7 +278,7 @@ public class StatsOverlay : Control
         context.DrawText(headerText, new Point(x, y));
         y += 50;
         
-        // Stats Section
+        // Stats Section (with the unspent-points prompt when there are points to assign)
         var sectionText = new FormattedText(
             "STATS",
             System.Globalization.CultureInfo.CurrentCulture,
@@ -253,16 +287,26 @@ public class StatsOverlay : Control
             18,
             headerBrush);
         context.DrawText(sectionText, new Point(x, y));
+        if (unspent > 0)
+        {
+            var pointsText = new FormattedText(
+                $"{unspent} point{(unspent == 1 ? "" : "s")} to spend",
+                System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                normalFont, 13, new SolidColorBrush(Color.FromRgb(120, 220, 130)));
+            context.DrawText(pointsText, new Point(x + 70, y + 4));
+        }
         y += 35;
-        
-        // Draw each stat
-        DrawStat(context, "Strength", Strength, "Melee Damage, Carry Limits, Knockback", x, ref y, statLabelBrush, textBrush, normalFont);
-        DrawStat(context, "Constitution", Constitution, "Health, Defense, Resistances", x, ref y, statLabelBrush, textBrush, normalFont);
-        DrawStat(context, "Agility", Agility, "Movement Speed, Dodge Rate, Stealth", x, ref y, statLabelBrush, textBrush, normalFont);
-        DrawStat(context, "Dexterity", Dexterity, "Attack Speed, Accuracy, Crit Rate", x, ref y, statLabelBrush, textBrush, normalFont);
-        DrawStat(context, "Intelligence", Intelligence, "Magic Damage, Spell Cooldown, Mana", x, ref y, statLabelBrush, textBrush, normalFont);
-        DrawStat(context, "Wisdom", Wisdom, "Magic Resist, Healing, Faith", x, ref y, statLabelBrush, textBrush, normalFont);
-        DrawStat(context, "Charisma", Charisma, "NPC Interaction, Follower Count", x, ref y, statLabelBrush, textBrush, normalFont);
+
+        // Draw each stat (a "+" spend button appears next to each while points remain)
+        bool canSpend = unspent > 0;
+        DrawStat(context, "Strength", Strength, "Melee Damage, Carry Limits, Knockback", x, ref y, statLabelBrush, textBrush, normalFont, canSpend);
+        DrawStat(context, "Constitution", Constitution, "Health, Defense, Resistances", x, ref y, statLabelBrush, textBrush, normalFont, canSpend);
+        DrawStat(context, "Agility", Agility, "Movement Speed, Dodge Rate, Stealth", x, ref y, statLabelBrush, textBrush, normalFont, canSpend);
+        DrawStat(context, "Dexterity", Dexterity, "Attack Speed, Accuracy, Crit Rate", x, ref y, statLabelBrush, textBrush, normalFont, canSpend);
+        DrawStat(context, "Intelligence", Intelligence, "Magic Damage, Spell Cooldown, Mana", x, ref y, statLabelBrush, textBrush, normalFont, canSpend);
+        DrawStat(context, "Wisdom", Wisdom, "Magic Resist, Healing, Faith", x, ref y, statLabelBrush, textBrush, normalFont, canSpend);
+        DrawStat(context, "Charisma", Charisma, "NPC Interaction, Follower Count", x, ref y, statLabelBrush, textBrush, normalFont, canSpend);
         
         // Draw hover tooltip if mouse is over a stat
         foreach (var kvp in _statHoverAreas)
@@ -425,8 +469,8 @@ public class StatsOverlay : Control
         }
     }
     
-    private void DrawStat(DrawingContext context, string label, int value, string description, 
-        double x, ref double y, IBrush labelBrush, IBrush valueBrush, Typeface font)
+    private void DrawStat(DrawingContext context, string label, int value, string description,
+        double x, ref double y, IBrush labelBrush, IBrush valueBrush, Typeface font, bool canSpend = false)
     {
         var labelText = new FormattedText(
             $"{label}:",
@@ -467,6 +511,22 @@ public class StatsOverlay : Control
         // Store hover area for this stat
         var hoverRect = new Rect(x, y, 200, 25);
         _statHoverAreas[label] = (hoverRect, tooltip);
+
+        // Clickable "+" spend button while there are unspent points (registered for hit-testing).
+        if (canSpend)
+        {
+            var plusRect = new Rect(x + 215, y - 1, 20, 20);
+            context.FillRectangle(new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22)), plusRect);
+            context.DrawRectangle(new Pen(new SolidColorBrush(Color.FromRgb(120, 220, 130)), 1), plusRect);
+            var plusText = new FormattedText(
+                "+",
+                System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                new Typeface(font.FontFamily, FontStyle.Normal, FontWeight.Bold),
+                16, new SolidColorBrush(Color.FromRgb(120, 220, 130)));
+            context.DrawText(plusText, new Point(plusRect.X + 5, plusRect.Y + 1));
+            _statPlusAreas.Add((plusRect, label));
+        }
 
         y += 28;
     }

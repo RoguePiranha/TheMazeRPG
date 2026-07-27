@@ -101,6 +101,13 @@ sealed class Program
             return;
         }
 
+        // If TEST_STATS is set, verify manual level-up stat allocation and exit
+        if (Environment.GetEnvironmentVariable("TEST_STATS") == "1")
+        {
+            RunStatsDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 
@@ -277,6 +284,61 @@ sealed class Program
         int goldBefore = loot.Hero.Gold;
         loot.LootAll(corpse);
         Console.WriteLine($"LootAll gold: hero gold {goldBefore}->{loot.Hero.Gold}, body gold {corpse.Gold} (expect +12, body 0)");
+    }
+
+    // Debug/test entrypoint: verify manual level-up stat allocation (no class auto-growth; points
+    // bank up and are spent by hand; Constitution/Intelligence bumps flow to derived caps; the
+    // banked pool persists through a load).
+    public static void RunStatsDemo()
+    {
+        Console.WriteLine("=== Manual stat allocation ===");
+
+        var gs = new GameState(1, "Cadet", "Warrior", "Human");
+        var h = gs.Hero;
+        Console.WriteLine($"Level 1 unspent points: {h.UnspentStatPoints} (expect 0)");
+
+        // Capture starting core stats to prove level-ups no longer auto-allocate them.
+        int str0 = h.Strength, con0 = h.Constitution, dex0 = h.Dexterity, agi0 = h.Agility,
+            int0 = h.Intelligence, wis0 = h.Wisdom, cha0 = h.Charisma;
+
+        h.GainExperience(2000); // enough for several levels
+        int gained = h.Level - 1;
+        Console.WriteLine($"After 2000 XP: Level {h.Level}, unspent {h.UnspentStatPoints} (expect {gained * Hero.StatPointsPerLevel})");
+        bool autoAllocated = h.Strength != str0 || h.Constitution != con0 || h.Dexterity != dex0 ||
+                             h.Agility != agi0 || h.Intelligence != int0 || h.Wisdom != wis0 || h.Charisma != cha0;
+        Console.WriteLine($"Core stats auto-changed on level-up: {autoAllocated} (expect False — allocation is manual)");
+
+        // Spend a Constitution point: stat + points update, and MaxHp/MaxStamina rise immediately.
+        int hpBefore = h.MaxHp, stamBefore = h.MaxStamina, ptsBefore = h.UnspentStatPoints, conBefore = h.Constitution;
+        bool okCon = gs.SpendStatPoint("Constitution");
+        Console.WriteLine($"Spend Constitution: ok={okCon}, Con {conBefore}->{h.Constitution}, points {ptsBefore}->{h.UnspentStatPoints}, MaxHp {hpBefore}->{h.MaxHp}, MaxStamina {stamBefore}->{h.MaxStamina} (expect +1 Con, -1 pt, HP & Stamina up)");
+
+        // Spend an Intelligence point: MaxMana rises.
+        int manaBefore = h.MaxMana;
+        gs.SpendStatPoint("Intelligence");
+        Console.WriteLine($"Spend Intelligence: MaxMana {manaBefore}->{h.MaxMana} (expect up)");
+
+        // Unknown stat is rejected without consuming a point.
+        int ptsX = h.UnspentStatPoints;
+        bool okBogus = gs.SpendStatPoint("Luck");
+        Console.WriteLine($"Spend unknown stat: ok={okBogus}, points {ptsX}->{h.UnspentStatPoints} (expect False, unchanged)");
+
+        // Drain the pool; spending past zero returns false.
+        while (h.UnspentStatPoints > 0) gs.SpendStatPoint("Agility");
+        bool okEmpty = gs.SpendStatPoint("Agility");
+        Console.WriteLine($"Spend with 0 points: ok={okEmpty}, points={h.UnspentStatPoints} (expect False, 0)");
+
+        // Persistence: UnspentStatPoints round-trips through LoadFrom.
+        var g2 = new GameState(2, "Cadet2", "Warrior", "Human");
+        g2.LoadFrom(new SaveData
+        {
+            SaveId = "t", ClassName = "Warrior", RaceName = "Human",
+            Level = 3, ExperienceToNext = 900, MaxHp = 150, CurrentHp = 150,
+            Strength = 5, Constitution = 5, Agility = 5, Dexterity = 5,
+            Intelligence = 5, Wisdom = 5, Charisma = 5,
+            UnspentStatPoints = 7, ResumePoint = ResumePoint.DungeonStart
+        });
+        Console.WriteLine($"LoadFrom unspent points: {g2.Hero.UnspentStatPoints} (expect 7)");
     }
 
     // Debug/test entrypoint: verify the elemental affinity system.

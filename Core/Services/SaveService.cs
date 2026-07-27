@@ -105,6 +105,7 @@ public static class SaveService
             Intelligence = hero.Intelligence,
             Wisdom = hero.Wisdom,
             Charisma = hero.Charisma,
+            UnspentStatPoints = hero.UnspentStatPoints,
             Gold = hero.Gold,
             Resources = new Dictionary<string, int>(hero.Resources),
             Loadout = new List<Combinable>(hero.Loadout),

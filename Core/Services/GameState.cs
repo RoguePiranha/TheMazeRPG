@@ -1700,6 +1700,7 @@ public class GameState
         Hero.Intelligence = data.Intelligence;
         Hero.Wisdom = data.Wisdom;
         Hero.Charisma = data.Charisma;
+        Hero.UnspentStatPoints = data.UnspentStatPoints;
         Hero.Gold = data.Gold;
         Hero.Resources = new Dictionary<string, int>(data.Resources);
         Hero.Loadout = new List<Combinable>(data.Loadout);
@@ -1840,6 +1841,54 @@ public class GameState
         return true; // No walls in the way
     }
     
+    /// <summary>Extra MaxHp granted per Constitution point spent, scaled by racial effectiveness —
+    /// mirrors the level-up HP formula's Constitution contribution so raising Con pays off in HP
+    /// immediately rather than only affecting future level-ups.</summary>
+    private const int HpPerConstitutionPoint = 5;
+
+    /// <summary>The seven allocatable core stats, in display order (also the valid names for
+    /// SpendStatPoint).</summary>
+    public static readonly string[] CoreStatNames =
+        { "Strength", "Constitution", "Agility", "Dexterity", "Intelligence", "Wisdom", "Charisma" };
+
+    /// <summary>Spend one banked level-up point on a core stat (manual allocation). Returns false
+    /// if there are no unspent points or the stat name isn't recognized. Increments the base stat,
+    /// refreshes the derived resource caps, and — for Constitution — bumps MaxHp so the payoff is
+    /// immediate. Live combat formulas read Effective* stats, so everything else applies at once.</summary>
+    public bool SpendStatPoint(string stat)
+    {
+        if (Hero.UnspentStatPoints <= 0) return false;
+
+        switch (stat)
+        {
+            case "Strength": Hero.Strength++; break;
+            case "Constitution": Hero.Constitution++; break;
+            case "Agility": Hero.Agility++; break;
+            case "Dexterity": Hero.Dexterity++; break;
+            case "Intelligence": Hero.Intelligence++; break;
+            case "Wisdom": Hero.Wisdom++; break;
+            case "Charisma": Hero.Charisma++; break;
+            default: return false; // unknown stat — spend nothing
+        }
+
+        Hero.UnspentStatPoints--;
+
+        // Constitution grants HP directly (scaled by racial effectiveness); heal by the same so
+        // current HP rises with the cap. Other stats' effects are live via Effective* values.
+        if (stat == "Constitution")
+        {
+            int hpBump = Math.Max(1, (int)Math.Round(HpPerConstitutionPoint * Hero.ConstitutionEffectiveness));
+            Hero.MaxHp += hpBump;
+            Hero.CurrentHp = Math.Min(Hero.MaxHp, Hero.CurrentHp + hpBump);
+        }
+
+        // Refresh Stamina/Mana/Faith caps + regen from the updated stats.
+        UpdateHeroResourcePools();
+
+        LogMessage($"+1 {stat} ({Hero.UnspentStatPoints} point{(Hero.UnspentStatPoints == 1 ? "" : "s")} left)", MessageKind.LevelUp);
+        return true;
+    }
+
     /// <summary>
     /// Update hero's resource pools based on attributes
     /// Constitution → MaxStamina, Intelligence → MaxMana, Wisdom → MaxFaith

@@ -30,6 +30,12 @@ public class Hero
     public int Wisdom { get; set; } = 1;         // Magic Resist, Healing, Faith
     public int Charisma { get; set; } = 1;       // NPC Interaction, Followers
 
+    // Manual stat allocation: every level grants StatPointsPerLevel points the player assigns by
+    // hand (GameState.SpendStatPoint) from the stats screen — there is no class auto-allocation.
+    // Classes differ by their starting stats, not by per-level growth.
+    public const int StatPointsPerLevel = 5;
+    public int UnspentStatPoints { get; set; }
+
     // Racial effectiveness multipliers (set from race). Base stats above are what the character
     // sheet displays; the Effective* values below are what derived formulas use.
     // See Info/Racial Effectiveness.md.
@@ -159,35 +165,10 @@ public class Hero
             Attacks.Add(new Attack { Id = "mana-bolt", Name = "Mana Bolt", Damage = 22, Range = 2.0f, Cooldown = 32, Animation = AttackAnimation.Magic, CritChance = 0.10f, Description = "A ranged magic attack." });
         }
 
-        // Increase core stats based on class stat growth
-        if (ClassData?.StatGrowth != null)
-        {
-            if (ClassData.StatGrowth.TryGetValue("Strength", out int strGrowth))
-                Strength += strGrowth;
-            if (ClassData.StatGrowth.TryGetValue("Constitution", out int conGrowth))
-                Constitution += conGrowth;
-            if (ClassData.StatGrowth.TryGetValue("Dexterity", out int dexGrowth))
-                Dexterity += dexGrowth;
-            if (ClassData.StatGrowth.TryGetValue("Agility", out int agiGrowth))
-                Agility += agiGrowth;
-            if (ClassData.StatGrowth.TryGetValue("Intelligence", out int intGrowth))
-                Intelligence += intGrowth;
-            if (ClassData.StatGrowth.TryGetValue("Wisdom", out int wisGrowth))
-                Wisdom += wisGrowth;
-            if (ClassData.StatGrowth.TryGetValue("Charisma", out int chaGrowth))
-                Charisma += chaGrowth;
-        }
-        else
-        {
-            // Fallback to +1 per stat if no class data
-            Strength += 1;
-            Constitution += 1;
-            Dexterity += 1;
-            Agility += 1;
-            Intelligence += 1;
-            Wisdom += 1;
-            Charisma += 1;
-        }
+        // Core stats are no longer auto-allocated by class. Each level grants a pool of points
+        // the player assigns by hand from the stats screen (GameState.SpendStatPoint). ClassData's
+        // StatGrowth table is intentionally unused here now (classes differ by starting stats).
+        UnspentStatPoints += StatPointsPerLevel;
 
         // Satisfying level-up feedback (animation/sound placeholder)
         // TODO: Trigger level-up animation and sound effect in UI layer

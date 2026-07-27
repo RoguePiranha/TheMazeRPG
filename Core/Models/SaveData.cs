@@ -67,6 +67,9 @@ public class SaveData
     public int Wisdom { get; set; }
     public int Charisma { get; set; }
 
+    /// <summary>Banked, unspent manual level-up points (0 for saves predating manual allocation).</summary>
+    public int UnspentStatPoints { get; set; }
+
     public int Gold { get; set; }
     public Dictionary<string, int> Resources { get; set; } = new();
     public List<Combinable> Loadout { get; set; } = new();
