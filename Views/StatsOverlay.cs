@@ -199,16 +199,28 @@ public class StatsOverlay : Control
         {
             _statHoverAreas.Clear();
 
-            // SimpleRPG panel chrome: near-opaque black backdrop, then a dark panel with a
-            // colored double border (bright outer line, darker inner echo).
+            // Dim the whole screen, then draw a centered, fixed-size modal panel (not full-screen).
             context.FillRectangle(
-                new SolidColorBrush(Color.FromArgb(220, 0, 0, 0)),
+                new SolidColorBrush(Color.FromArgb(200, 0, 0, 0)),
                 new Rect(0, 0, Bounds.Width, Bounds.Height));
 
-            var panelRect = new Rect(20, 20, Bounds.Width - 40, Bounds.Height - 40);
+            double panelW = System.Math.Min(760, System.Math.Max(320, Bounds.Width - 40));
+            double panelH = System.Math.Min(600, System.Math.Max(240, Bounds.Height - 40));
+            double originX = (Bounds.Width - panelW) / 2;
+            double originY = (Bounds.Height - panelH) / 2;
+            // Mouse position relative to the panel, for hover hit-testing under the transform below.
+            var localMouse = new Point(_lastMousePosition.X - originX, _lastMousePosition.Y - originY);
+
+            // Draw everything below relative to the panel's top-left corner.
+            using var _panelXform = context.PushTransform(Matrix.CreateTranslation(originX, originY));
+
+            var panelRect = new Rect(0, 0, panelW, panelH);
             context.FillRectangle(new SolidColorBrush(Color.FromRgb(0x11, 0x11, 0x11)), panelRect);
             context.DrawRectangle(new Pen(new SolidColorBrush(Color.FromRgb(0xFF, 0xCC, 0x00)), 2), panelRect);
             context.DrawRectangle(new Pen(new SolidColorBrush(Color.FromRgb(0x66, 0x55, 0x00)), 1), panelRect.Deflate(3));
+
+            // Keep content inside the panel so a long inventory/affinity list can't spill over the border.
+            using var _panelClip = context.PushClip(panelRect.Deflate(6));
 
         var textBrush = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
         var headerBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xCC, 0x00));
@@ -217,8 +229,8 @@ public class StatsOverlay : Control
         var headerFont = new Typeface(GameFontFamily, FontStyle.Normal, FontWeight.Bold);
         var normalFont = new Typeface(GameFontFamily);
         
-        double x = 40;
-        double y = 40;
+        double x = 28;
+        double y = 30;
         
         // Header: Name, Class, Level
         var headerText = new FormattedText(
@@ -255,9 +267,9 @@ public class StatsOverlay : Control
         // Draw hover tooltip if mouse is over a stat
         foreach (var kvp in _statHoverAreas)
         {
-            if (kvp.Value.bounds.Contains(_lastMousePosition))
+            if (kvp.Value.bounds.Contains(localMouse))
             {
-                DrawTooltip(context, kvp.Value.description, _lastMousePosition);
+                DrawTooltip(context, kvp.Value.description, localMouse, panelW, panelH);
                 break;
             }
         }
@@ -265,8 +277,8 @@ public class StatsOverlay : Control
         y += 20;
         
         // Attacks & Equipment Section (right side)
-        double invX = Bounds.Width / 2 + 20;
-        double invY = 90;
+        double invX = panelW / 2 + 12;
+        double invY = 78;
         
         var attacksSectionText = new FormattedText(
             "ATTACKS",
@@ -405,7 +417,7 @@ public class StatsOverlay : Control
             normalFont,
             12,
             statLabelBrush);
-        context.DrawText(hintText, new Point(Bounds.Width - 150, Bounds.Height - 30));
+        context.DrawText(hintText, new Point(panelW - 160, panelH - 28));
         }
         catch
         {
@@ -511,7 +523,7 @@ public class StatsOverlay : Control
         _ => Colors.White
     };
 
-    private void DrawTooltip(DrawingContext context, string text, Point mousePos)
+    private void DrawTooltip(DrawingContext context, string text, Point mousePos, double areaW, double areaH)
     {
         var tooltipFont = new Typeface(GameFontFamily);
         var tooltipText = new FormattedText(
@@ -530,9 +542,9 @@ public class StatsOverlay : Control
         double tooltipX = mousePos.X + 10;
         double tooltipY = mousePos.Y + 10;
         
-        if (tooltipX + tooltipWidth > Bounds.Width)
+        if (tooltipX + tooltipWidth > areaW)
             tooltipX = mousePos.X - tooltipWidth - 10;
-        if (tooltipY + tooltipHeight > Bounds.Height)
+        if (tooltipY + tooltipHeight > areaH)
             tooltipY = mousePos.Y - tooltipHeight - 10;
         
         var tooltipRect = new Rect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);

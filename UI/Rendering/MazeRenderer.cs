@@ -179,7 +179,18 @@ public class MazeRenderer
         
     // Draw hero (always on top)
         DrawHero(canvas, gameState.Hero);
-        
+
+        // Awareness alert: a "!" pops over the hero when they notice something (spotting a trap).
+        if (gameState.HeroAlertActive)
+        {
+            float hx = (gameState.Hero.X + gameState.Hero.AnimationOffsetX) * CellSize + CellSize / 2f;
+            float hy = (gameState.Hero.Y + gameState.Hero.AnimationOffsetY) * CellSize - CellSize * 0.35f;
+            using var alertShadow = new SKPaint { Color = SKColors.Black, TextSize = 26, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+            using var alertPaint = new SKPaint { Color = new SKColor(0xFF, 0xCC, 0x00), TextSize = 26, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+            canvas.DrawText("!", hx + 1.5f, hy + 1.5f, alertShadow);
+            canvas.DrawText("!", hx, hy, alertPaint);
+        }
+
     // Debug overlays (hitboxes, LOS) if enabled
     DrawDebugOverlay(canvas, gameState);
         
@@ -576,11 +587,14 @@ public class MazeRenderer
             int cellY = (int)MathF.Round(feature.Y);
             if (!fog.FloorSeen(cellX, cellY)) continue;
             bool dimmed = !fog.FloorVisible(cellX, cellY);
+            // A hidden, not-yet-perceived trap is nearly invisible until the hero notices it.
+            bool unperceived = feature.Hidden && !feature.Perceived;
             int layer = 0;
-            if (dimmed)
+            if (dimmed || unperceived)
             {
-                using var dimLayerPaint = new SKPaint { Color = SKColors.White.WithAlpha(DimAlpha) };
-                layer = canvas.SaveLayer(dimLayerPaint);
+                byte a = unperceived ? (byte)28 : DimAlpha;
+                using var layerPaint = new SKPaint { Color = SKColors.White.WithAlpha(a) };
+                layer = canvas.SaveLayer(layerPaint);
             }
 
             float px = feature.X * CellSize + CellSize / 2f;
@@ -625,7 +639,7 @@ public class MazeRenderer
                     break;
             }
 
-            if (dimmed) canvas.RestoreToCount(layer);
+            if (dimmed || unperceived) canvas.RestoreToCount(layer);
         }
     }
 
@@ -1195,7 +1209,42 @@ public class MazeRenderer
                     
                     if (projectile.Visual == VisualStyle.Arrow)
                     {
-                        // Bow Shot - Draw arrow with fletching
+                        // Stable flight heading (Start→Target), so the arrow points where it's going
+                        // even at the very start of its travel.
+                        float hdx = projectile.TargetX - projectile.StartX;
+                        float hdy = projectile.TargetY - projectile.StartY;
+                        float aAngle = (hdx * hdx + hdy * hdy) > 0.0001f ? MathF.Atan2(hdy, hdx) : angle;
+                        float ca = MathF.Cos(aAngle), sa = MathF.Sin(aAngle);
+
+                        // A short arrow at the current position (no growing trail). Tail is just
+                        // behind the head along the heading.
+                        const float shaftLen = 12f;
+                        float tailX = px - ca * shaftLen;
+                        float tailY = py - sa * shaftLen;
+
+                        // Elemental arrows leave a sparse particle trail in the element's color;
+                        // plain arrows leave (almost) nothing.
+                        if (projectile.Element != MagicElement.None)
+                        {
+                            var (glow, _) = MagicColors(projectile.Element, new SKColor(200, 200, 200), new SKColor(255, 255, 255));
+                            for (int i = 1; i <= 3; i++)
+                            {
+                                float back = shaftLen + i * 9f;
+                                float sx = px - ca * back;
+                                float sy = py - sa * back;
+                                byte pa = (byte)(alphaVal * (0.5f - i * 0.13f));
+                                using var particle = new SKPaint
+                                {
+                                    Color = glow.WithAlpha(pa),
+                                    Style = SKPaintStyle.Fill,
+                                    IsAntialias = true,
+                                    MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 1.5f),
+                                    BlendMode = SKBlendMode.Screen
+                                };
+                                canvas.DrawCircle(sx, sy, 2.2f - i * 0.4f, particle);
+                            }
+                        }
+
                         using (var shaftPaint = new SKPaint
                         {
                             Color = new SKColor(139, 69, 19, alphaVal), // Brown shaft
@@ -1204,23 +1253,17 @@ public class MazeRenderer
                             IsAntialias = true
                         })
                         {
-                            canvas.DrawLine(startPx, startPy, px, py, shaftPaint);
+                            canvas.DrawLine(tailX, tailY, px, py, shaftPaint);
                         }
-                        
-                        // Arrowhead (metal)
+
+                        // Arrowhead (metal) at the front
                         float headSize = 5;
                         using var headPath = new SKPath();
                         headPath.MoveTo(px, py);
-                        headPath.LineTo(
-                            px - headSize * MathF.Cos(angle - 0.4f),
-                            py - headSize * MathF.Sin(angle - 0.4f)
-                        );
-                        headPath.LineTo(
-                            px - headSize * MathF.Cos(angle + 0.4f),
-                            py - headSize * MathF.Sin(angle + 0.4f)
-                        );
+                        headPath.LineTo(px - headSize * MathF.Cos(aAngle - 0.4f), py - headSize * MathF.Sin(aAngle - 0.4f));
+                        headPath.LineTo(px - headSize * MathF.Cos(aAngle + 0.4f), py - headSize * MathF.Sin(aAngle + 0.4f));
                         headPath.Close();
-                        
+
                         using var headFill = new SKPaint
                         {
                             Color = new SKColor(160, 160, 160, alphaVal), // Silver tip
@@ -1228,17 +1271,15 @@ public class MazeRenderer
                             IsAntialias = true
                         };
                         canvas.DrawPath(headPath, headFill);
-                        
-                        // Fletching (feathers)
-                        float fletchX = startPx + dx * 0.2f;
-                        float fletchY = startPy + dy * 0.2f;
+
+                        // Fletching (feathers) at the tail
                         using var fletchPaint = new SKPaint
                         {
                             Color = new SKColor(200, 0, 0, alphaVal), // Red feathers
                             Style = SKPaintStyle.Fill,
                             IsAntialias = true
                         };
-                        canvas.DrawCircle(fletchX, fletchY, 2, fletchPaint);
+                        canvas.DrawCircle(tailX, tailY, 2, fletchPaint);
                     }
                     else if (projectile.Visual == VisualStyle.PoisonDart)
                     {
@@ -1727,6 +1768,24 @@ public class MazeRenderer
             manual ? "WASD move  ·  M: auto" : "M / WASD: take control",
             viewportWidth - 12, viewportHeight - 28, new SKColor(0x88, 0x88, 0x88), 11);
         DrawHudLineRight(canvas, manual ? "MANUAL" : "AUTO", viewportWidth - 12, viewportHeight - 12, modeColor, 14);
+
+        // Dash (Space) readiness — a small bar above the mode line. Green when ready, gray/filling
+        // while on cooldown. Only shown in Manual mode (dash is a player action).
+        if (manual)
+        {
+            float ready = gameState.DashReadyFraction;
+            float bw = 90f, bh = 6f;
+            float bx = viewportWidth - 12 - bw, by = viewportHeight - 46;
+            using var back = new SKPaint { Color = new SKColor(0x22, 0x22, 0x22), Style = SKPaintStyle.Fill };
+            canvas.DrawRect(bx, by, bw, bh, back);
+            var fill = ready >= 1f ? new SKColor(0x66, 0xDD, 0x66) : new SKColor(0x88, 0x88, 0x88);
+            using var fillPaint = new SKPaint { Color = fill, Style = SKPaintStyle.Fill };
+            canvas.DrawRect(bx, by, bw * ready, bh, fillPaint);
+            using var border = new SKPaint { Color = new SKColor(0x55, 0x55, 0x55), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+            canvas.DrawRect(bx, by, bw, bh, border);
+            DrawHudLineRight(canvas, ready >= 1f ? "DODGE [Space] ready" : "DODGE …",
+                viewportWidth - 12, by - 3, new SKColor(0x88, 0x88, 0x88), 10);
+        }
     }
 
     private static void DrawHudLineRight(SKCanvas canvas, string text, float rightX, float y, SKColor color, float size = 12)

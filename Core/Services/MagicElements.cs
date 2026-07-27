@@ -15,7 +15,7 @@ public static class MagicElements
         switch (attack.Id)
         {
             case "mana-bolt": return MagicElement.Mana;
-            case "magic-dart": return MagicElement.Arcane;
+            case "magic-dart": return MagicElement.Mana;   // "Mana Dart" — the basic ordered-mana bolt
             case "arcane-blast": return MagicElement.Arcane;
             case "divine-wrath":
             case "holy-touch": return MagicElement.Holy;

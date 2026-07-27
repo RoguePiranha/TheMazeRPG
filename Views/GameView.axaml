@@ -98,27 +98,103 @@
                                HorizontalAlignment="Center"
                                Margin="0,0,0,4"/>
                     <TextBlock DockPanel.Dock="Top"
-                               Text="Click an inventory item to equip it to the hotbar, or an equipped item to remove it. [I] to close."
+                               Text="Click an item to see its stats; use the ▸ / ◂ arrow to equip or remove it. [I] to close."
                                FontSize="11"
                                Foreground="#888888"
                                HorizontalAlignment="Center"
                                TextWrapping="Wrap"
                                Margin="0,0,0,14"/>
+                    <Border DockPanel.Dock="Bottom" Background="#111111" BorderBrush="#333333" BorderThickness="1"
+                            CornerRadius="3" Padding="10,6" Margin="0,12,0,0" MinHeight="56">
+                        <TextBlock x:Name="ItemDetailsText" Text="Select an item to inspect it."
+                                   FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap"/>
+                    </Border>
                     <Grid ColumnDefinitions="*,16,*">
                         <StackPanel Grid.Column="0" Spacing="6">
                             <TextBlock Text="Equipped (Hotbar)" FontSize="14" FontWeight="Bold" Foreground="#88AAFF"/>
-                            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="320">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="260">
                                 <StackPanel x:Name="EquippedPanel" Spacing="4"/>
                             </ScrollViewer>
                         </StackPanel>
                         <StackPanel Grid.Column="2" Spacing="6">
                             <TextBlock Text="Inventory" FontSize="14" FontWeight="Bold" Foreground="#88AAFF"/>
-                            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="320">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="260">
                                 <StackPanel x:Name="InventoryPanel" Spacing="4"/>
                             </ScrollViewer>
                         </StackPanel>
                     </Grid>
                 </DockPanel>
+            </Border>
+        </Border>
+
+        <!-- Loot window: body inventory (left) + player inventory (right); paused while open -->
+        <Border x:Name="LootOverlay"
+                IsVisible="False"
+                Background="#C0000000"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch">
+            <Border Background="#181818"
+                    BorderBrush="#FFCC00"
+                    BorderThickness="2"
+                    CornerRadius="6"
+                    Padding="24,20"
+                    Width="560"
+                    MaxHeight="460"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                <DockPanel>
+                    <TextBlock x:Name="LootTitle" DockPanel.Dock="Top"
+                               Text="Loot"
+                               FontSize="22" FontWeight="Bold" Foreground="#FFCC00"
+                               HorizontalAlignment="Center" Margin="0,0,0,4"/>
+                    <TextBlock DockPanel.Dock="Top"
+                               Text="Click an item to inspect it; use the ◂ / ▸ arrow (or double-click / drag) to transfer. [Esc] to close."
+                               FontSize="11" Foreground="#888888"
+                               HorizontalAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="16" Margin="0,12,0,0">
+                        <Button x:Name="LootAllButton" Content="Loot All" Padding="24,6" Click="LootAllButton_Click"/>
+                        <Button Content="Close" Padding="24,6" Click="LootCloseButton_Click"/>
+                    </StackPanel>
+                    <Border DockPanel.Dock="Bottom" Background="#111111" BorderBrush="#333333" BorderThickness="1"
+                            CornerRadius="3" Padding="10,6" Margin="0,10,0,0" MinHeight="52">
+                        <TextBlock x:Name="LootDetailsText" Text="Select an item to inspect it."
+                                   FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap"/>
+                    </Border>
+                    <Grid ColumnDefinitions="*,16,*">
+                        <StackPanel Grid.Column="0" Spacing="6">
+                            <TextBlock Text="Body" FontSize="14" FontWeight="Bold" Foreground="#88AAFF"/>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="300">
+                                <StackPanel x:Name="BodyPanel" Spacing="4"/>
+                            </ScrollViewer>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Spacing="6">
+                            <TextBlock Text="Your Inventory" FontSize="14" FontWeight="Bold" Foreground="#88AAFF"/>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="300">
+                                <StackPanel x:Name="PlayerPanel" Spacing="4"/>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Grid>
+                </DockPanel>
+            </Border>
+        </Border>
+
+        <!-- Right-click context menu: a full-screen transparent layer (click anywhere to dismiss)
+             holding the menu itself, positioned at the click point by margin. -->
+        <Border x:Name="ContextMenuOverlay"
+                IsVisible="False"
+                Background="#01000000"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch"
+                PointerPressed="ContextBackdrop_PointerPressed">
+            <Border x:Name="ContextMenuBox"
+                    Background="#181818"
+                    BorderBrush="#FFCC00"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="4"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top">
+                <StackPanel x:Name="ContextMenuPanel" Spacing="2" MinWidth="120"/>
             </Border>
         </Border>
     </Grid>

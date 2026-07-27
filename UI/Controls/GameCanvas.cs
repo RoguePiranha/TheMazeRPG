@@ -44,17 +44,59 @@ public class GameCanvas : Control
         _gameState = gameState;
     }
 
+    /// <summary>Raised on a right-click that lands on an interactable (a trap or a corpse). The
+    /// shell (GameView) shows the context menu at the given canvas-relative point.</summary>
+    public event Action<InteractTarget>? InteractRequested;
+
     private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (_gameState == null) return;
 
         var pos = e.GetPosition(this);
-        var (worldX, worldY) = _renderer.ScreenToWorld(pos.X, pos.Y);
-        float dx = worldX - _gameState.Hero.X;
-        float dy = worldY - _gameState.Hero.Y;
+        var kind = e.GetCurrentPoint(this).Properties.PointerUpdateKind;
 
-        // No-op in Auto mode / on cooldown / when unaffordable (FireManualAttack guards all that).
-        _gameState.FireManualAttack(dx, dy);
+        if (kind == PointerUpdateKind.RightButtonPressed)
+        {
+            e.Handled = true;
+            HandleRightClick(pos);
+            return;
+        }
+
+        // Left-click → click-to-fire toward the point (no-op in Auto / on cooldown / unaffordable).
+        var (worldX, worldY) = _renderer.ScreenToWorld(pos.X, pos.Y);
+        _gameState.FireManualAttack(worldX - _gameState.Hero.X, worldY - _gameState.Hero.Y);
+    }
+
+    // Hit-test the nearest interactable (trap feature or corpse) near a right-click and, if one is
+    // in reach, raise InteractRequested for the shell to show a menu.
+    private void HandleRightClick(Point pos)
+    {
+        if (_gameState == null) return;
+        var (wx, wy) = _renderer.ScreenToWorld(pos.X, pos.Y);
+        const float pickRadius = 0.8f;
+        float best = pickRadius;
+        InteractTarget? target = null;
+
+        foreach (var f in _gameState.CurrentMaze.Features)
+        {
+            if (f.IsUsed || f.Type != Core.Models.MazeFeatureType.Trap) continue;
+            float d = Dist(wx, wy, f.X, f.Y);
+            if (d <= best) { best = d; target = new InteractTarget { Feature = f, ScreenPoint = pos }; }
+        }
+        foreach (var enemy in _gameState.Enemies)
+        {
+            if (enemy.IsAlive) continue; // corpses only
+            float d = Dist(wx, wy, enemy.X, enemy.Y);
+            if (d <= best) { best = d; target = new InteractTarget { Corpse = enemy, ScreenPoint = pos }; }
+        }
+
+        if (target != null) InteractRequested?.Invoke(target);
+    }
+
+    private static float Dist(float ax, float ay, float bx, float by)
+    {
+        float dx = ax - bx, dy = ay - by;
+        return (float)Math.Sqrt(dx * dx + dy * dy);
     }
 
     private void OnPointerWheel(object? sender, PointerWheelEventArgs e)

@@ -64,6 +64,11 @@ public class Enemy
     // Elemental affinity profile (seeded from race+class, static — enemies don't grow). Gives its
     // magic attacks damage/cost scaling and grants it resistance to matching incoming elements.
     public Affinities Affinities { get; set; } = new();
+
+    // Loot carried on the body — populated on death (see GameState.HandleEnemyDefeated) and
+    // transferred to the hero by looting the corpse (right-click → Loot). Gold is a small coin drop.
+    public List<Combinable> Inventory { get; set; } = new();
+    public int Gold { get; set; }
     
     // Combat state
     public bool InCombat { get; set; }

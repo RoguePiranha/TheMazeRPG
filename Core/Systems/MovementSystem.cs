@@ -227,15 +227,16 @@ public class MovementSystem
     /// walkability check as the rest of the game, applied per-axis so the hero slides along walls
     /// instead of stopping dead when one axis is blocked.
     /// </summary>
-    public void MoveHeroByDirection(Hero hero, float dirX, float dirY, Maze maze)
+    public void MoveHeroByDirection(Hero hero, float dirX, float dirY, Maze maze, float? speedOverride = null)
     {
         float len = MathF.Sqrt(dirX * dirX + dirY * dirY);
         if (len < 0.01f) return;
         dirX /= len;
         dirY /= len;
 
+        // Normal control speed scales with Agility; a dash passes a fixed higher speed override.
         float baseSpeed = 0.09f; // a touch snappier than auto-explore for responsive control
-        float speed = baseSpeed * (1.0f + 0.05f * (hero.EffectiveAgility - 4));
+        float speed = speedOverride ?? baseSpeed * (1.0f + 0.05f * (hero.EffectiveAgility - 4));
         float dx = dirX * speed;
         float dy = dirY * speed;
 

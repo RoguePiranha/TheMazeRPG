@@ -79,6 +79,30 @@ public class GameState
     // [-1,1]); consumed once per Tick. Ignored entirely in Auto mode.
     private float _manualMoveX;
     private float _manualMoveY;
+    // Last non-zero move direction (for dashing when standing still); defaults to facing right.
+    private float _lastMoveDirX = 1f;
+    private float _lastMoveDirY = 0f;
+
+    // Active dodge (Space): a brief fast dash with invulnerability, then a cooldown.
+    private float _dashDirX, _dashDirY;
+    private int _dashTicksRemaining;
+    private int _dashCooldownRemaining;
+    private readonly int _dashTicks;          // dash duration
+    private readonly int _dashCooldownTicks;  // cooldown after the dash ends
+    private const float DashSpeed = 0.26f;    // tiles/tick during a dash (vs ~0.09 normal manual)
+
+    /// <summary>True during a dash — the hero shrugs off incoming hits (i-frames).</summary>
+    public bool IsHeroInvulnerable => _dashTicksRemaining > 0;
+
+    // Brief "!" alert over the hero, raised when they suddenly notice something (spotting a trap).
+    private int _heroAlertTicks;
+    private readonly int _alertTicks;
+    /// <summary>True while the "!" awareness alert should render over the hero.</summary>
+    public bool HeroAlertActive => _heroAlertTicks > 0;
+
+    /// <summary>0..1 dash cooldown progress for the HUD (1 = ready, 0 = just used).</summary>
+    public float DashReadyFraction => _dashCooldownTicks <= 0 ? 1f
+        : 1f - Math.Clamp(_dashCooldownRemaining / (float)_dashCooldownTicks, 0f, 1f);
 
     /// <summary>Set the player's desired movement direction (Manual mode). Called by the UI when
     /// held movement keys change.</summary>
@@ -86,6 +110,30 @@ public class GameState
     {
         _manualMoveX = x;
         _manualMoveY = y;
+        if (x != 0f || y != 0f)
+        {
+            _lastMoveDirX = x;
+            _lastMoveDirY = y;
+        }
+    }
+
+    /// <summary>Begin a dodge dash in the current move direction (or last-faced if standing still).
+    /// No-op outside Manual mode, while dead/paused/already dashing, or on cooldown.</summary>
+    public void TryDash()
+    {
+        if (ControlMode != ControlMode.Manual || IsHeroDead || !IsRunning) return;
+        if (_dashTicksRemaining > 0 || _dashCooldownRemaining > 0) return;
+
+        float dx = _manualMoveX != 0f || _manualMoveY != 0f ? _manualMoveX : _lastMoveDirX;
+        float dy = _manualMoveX != 0f || _manualMoveY != 0f ? _manualMoveY : _lastMoveDirY;
+        float len = MathF.Sqrt(dx * dx + dy * dy);
+        if (len < 0.01f) { dx = _lastMoveDirX; dy = _lastMoveDirY; len = MathF.Sqrt(dx * dx + dy * dy); }
+        if (len < 0.01f) return;
+
+        _dashDirX = dx / len;
+        _dashDirY = dy / len;
+        _dashTicksRemaining = _dashTicks;
+        LogMessage("Dodge!", MessageKind.System);
     }
 
     public void SetControlMode(ControlMode mode)
@@ -196,6 +244,9 @@ public class GameState
 
     // Track enemy pursuit persistence
     private Dictionary<Enemy, int> enemyPursuitTicks = new();
+    // Where each enemy last saw the hero — pursued toward when line of sight is lost, so enemies
+    // chase around corners for the pursuit window instead of instantly giving up.
+    private readonly Dictionary<Enemy, (float x, float y)> _enemyLastKnownHeroPos = new();
     private const float AgroRadius = 7.5f; // Extended agro radius for persistence
 
     // Timing derived from the authoritative tick rate (see GameSettings) so real-time
@@ -275,6 +326,9 @@ public class GameState
         _chestOpeningTicks = GameSettings.Current.SecondsToTicks(3f);
         _combatStartWindupTicks = GameSettings.Current.SecondsToTicks(0.3f);
         _attackSwitchTicks = GameSettings.Current.SecondsToTicks(2f);
+        _dashTicks = GameSettings.Current.SecondsToTicks(0.2f);
+        _dashCooldownTicks = GameSettings.Current.SecondsToTicks(1f);
+        _alertTicks = GameSettings.Current.SecondsToTicks(1.2f);
 
         _random = new Random(seed);
         _mazeGenerator = new MazeGenerator(seed);
@@ -409,10 +463,26 @@ public class GameState
             _accumulatedHealthRegen -= hpToRestore;
         }
         
+        // Dash timers: advance an active dash, then run down its cooldown.
+        if (_dashTicksRemaining > 0)
+        {
+            _dashTicksRemaining--;
+            if (_dashTicksRemaining == 0) _dashCooldownRemaining = _dashCooldownTicks;
+        }
+        else if (_dashCooldownRemaining > 0)
+        {
+            _dashCooldownRemaining--;
+        }
+
         // Move hero (unless busy with an activity)
         if (CurrentActivity == null)
         {
-            if (ControlMode == ControlMode.Manual)
+            if (_dashTicksRemaining > 0)
+            {
+                // Mid-dash: fast fixed-direction burst (overrides normal movement).
+                _movementSystem.MoveHeroByDirection(Hero, _dashDirX, _dashDirY, CurrentMaze, DashSpeed);
+            }
+            else if (ControlMode == ControlMode.Manual)
             {
                 // Player-driven movement. Auto-explore / goal-walk / combat-approach are all
                 // skipped; the player positions the hero and attacks still auto-fire (CheckCombat).
@@ -485,14 +555,29 @@ public class GameState
             }
             else
             {
-                // Move toward hero during combat
-                _movementSystem.MoveEnemyTowardTarget(enemy, Hero.X, Hero.Y, CurrentMaze);
+                // Chase: head for the hero if in sight, otherwise for the last place they were
+                // seen (so enemies pursue around corners until the pursuit window expires).
+                float tx = Hero.X, ty = Hero.Y;
+                if (HasLineOfSight(enemy.X, enemy.Y, Hero.X, Hero.Y))
+                {
+                    _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+                }
+                else if (_enemyLastKnownHeroPos.TryGetValue(enemy, out var lastKnown))
+                {
+                    tx = lastKnown.x;
+                    ty = lastKnown.y;
+                }
+                _movementSystem.MoveEnemyTowardTarget(enemy, tx, ty, CurrentMaze);
             }
         }
 
         // Resolve hero/enemy physical interactions (hitbox collision)
         ResolveHeroEnemyCollisions();
-        
+
+        // Perception: roll to notice nearby hidden traps; decay the "!" alert.
+        if (_heroAlertTicks > 0) _heroAlertTicks--;
+        UpdatePerception();
+
         // Check for new combat encounters and process existing combat
         CheckCombat();
 
@@ -517,7 +602,14 @@ public class GameState
         {
             CheckFeatures();
         }
-        
+
+        // Auto mode auto-collects loot off nearby corpses (the manual player loots deliberately via
+        // right-click instead), preserving auto-play's loot collection now that drops stay on bodies.
+        if (ControlMode == ControlMode.Auto)
+        {
+            AutoLootNearbyCorpses();
+        }
+
         // In Manual mode the player selects the attack (hotbar) and fires by clicking; the
         // hero's attack cooldown still ticks down here so click-fire respects it. Auto-mode's
         // cooldown is driven by ProcessCombat instead.
@@ -612,9 +704,12 @@ public class GameState
                     closestDistance = distance;
                     primaryTarget = enemy;
                 }
-                // Reset pursuit timer if either can see the other
+                // Reset pursuit timer + remember where the hero was, if line of sight is clear.
                 if (HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y))
+                {
                     enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+                    _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+                }
             }
         }
         // Fallback: include close melee-range enemies or persistent pursuers even if not in cone
@@ -635,7 +730,10 @@ public class GameState
                 // Require line of sight otherwise - prevents targeting through walls
                 bool hasLOS = overlapping || HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y);
 
-                if (hasLOS && (distance <= meleeThreshold || (distance < AgroRadius && isPersistent)))
+                // Engage if the hero is in melee reach with LOS, OR this enemy is a recent pursuer
+                // still within the agro radius — pursuers stay engaged even without LOS so they
+                // chase toward the hero's last-known position instead of instantly giving up.
+                if ((hasLOS && distance <= meleeThreshold) || (distance < AgroRadius && isPersistent))
                 {
                     engagedEnemies.Add(enemy);
                     if (distance < closestDistance)
@@ -643,9 +741,12 @@ public class GameState
                         closestDistance = distance;
                         primaryTarget = enemy;
                     }
-                    // If enemy in sight, reset pursuit
-                    if (distance < 5.0f)
+                    // If the enemy currently sees the hero, refresh pursuit + last-known position.
+                    if (hasLOS && distance < 5.0f)
+                    {
                         enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+                        _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+                    }
                 }
             }
         }
@@ -759,6 +860,19 @@ public class GameState
         return AffinityService.ApplyResistance(rolled, enemy.Affinities, element);
     }
 
+    /// <summary>Roll whether a target evades an incoming hit. Chance rises with the target's
+    /// Agility and falls with the attacker's accuracy (Dexterity), with a small floor and a cap so
+    /// nothing is ever guaranteed to hit or fully un-hittable — this is what makes Agility (dodge)
+    /// and Dexterity (accuracy) matter, alongside physically moving out of a projectile's path.</summary>
+    private bool RollDodge(float targetAgility, float attackerAccuracy)
+    {
+        const float baseDodge = 0.03f;
+        const float perPoint = 0.02f;
+        const float maxDodge = 0.50f;
+        float chance = Math.Clamp(baseDodge + (targetAgility - attackerAccuracy) * perPoint, 0f, maxDodge);
+        return _random.NextDouble() < chance;
+    }
+
     /// <summary>
     /// Resolve projectile contact damage against hero/enemies.
     /// </summary>
@@ -794,6 +908,15 @@ public class GameState
                     float dist = MathF.Sqrt(dx * dx + dy * dy);
                     if (dist <= (pr + enemy.Radius))
                     {
+                        // Dodge check: an agile enemy may evade the hit entirely.
+                        if (RollDodge(enemy.Agility, p.Accuracy))
+                        {
+                            LogMessage($"The {enemy.Race} {enemy.Class} dodges!", MessageKind.Combat);
+                            p.ConsumedOnHit = true;
+                            p.LifeTime = p.MaxLifeTime;
+                            break;
+                        }
+
                         // Directional (manual) shots resolve their damage here against the enemy
                         // actually struck; auto-combat shots use the damage pre-baked at spawn.
                         int applied = p.StatDamage > 0
@@ -841,6 +964,23 @@ public class GameState
                 float dist = MathF.Sqrt(dx * dx + dy * dy);
                 if (dist <= (pr + Hero.Radius))
                 {
+                    // Active dodge (dash i-frames): the hit is avoided outright.
+                    if (IsHeroInvulnerable)
+                    {
+                        p.ConsumedOnHit = true;
+                        p.LifeTime = p.MaxLifeTime;
+                        continue;
+                    }
+
+                    // Dodge check: the hero's Agility (vs the attacker's accuracy) can evade the hit.
+                    if (RollDodge(Hero.EffectiveAgility, p.Accuracy))
+                    {
+                        LogMessage("You dodge the attack!", MessageKind.System);
+                        p.ConsumedOnHit = true;
+                        p.LifeTime = p.MaxLifeTime;
+                        continue;
+                    }
+
                     Hero.CurrentHp -= Math.Max(1, p.Damage);
                     // Screen shake scales with the hit's severity relative to max HP, capped modestly.
                     ScreenShake = MathF.Max(ScreenShake, MathF.Min(5f, (p.Damage / (float)Hero.MaxHp) * 45f));
@@ -891,6 +1031,8 @@ public class GameState
             LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
         }
 
+        // Loot now stays on the body — the hero loots the corpse (right-click → Loot) rather than
+        // it auto-collecting. Roll the drop into the enemy's inventory + a small gold drop.
         float dropChance = enemy.Tier switch
         {
             EnemyTier.Elite => 0.45f,
@@ -899,8 +1041,9 @@ public class GameState
         };
         if (_random.NextDouble() < dropChance)
         {
-            AcquireLoot(LootService.Roll(CurrentFloor, _random));
+            enemy.Inventory.Add(LootService.Roll(CurrentFloor, _random));
         }
+        enemy.Gold += _random.Next(0, 3 + CurrentFloor) * (enemy.IsBoss ? 5 : enemy.IsElite ? 2 : 1);
 
         CodexService.Instance.RecordKill(enemy, CurrentFloor);
 
@@ -940,15 +1083,55 @@ public class GameState
                 float push = (minDist - dist) + 0.02f; // small extra gap
                 float nx = dx / dist;
                 float ny = dy / dist;
-                // Push hero out; if enemy not in combat, nudge both a bit
-                Hero.X += nx * push * 0.8f;
-                Hero.Y += ny * push * 0.8f;
-                if (!enemy.InCombat)
+
+                // Push the hero out of the overlap, but never into a wall — apply each axis only
+                // if its target cell is walkable (so a hero against a wall isn't shoved through it
+                // and left blind inside solid rock). Wall-slides along whichever axis is clear.
+                float heroPush = push * 0.8f;
+                bool movedX = TryNudgeHeroAxis(nx * heroPush, 0f);
+                bool movedY = TryNudgeHeroAxis(0f, ny * heroPush);
+
+                // If the hero couldn't move at all (cornered against walls), separate by pushing
+                // the enemy back instead (also wall-checked) so the two don't stay overlapped.
+                if (!movedX && !movedY)
                 {
-                    enemy.X -= nx * push * 0.2f;
-                    enemy.Y -= ny * push * 0.2f;
+                    NudgeEnemyAxis(enemy, -nx * push, 0f);
+                    NudgeEnemyAxis(enemy, 0f, -ny * push);
+                }
+                else if (!enemy.InCombat)
+                {
+                    NudgeEnemyAxis(enemy, -nx * push * 0.2f, 0f);
+                    NudgeEnemyAxis(enemy, 0f, -ny * push * 0.2f);
                 }
             }
+        }
+    }
+
+    /// <summary>Move the hero by (dx,dy) only if the destination cell is walkable. Returns whether
+    /// it moved. Used to separate combatants without shoving the hero into a wall.</summary>
+    private bool TryNudgeHeroAxis(float dx, float dy)
+    {
+        if (dx == 0f && dy == 0f) return false;
+        float newX = Hero.X + dx;
+        float newY = Hero.Y + dy;
+        if (CurrentMaze.IsWalkable((int)MathF.Round(newX), (int)MathF.Round(newY)))
+        {
+            Hero.X = newX;
+            Hero.Y = newY;
+            return true;
+        }
+        return false;
+    }
+
+    private void NudgeEnemyAxis(Enemy enemy, float dx, float dy)
+    {
+        if (dx == 0f && dy == 0f) return;
+        float newX = enemy.X + dx;
+        float newY = enemy.Y + dy;
+        if (CurrentMaze.IsWalkable((int)MathF.Round(newX), (int)MathF.Round(newY)))
+        {
+            enemy.X = newX;
+            enemy.Y = newY;
         }
     }
 
@@ -979,27 +1162,13 @@ public class GameState
     }
     
     /// <summary>
-    /// Give the hero found loot. Attack-producing gear (weapons/spells) auto-equips into a free
-    /// hotbar slot and updates the hero's attacks; anything else (or an overflow) goes to inventory.
-    /// Auto-equip stands in for the manual "swap / combine / send to inventory" choice while the
-    /// game is auto-played.
+    /// Give the hero found loot. Everything goes to the inventory — the player equips weapons/spells
+    /// to the hotbar themselves (see the inventory screen); nothing is auto-equipped.
     /// </summary>
     public void AcquireLoot(Combinable loot)
     {
-        bool isAttackGear = loot is Weapon || loot is Spell;
-        int equippedAttackGear = Hero.Loadout.Count(c => c is Weapon || c is Spell);
-
-        if (isAttackGear && equippedAttackGear < Hero.HotbarCapacity)
-        {
-            Hero.Loadout.Add(loot);
-            RefreshAttacks();
-            LogMessage($"Equipped {loot.Name} ({loot.Rarity})", MessageKind.Loot);
-        }
-        else
-        {
-            Hero.Inventory.Add(loot);
-            LogMessage($"Found {loot.Name} ({loot.Rarity}) — stored", MessageKind.Loot);
-        }
+        Hero.Inventory.Add(loot);
+        LogMessage($"Found {loot.Name} ({loot.Rarity})", MessageKind.Loot);
     }
 
     /// <summary>Re-project attacks from the current loadout, keeping the current attack if it survives.</summary>
@@ -1283,6 +1452,130 @@ public class GameState
         });
         GameLog.Debug($"Trap triggered! {damage} damage.");
         LogMessage($"A trap springs! -{damage} HP", MessageKind.Warning);
+    }
+
+    /// <summary>
+    /// Each tick, give the hero a Wisdom-based chance to notice nearby hidden traps (within
+    /// PerceptionRadius, with line of sight). Noticing one reveals it and pops the "!" alert.
+    /// </summary>
+    private void UpdatePerception()
+    {
+        if (CurrentMaze == null) return;
+        foreach (var feature in CurrentMaze.Features)
+        {
+            if (feature.IsUsed || !feature.Hidden || feature.Perceived) continue;
+            float dx = Hero.X - feature.X;
+            float dy = Hero.Y - feature.Y;
+            float distance = MathF.Sqrt(dx * dx + dy * dy);
+            if (distance > PerceptionService.PerceptionRadius) continue;
+            if (!HasLineOfSight(Hero.X, Hero.Y, feature.X, feature.Y)) continue;
+
+            float chance = PerceptionService.SpotChancePerTick(Hero.EffectiveWisdom, distance, CurrentFloor);
+            if (_random.NextDouble() < chance)
+            {
+                feature.Perceived = true;
+                _heroAlertTicks = _alertTicks;
+                LogMessage("You spot a trap!", MessageKind.Warning);
+            }
+        }
+    }
+
+    /// <summary>Right-click "Examine": reveal a hidden feature (mark it perceived) and describe it.</summary>
+    public void ExamineFeature(MazeFeature feature)
+    {
+        if (feature == null || feature.IsUsed) return;
+        if (feature.Hidden && !feature.Perceived)
+        {
+            feature.Perceived = true;
+            _heroAlertTicks = _alertTicks;
+        }
+        string what = feature.Type switch
+        {
+            MazeFeatureType.Trap => "a pressure-plate trap — step carefully, or disarm it",
+            MazeFeatureType.Chest => "a chest",
+            _ => feature.Type.ToString()
+        };
+        LogMessage($"You examine {what}.", MessageKind.System);
+    }
+
+    /// <summary>Right-click "Disarm" on a perceived trap: a Dexterity roll; a failure may spring it.</summary>
+    public void TryDisarm(MazeFeature feature)
+    {
+        if (feature == null || feature.IsUsed || feature.Type != MazeFeatureType.Trap || !feature.Perceived) return;
+
+        float chance = PerceptionService.DisarmChance(Hero.EffectiveDexterity, CurrentFloor);
+        if (_random.NextDouble() < chance)
+        {
+            feature.IsUsed = true;
+            LogMessage("You disarm the trap.", MessageKind.System);
+        }
+        else if (_random.NextDouble() < PerceptionService.DisarmFailSpringChance)
+        {
+            feature.IsUsed = true;
+            LogMessage("You fumble the disarm — it springs!", MessageKind.Warning);
+            TriggerTrap(feature);
+        }
+        else
+        {
+            LogMessage("The disarm slips; the trap holds. Try again.", MessageKind.System);
+        }
+    }
+
+    /// <summary>Right-click "Examine" on a corpse: flavor/identify.</summary>
+    public void ExamineCorpse(Enemy enemy)
+    {
+        if (enemy == null || enemy.IsAlive) return;
+        int items = enemy.Inventory.Count;
+        string carry = items == 0 && enemy.Gold == 0 ? "nothing of worth"
+            : $"{items} item(s)" + (enemy.Gold > 0 ? $" and {enemy.Gold} gold" : "");
+        LogMessage($"The corpse of a level {enemy.Level} {enemy.Race} {enemy.Class}. It carries {carry}.", MessageKind.System);
+    }
+
+    /// <summary>Move one item from a corpse to the hero's inventory. Returns true on success.</summary>
+    public bool LootItem(Enemy corpse, Combinable item)
+    {
+        if (corpse == null || item == null || !corpse.Inventory.Remove(item)) return false;
+        AcquireLoot(item);
+        return true;
+    }
+
+    /// <summary>Auto mode: scoop up loot from any corpse the hero is standing on (Manual mode
+    /// loots deliberately via right-click instead).</summary>
+    private void AutoLootNearbyCorpses()
+    {
+        foreach (var corpse in Enemies)
+        {
+            if (corpse.IsAlive) continue;
+            if (corpse.Inventory.Count == 0 && corpse.Gold == 0) continue;
+            float dx = Hero.X - corpse.X;
+            float dy = Hero.Y - corpse.Y;
+            if (dx * dx + dy * dy <= 0.8f * 0.8f) LootAll(corpse);
+        }
+    }
+
+    /// <summary>Move one item from the hero's inventory back onto a corpse (drag player→body).</summary>
+    public bool DepositToCorpse(Enemy corpse, Combinable item)
+    {
+        if (corpse == null || item == null || !Hero.Inventory.Remove(item)) return false;
+        corpse.Inventory.Add(item);
+        return true;
+    }
+
+    /// <summary>Take everything (items + gold) from a corpse.</summary>
+    public void LootAll(Enemy corpse)
+    {
+        if (corpse == null) return;
+        foreach (var item in corpse.Inventory.ToList())
+        {
+            corpse.Inventory.Remove(item);
+            AcquireLoot(item);
+        }
+        if (corpse.Gold > 0)
+        {
+            Hero.Gold += corpse.Gold;
+            LogMessage($"Looted {corpse.Gold} gold.", MessageKind.Loot);
+            corpse.Gold = 0;
+        }
     }
 
     /// <summary>Spawns the gate Guardian once the hero approaches the safe room's door.
@@ -1757,6 +2050,8 @@ public class GameState
         
         // Spawn enemies in random valid locations
         Enemies.Clear();
+        enemyPursuitTicks.Clear();       // drop pursuit state tied to the old floor's enemies
+        _enemyLastKnownHeroPos.Clear();
         Projectiles.Clear();   // don't let a lingering projectile carry into the new floor
         HitEffects.Clear();
         Boss = null;
@@ -1795,7 +2090,8 @@ public class GameState
             int trapIdx = _random.Next(emptyCells.Count);
             var trapCell = emptyCells[trapIdx];
             emptyCells.RemoveAt(trapIdx);
-            CurrentMaze.Features.Add(new MazeFeature { X = trapCell.x, Y = trapCell.y, Type = MazeFeatureType.Trap });
+            // Hidden: nearly invisible until the hero notices it (a Wisdom spot roll) or examines it.
+            CurrentMaze.Features.Add(new MazeFeature { X = trapCell.x, Y = trapCell.y, Type = MazeFeatureType.Trap, Hidden = true });
         }
         // No per-floor boss anymore — the significant fight is the Guardian at each safe-room gate.
         // Spawn regular enemies (weighted class, random race, random level in the floor's range)

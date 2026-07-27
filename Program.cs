@@ -94,6 +94,13 @@ sealed class Program
             return;
         }
 
+        // If TEST_INTERACT is set, verify dodge / perception / disarm / corpse-loot and exit
+        if (Environment.GetEnvironmentVariable("TEST_INTERACT") == "1")
+        {
+            RunInteractDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 
@@ -187,11 +194,89 @@ sealed class Program
 
         // Magic element mapping (drives spell projectile colors).
         Console.WriteLine("Element mapping:");
-        foreach (var (id, name) in new[] { ("fireball", "Fireball"), ("ice-shard", "Ice Shard"), ("magic-dart", "Magic Dart"), ("holy-touch", "Holy Touch"), ("mana-bolt", "Mana Bolt"), ("quick-slash", "Quick Slash") })
+        foreach (var (id, name) in new[] { ("fireball", "Fireball"), ("ice-shard", "Ice Shard"), ("magic-dart", "Mana Dart"), ("holy-touch", "Holy Touch"), ("mana-bolt", "Mana Bolt"), ("quick-slash", "Quick Slash") })
         {
             var el = MagicElements.For(new Attack { Id = id, Name = name });
             Console.WriteLine($"  {name,-12} -> {el}");
         }
+
+        // Dodge: a very agile hero evades a meaningful share of incoming hits (vs a low-accuracy
+        // attacker) — so Agility/Dexterity now matter. Debug race gives enough HP to survive the run.
+        var dodgeGs = new GameState(202, "Nimble", "Warrior", "Debug");
+        dodgeGs.IsRunning = true;
+        dodgeGs.Hero.Agility = 40; // extremely evasive
+        var attacker = dodgeGs.Enemies.FirstOrDefault();
+        if (attacker != null)
+        {
+            attacker.X = dodgeGs.Hero.X + 1;
+            attacker.Y = dodgeGs.Hero.Y;
+            attacker.MaxHp = attacker.Hp = 1_000_000; // won't die → keeps attacking
+            attacker.Dexterity = 2;   // low accuracy
+            attacker.AttackSpeed = 12; // attacks often, for a good sample
+            for (int t = 0; t < 800; t++) dodgeGs.Tick();
+            int dodges = dodgeGs.Messages.Messages.Count(m => m.Text.Contains("dodge", StringComparison.OrdinalIgnoreCase));
+            Console.WriteLine($"High-agility hero, 800 ticks vs a low-accuracy attacker: {dodges} dodge event(s) in the recent log (expect > 0)");
+        }
+    }
+
+    // Debug/test entrypoint: verify active dodge, trap perception, disarm, and corpse looting.
+    public static void RunInteractDemo()
+    {
+        Console.WriteLine("=== Interaction: dodge / perception / disarm / loot ===");
+
+        // (a) Perception: spot chance rises with Wisdom and falls off with distance.
+        float hiWis = PerceptionService.SpotChancePerTick(30f, 1.0f, 3);
+        float loWis = PerceptionService.SpotChancePerTick(3f, 1.0f, 3);
+        float faR = PerceptionService.SpotChancePerTick(30f, PerceptionService.PerceptionRadius + 1f, 3);
+        Console.WriteLine($"Spot/tick: Wis30@1tile={hiWis:0.000}, Wis3@1tile={loWis:0.000}, Wis30@far={faR:0.000} (expect hi>lo>0, far=0)");
+
+        // (b) Examine reveals a hidden trap.
+        var gs = new GameState(1, "Scout", "Warrior", "Human");
+        var trap = new MazeFeature { X = 5, Y = 5, Type = MazeFeatureType.Trap, Hidden = true };
+        gs.CurrentMaze.Features.Add(trap);
+        gs.ExamineFeature(trap);
+        Console.WriteLine($"Examine → trap.Perceived={trap.Perceived} (expect True)");
+
+        // (c) Disarm chance rises with Dexterity; run high-Dex attempts and count outcomes.
+        Console.WriteLine($"Disarm chance: Dex20={PerceptionService.DisarmChance(20f, 1):0.00}, Dex2={PerceptionService.DisarmChance(2f, 1):0.00} (expect higher for Dex20)");
+        int disarmed = 0, sprung = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            var g = new GameState(100 + i, "Rogue", "Rogue", "Human");
+            g.Hero.Dexterity = 18;
+            var t = new MazeFeature { X = 5, Y = 5, Type = MazeFeatureType.Trap, Hidden = true, Perceived = true };
+            g.CurrentMaze.Features.Add(t);
+            int hpBefore = g.Hero.CurrentHp;
+            g.TryDisarm(t);
+            if (t.IsUsed && g.Hero.CurrentHp == hpBefore) disarmed++;
+            else if (t.IsUsed) sprung++;
+        }
+        Console.WriteLine($"High-Dex disarm x200: {disarmed} clean, {sprung} sprung on failure (expect mostly clean, some sprung)");
+
+        // (d) Dash i-frames: an enemy shot during a dash deals no damage.
+        var dodge = new GameState(7, "Nimble", "Warrior", "Human");
+        dodge.IsRunning = true;
+        dodge.SetControlMode(ControlMode.Manual);
+        dodge.SetManualMoveIntent(1, 0); // moving right → dash has a direction
+        dodge.TryDash();
+        dodge.Projectiles.Add(new Projectile { Team = ProjectileTeam.Enemy, CurrentX = dodge.Hero.X, CurrentY = dodge.Hero.Y, TargetX = dodge.Hero.X, TargetY = dodge.Hero.Y, Damage = 50, Radius = 0.4f, MaxLifeTime = 30 });
+        int hp0 = dodge.Hero.CurrentHp;
+        dodge.Tick();
+        Console.WriteLine($"Dash i-frames: invulnerable={dodge.IsHeroInvulnerable}, enemy shot during dash → HP {hp0}->{dodge.Hero.CurrentHp} (expect unchanged)");
+
+        // (e) Corpse loot: an item on a body transfers to the hero via LootItem / LootAll.
+        var loot = new GameState(9, "Looter", "Warrior", "Human");
+        var corpse = loot.Enemies.First();
+        corpse.Hp = 0; // make it a corpse
+        var drop = CraftedItemCatalog.Build("iron-sword")!;
+        corpse.Inventory.Add(drop);
+        corpse.Gold = 12;
+        int invBefore = loot.Hero.Inventory.Count + loot.Hero.Loadout.Count;
+        loot.LootItem(corpse, drop);
+        Console.WriteLine($"LootItem: body now has {corpse.Inventory.Count} item(s); hero gear {invBefore}->{loot.Hero.Inventory.Count + loot.Hero.Loadout.Count} (expect body 0, hero +1)");
+        int goldBefore = loot.Hero.Gold;
+        loot.LootAll(corpse);
+        Console.WriteLine($"LootAll gold: hero gold {goldBefore}->{loot.Hero.Gold}, body gold {corpse.Gold} (expect +12, body 0)");
     }
 
     // Debug/test entrypoint: verify the elemental affinity system.
@@ -287,23 +372,28 @@ sealed class Program
                 Console.WriteLine($"  {cls,-16} {a.Name,-22} ({a.Id,-22}) -> {AttackVisuals.For(a)}");
     }
 
-    // Debug/test entrypoint: if TEST_LOOT=1 is set, simulate chest loot + auto-equip and exit
+    // Debug/test entrypoint: if TEST_LOOT=1 is set, simulate loot pickup + MANUAL equip and exit.
+    // Loot now always goes to the inventory (no auto-equip); the player equips it themselves.
     public static void RunLootDemo()
     {
         var gs = new GameState(1, "Looter", "Warrior", "Human");
         Console.WriteLine($"=== Loot / equip demo (Warrior, hotbar capacity {gs.Hero.HotbarCapacity}) ===");
         Console.WriteLine($"Start attacks: [{string.Join(", ", gs.Hero.Attacks.Select(a => a.Name))}]");
-        for (int floor = 1; floor <= 6; floor++)
+        for (int floor = 1; floor <= 4; floor++)
         {
             var loot = LootService.Roll(floor, new Random(floor * 7));
             gs.AcquireLoot(loot);
-            string attacks = string.Join(", ", gs.Hero.Attacks.Select(a => a.Name));
-            string inventory = gs.Hero.Inventory.Count > 0
-                ? string.Join(", ", gs.Hero.Inventory.Select(c => c.Name))
-                : "(empty)";
-            Console.WriteLine($"Floor {floor}: found {loot.Name} ({loot.Rarity} {loot.Kind})");
-            Console.WriteLine($"   equipped attacks: [{attacks}]");
-            Console.WriteLine($"   inventory:        [{inventory}]");
+            Console.WriteLine($"Floor {floor}: found {loot.Name} ({loot.Rarity} {loot.Kind}) -> inventory (not auto-equipped)");
+        }
+        Console.WriteLine($"After pickups — equipped attacks: [{string.Join(", ", gs.Hero.Attacks.Select(a => a.Name))}]");
+        Console.WriteLine($"                inventory:        [{string.Join(", ", gs.Hero.Inventory.Select(c => c.Name))}]");
+
+        // Manual equip: player moves an attack item from inventory to the hotbar.
+        var toEquip = gs.Hero.Inventory.OfType<Weapon>().FirstOrDefault() ?? gs.Hero.Inventory.OfType<Spell>().FirstOrDefault() as Combinable;
+        if (toEquip != null)
+        {
+            bool equipped = gs.EquipFromInventory(toEquip);
+            Console.WriteLine($"Manually equipped '{toEquip.Name}': {equipped}; attacks now [{string.Join(", ", gs.Hero.Attacks.Select(a => a.Name))}]");
         }
     }
 
@@ -465,6 +555,9 @@ sealed class Program
             var stairs = gsGuardian.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
             gsGuardian.Hero.X = stairs.X;
             gsGuardian.Hero.Y = stairs.Y;
+            // Clear enemies so combat doesn't keep CheckFeatures (and the stairs) from triggering
+            // on crowded deep floors — this demo only cares about floor pacing, not the fights.
+            gsGuardian.Enemies.Clear();
             for (int t = 0; t < 30 && gsGuardian.CurrentFloor == floor && !gsGuardian.IsInSafeRoom; t++) gsGuardian.Tick();
         }
         Console.WriteLine($"Second gate: InSafeRoom={gsGuardian.IsInSafeRoom} at floor {gsGuardian.CurrentFloor} (expect True at 9 — i.e. safe room 9.5)");

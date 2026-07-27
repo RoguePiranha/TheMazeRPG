@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using TheMazeRPG.Core.Services;
 using TheMazeRPG.ViewModels;
 
@@ -17,7 +18,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        KeyDown += OnKeyDown;
+        // Handle KeyDown in the tunnel phase so the shell sees keys before Avalonia's
+        // built-in focus traversal — otherwise navigation keys like Tab get consumed
+        // (marked Handled) before our bubbling handler runs and never reach HandleKey.
+        // handledEventsToo keeps us robust even if something upstream pre-handles a key.
+        AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel, handledEventsToo: true);
         KeyUp += OnKeyUp;
         ShowTitle();
     }

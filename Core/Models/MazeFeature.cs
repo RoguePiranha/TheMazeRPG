@@ -24,7 +24,13 @@ public class MazeFeature
     public int Y { get; set; }
     public MazeFeatureType Type { get; set; }
     public bool IsUsed { get; set; }
-    
+
+    // Perception: a hidden feature (traps) is nearly invisible until the hero notices it (a
+    // Wisdom-based spot roll) or Examines it, at which point Perceived flips true. See
+    // PerceptionService / GameState.UpdatePerception. Non-hidden features render/behave normally.
+    public bool Hidden { get; set; }
+    public bool Perceived { get; set; }
+
     // Chest opening animation state
     public bool IsOpening { get; set; }
     public int OpeningTicks { get; set; }

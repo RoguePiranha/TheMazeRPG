@@ -22,6 +22,9 @@ public class Projectile
     // Elemental flavor (magic attacks) — drives the projectile's color; None = the visual's own
     // default color. See MagicElements.For.
     public MagicElement Element { get; set; } = MagicElement.None;
+    // The attacker's accuracy (their effective Dexterity at fire time), used against the target's
+    // Agility to roll a dodge on contact (see GameState.RollDodge).
+    public float Accuracy { get; set; }
     // Combat fields
     public ProjectileTeam Team { get; set; } = ProjectileTeam.Neutral;
     public int Damage { get; set; } = 0;

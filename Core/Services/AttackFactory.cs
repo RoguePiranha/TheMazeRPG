@@ -57,9 +57,11 @@ public static class AttackFactory
     // --- Mage ---
     private static Spell MagicDart() => new()
     {
-        Id = "magic-dart", Name = "Magic Dart", Rarity = Rarity.Common,
+        // Id kept as "magic-dart" (stable) though the display name is "Mana Dart" — the caster's
+        // basic reliable ordered-mana bolt (pale blue), per the magic-system doc.
+        Id = "magic-dart", Name = "Mana Dart", Rarity = Rarity.Common,
         BaseDamage = 5, Range = 3.0f, Cooldown = 18, Animation = AttackAnimation.Magic,
-        CritChance = 0.1f, Attributes = { GameAttribute.Arcane }, Description = "A small bolt of arcane energy"
+        CritChance = 0.1f, Attributes = { GameAttribute.Magic }, Description = "A small bolt of ordered mana"
     };
     private static Spell ArcaneBlast() => new()
     {
