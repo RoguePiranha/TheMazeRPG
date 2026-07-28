@@ -197,5 +197,41 @@
                 <StackPanel x:Name="ContextMenuPanel" Spacing="2" MinWidth="120"/>
             </Border>
         </Border>
+
+        <!-- Debug console: the backtick (`/~) key toggles it. Type a command (e.g. "addxp 1000",
+             "additem sword 2", "moveplayer dungeon 4", "reset health") and press Enter; the result
+             shows on the output line above the input. A leading '/' is optional. -->
+        <Border x:Name="DebugConsoleOverlay"
+                IsVisible="False"
+                VerticalAlignment="Bottom"
+                HorizontalAlignment="Stretch"
+                Background="#E6000000"
+                BorderBrush="#FFCC00"
+                BorderThickness="0,1,0,0"
+                Padding="10,6">
+            <StackPanel Spacing="4">
+                <TextBlock x:Name="DebugConsoleOutput"
+                           Text="Debug console — type 'help'. [`] closes."
+                           FontSize="12"
+                           Foreground="#AAAAAA"
+                           TextWrapping="Wrap"/>
+                <Grid ColumnDefinitions="Auto,*">
+                    <TextBlock Text="&gt;"
+                               FontSize="14"
+                               FontWeight="Bold"
+                               Foreground="#FFCC00"
+                               VerticalAlignment="Center"
+                               Margin="0,0,6,0"/>
+                    <TextBox x:Name="DebugConsoleInput"
+                             Grid.Column="1"
+                             FontSize="14"
+                             Background="#111111"
+                             Foreground="#DDDDDD"
+                             BorderThickness="0"
+                             Padding="4,2"
+                             AcceptsReturn="False"/>
+                </Grid>
+            </StackPanel>
+        </Border>
     </Grid>
 </UserControl>

@@ -6,6 +6,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 using TheMazeRPG.Core.Models;
 using TheMazeRPG.Core.Services;
 using TheMazeRPG.UI.Controls;
@@ -71,6 +72,23 @@ public partial class GameView : UserControl
     /// <summary>Called by the shell window's KeyDown routing.</summary>
     public void HandleKey(KeyEventArgs e)
     {
+        // Debug console: the backtick (`/~) key toggles it. While open it owns the keyboard —
+        // Enter runs the command, Esc/backtick close it, and every other key falls through to the
+        // focused TextBox so typing works (we deliberately don't mark those Handled).
+        if (e.Key == Key.OemTilde)
+        {
+            e.Handled = true;
+            ToggleConsole();
+            return;
+        }
+        if (IsConsoleOpen)
+        {
+            if (e.Key == Key.Enter) { RunConsoleCommand(); e.Handled = true; }
+            else if (e.Key == Key.Escape) { CloseConsole(); e.Handled = true; }
+            // else: let the keystroke reach the console TextBox.
+            return;
+        }
+
         if (e.Key == Key.Tab)
         {
             e.Handled = true; // Prevent default Tab focus traversal
@@ -181,6 +199,61 @@ public partial class GameView : UserControl
             _viewModel.GameState.SetManualMoveIntent(0, 0);
             _statsOverlay.IsOverlayVisible = true;
         }
+    }
+
+    // --- Debug console (backtick key) ---
+
+    private bool IsConsoleOpen =>
+        this.FindControl<Border>("DebugConsoleOverlay")?.IsVisible == true;
+
+    private void ToggleConsole()
+    {
+        if (IsConsoleOpen) CloseConsole();
+        else OpenConsole();
+    }
+
+    /// <summary>Open the debug console: pause the sim (so nothing moves/dies while typing), release
+    /// held movement, show the bar, and focus the input.</summary>
+    private void OpenConsole()
+    {
+        var overlay = this.FindControl<Border>("DebugConsoleOverlay");
+        if (overlay == null || _viewModel == null) return;
+
+        _viewModel.GameState.IsRunning = false;
+        _heldMoveKeys.Clear();
+        _viewModel.GameState.SetManualMoveIntent(0, 0);
+
+        overlay.IsVisible = true;
+        var input = this.FindControl<TextBox>("DebugConsoleInput");
+        if (input != null)
+        {
+            input.Text = "";
+            // Focus after layout so the caret lands in the box.
+            Dispatcher.UIThread.Post(() => input.Focus());
+        }
+    }
+
+    private void CloseConsole()
+    {
+        var overlay = this.FindControl<Border>("DebugConsoleOverlay");
+        if (overlay == null || _viewModel == null) return;
+        overlay.IsVisible = false;
+        _viewModel.GameState.IsRunning = true;
+    }
+
+    /// <summary>Run whatever's in the console input, show the result on the output line, and clear
+    /// the input for the next command (the console stays open).</summary>
+    private void RunConsoleCommand()
+    {
+        if (_viewModel == null) return;
+        var input = this.FindControl<TextBox>("DebugConsoleInput");
+        var output = this.FindControl<TextBlock>("DebugConsoleOutput");
+        string cmd = input?.Text ?? "";
+        if (string.IsNullOrWhiteSpace(cmd)) return;
+
+        string result = _viewModel.GameState.ExecuteDebugCommand(cmd);
+        if (output != null) output.Text = string.IsNullOrEmpty(result) ? "(no output)" : result;
+        if (input != null) input.Text = "";
     }
 
     // --- ESC Pause Menu ---

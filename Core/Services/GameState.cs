@@ -1889,6 +1889,177 @@ public class GameState
         return true;
     }
 
+    // ---- Debug console --------------------------------------------------------------------
+    // Registry of spawnable combinables for /additem and /addspell, keyed by stable id. Fresh
+    // instance per call so added copies don't alias a template. Sourced from the same catalogs
+    // the loot/craft systems use.
+    private static readonly Dictionary<string, Func<Combinable>> _debugCombinables =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["fireball"] = () => CombinableCatalog.Fireball(),
+            ["ice-shard"] = () => CombinableCatalog.IceShard(),
+            ["bow"] = () => CombinableCatalog.Bow(),
+            ["sword"] = () => CombinableCatalog.Sword(),
+            ["dagger"] = () => CombinableCatalog.Dagger(),
+            ["shield-generator"] = () => CombinableCatalog.ShieldGenerator(),
+            ["dense-musculature"] = () => CombinableCatalog.DenseMusculature(),
+            ["mana-circuitry"] = () => CombinableCatalog.ManaCircuitry(),
+            ["iron-sword"] = () => CraftedItemCatalog.Build("iron-sword")!,
+        };
+
+    private static string NormalizeToken(string s) =>
+        new string(s.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+
+    private static string AvailableCombinableIds() => string.Join(", ", _debugCombinables.Keys);
+
+    /// <summary>Resolve a combinable by id or display name, tolerant of case/spacing/hyphens
+    /// (exact-normalized first, then a contains-match fallback). Null if nothing matches.</summary>
+    private static Func<Combinable>? ResolveCombinable(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        string norm = NormalizeToken(name);
+        foreach (var kv in _debugCombinables)
+            if (NormalizeToken(kv.Key) == norm || NormalizeToken(kv.Value().Name) == norm) return kv.Value;
+        foreach (var kv in _debugCombinables)
+            if (NormalizeToken(kv.Key).Contains(norm) || NormalizeToken(kv.Value().Name).Contains(norm)) return kv.Value;
+        return null;
+    }
+
+    /// <summary>Parse and run a debug console command (e.g. "/addxp 1000", "additem sword 2",
+    /// "moveplayer dungeon 4", "reset health"). A leading '/' is optional. Returns a short result
+    /// string for display; also mirrored to the message log. Intended for the in-game debug
+    /// console (backtick key) — a cheat/testing affordance, not a normal gameplay path.</summary>
+    public string ExecuteDebugCommand(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        string text = raw.Trim();
+        if (text.StartsWith("/")) text = text[1..];
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return "";
+
+        string cmd = parts[0].ToLowerInvariant();
+        string Arg(int i) => i < parts.Length ? parts[i] : "";
+        int IntArg(int i, int def) => int.TryParse(Arg(i), out var v) ? v : def;
+
+        string result;
+        switch (cmd)
+        {
+            case "help": case "?":
+                result = "addxp N | addlevel N | addpoints N | addgold N | additem <id> [n] | " +
+                         "addspell <id> [n] | moveplayer dungeon N|overworld|safe N | " +
+                         "reset health|mana|stamina|faith|all | listitems";
+                break;
+
+            case "addxp": case "xp":
+            {
+                int n = IntArg(1, 0);
+                Hero.GainExperience(n);
+                result = $"+{n} XP -> Level {Hero.Level} ({Hero.Experience}/{Hero.ExperienceToNext})";
+                break;
+            }
+
+            case "addlevel": case "level":
+            {
+                int n = Math.Max(0, IntArg(1, 1));
+                for (int i = 0; i < n; i++)
+                    Hero.GainExperience(Math.Max(1, Hero.ExperienceToNext - Hero.Experience));
+                result = $"+{n} level(s) -> Level {Hero.Level}, {Hero.UnspentStatPoints} stat point(s)";
+                break;
+            }
+
+            case "addpoints": case "points":
+            {
+                int n = Math.Max(0, IntArg(1, 1));
+                Hero.UnspentStatPoints += n;
+                result = $"+{n} stat point(s) -> {Hero.UnspentStatPoints} unspent";
+                break;
+            }
+
+            case "addgold": case "gold":
+            {
+                int n = IntArg(1, 0);
+                Hero.Gold += n;
+                result = $"+{n} gold -> {Hero.Gold}";
+                break;
+            }
+
+            case "additem": case "addspell":
+            {
+                string name = Arg(1);
+                int count = Math.Max(1, IntArg(2, 1));
+                var factory = ResolveCombinable(name);
+                if (factory == null)
+                {
+                    result = $"Unknown '{name}'. Available: {AvailableCombinableIds()}";
+                    break;
+                }
+                for (int i = 0; i < count; i++) Hero.Inventory.Add(factory());
+                var sample = factory();
+                result = $"Added {count}x {sample.Name} ({sample.Kind}) to inventory";
+                break;
+            }
+
+            case "moveplayer": case "move": case "tp":
+            {
+                string dest = Arg(1).ToLowerInvariant();
+                switch (dest)
+                {
+                    case "dungeon":
+                        IsInOverworld = false;
+                        CurrentFloor = Math.Max(1, IntArg(2, 1)) - 1; // StartNewFloor increments
+                        StartNewFloor();
+                        result = $"Moved to dungeon floor {CurrentFloor}";
+                        break;
+                    case "overworld": case "town":
+                        EnterOverworld();
+                        result = "Moved to the Overworld";
+                        break;
+                    case "safe": case "saferoom":
+                        IsInOverworld = false;
+                        CurrentFloor = Math.Max(1, IntArg(2, CurrentFloor > 0 ? CurrentFloor : 1));
+                        EnterSafeRoom();
+                        result = $"Moved to safe room after floor {CurrentFloor}";
+                        break;
+                    default:
+                        result = "Usage: moveplayer dungeon N | overworld | safe N";
+                        break;
+                }
+                break;
+            }
+
+            case "reset": case "restore":
+            {
+                string what = Arg(1).ToLowerInvariant();
+                switch (what)
+                {
+                    case "health": case "hp": Hero.CurrentHp = Hero.MaxHp; result = "Health restored"; break;
+                    case "mana": case "mp": Hero.CurrentMana = Hero.MaxMana; result = "Mana restored"; break;
+                    case "stamina": case "sp": Hero.CurrentStamina = Hero.MaxStamina; result = "Stamina restored"; break;
+                    case "faith": Hero.CurrentFaith = Hero.MaxFaith; result = "Faith restored"; break;
+                    case "": case "all":
+                        Hero.CurrentHp = Hero.MaxHp; Hero.CurrentMana = Hero.MaxMana;
+                        Hero.CurrentStamina = Hero.MaxStamina; Hero.CurrentFaith = Hero.MaxFaith;
+                        result = "All resources restored";
+                        break;
+                    default: result = "Usage: reset health|mana|stamina|faith|all"; break;
+                }
+                break;
+            }
+
+            case "listitems": case "items":
+                result = AvailableCombinableIds();
+                break;
+
+            default:
+                result = $"Unknown command '{cmd}'. Type 'help'.";
+                break;
+        }
+
+        RefreshAttacks(); // in case a move/regen changed floor state or gear
+        LogMessage(result, MessageKind.System);
+        return result;
+    }
+
     /// <summary>
     /// Update hero's resource pools based on attributes
     /// Constitution → MaxStamina, Intelligence → MaxMana, Wisdom → MaxFaith

@@ -108,6 +108,13 @@ sealed class Program
             return;
         }
 
+        // If TEST_CONSOLE is set, verify the debug-console command executor and exit
+        if (Environment.GetEnvironmentVariable("TEST_CONSOLE") == "1")
+        {
+            RunConsoleDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 
@@ -339,6 +346,43 @@ sealed class Program
             UnspentStatPoints = 7, ResumePoint = ResumePoint.DungeonStart
         });
         Console.WriteLine($"LoadFrom unspent points: {g2.Hero.UnspentStatPoints} (expect 7)");
+    }
+
+    // Debug/test entrypoint: verify the debug-console command executor (GameState.ExecuteDebugCommand).
+    public static void RunConsoleDemo()
+    {
+        Console.WriteLine("=== Debug console ===");
+        var gs = new GameState(1, "Dev", "Warrior", "Human");
+        var h = gs.Hero;
+
+        // addxp / addlevel grant progression (and, per manual allocation, stat points).
+        Console.WriteLine(gs.ExecuteDebugCommand("/addxp 500"));
+        int lvlBefore = h.Level;
+        Console.WriteLine(gs.ExecuteDebugCommand("addlevel 2"));
+        Console.WriteLine($"  Level {lvlBefore}->{h.Level} (expect +2), unspent points {h.UnspentStatPoints}");
+
+        // addgold / addpoints.
+        Console.WriteLine(gs.ExecuteDebugCommand("addgold 250") + $"  (gold now {h.Gold})");
+        Console.WriteLine(gs.ExecuteDebugCommand("addpoints 3") + $"  (points now {h.UnspentStatPoints})");
+
+        // additem / addspell resolve from the catalog (case/spacing tolerant) into the inventory.
+        int invBefore = h.Inventory.Count;
+        Console.WriteLine(gs.ExecuteDebugCommand("/additem Sword 2"));
+        Console.WriteLine(gs.ExecuteDebugCommand("addspell fireball 1"));
+        Console.WriteLine($"  Inventory {invBefore}->{h.Inventory.Count} (expect +3)");
+        Console.WriteLine(gs.ExecuteDebugCommand("additem NoSuchThing 1") + "  (expect 'Unknown ...')");
+
+        // reset restores resources.
+        h.CurrentHp = 1; h.CurrentMana = 0;
+        Console.WriteLine(gs.ExecuteDebugCommand("reset health") + $"  (HP {h.CurrentHp}/{h.MaxHp})");
+        Console.WriteLine(gs.ExecuteDebugCommand("reset mana") + $"  (Mana {h.CurrentMana}/{h.MaxMana})");
+
+        // moveplayer jumps floors / worlds.
+        Console.WriteLine(gs.ExecuteDebugCommand("moveplayer dungeon 4") + $"  (CurrentFloor {gs.CurrentFloor}, overworld {gs.IsInOverworld})");
+        Console.WriteLine(gs.ExecuteDebugCommand("moveplayer overworld") + $"  (overworld {gs.IsInOverworld})");
+
+        // A leading slash is optional; unknown commands report cleanly.
+        Console.WriteLine(gs.ExecuteDebugCommand("boguscmd") + "  (expect 'Unknown command ...')");
     }
 
     // Debug/test entrypoint: verify the elemental affinity system.
