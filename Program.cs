@@ -772,51 +772,46 @@ sealed class Program
         Console.WriteLine($"After shrine touch -> IsInOverworld={gs.IsInOverworld}, HeroPos=({gs.Hero.X},{gs.Hero.Y}), EntrancePos=({entrance?.X},{entrance?.Y})");
         Console.WriteLine($"Hero preserved: Level {levelBeforeExit}->{gs.Hero.Level} (should be unchanged)");
 
-        Console.WriteLine("\n=== Step 3: OverworldGoal drives movement (no teleporting — real auto-play) ===");
-        var mine = gs.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.MineEntrance);
-        float startDist = Dist(gs.Hero.X, gs.Hero.Y, mine.X, mine.Y);
-        Console.WriteLine($"Goal={gs.CurrentOverworldGoal}, start distance to mine: {startDist:0.00}");
-        for (int t = 0; t < 60; t++) gs.Tick();
-        float endDist = Dist(gs.Hero.X, gs.Hero.Y, mine.X, mine.Y);
-        Console.WriteLine($"After 60 ticks of real auto-play: distance to mine {endDist:0.00} (should have decreased)");
+        Console.WriteLine("\n=== Step 3: Town is player-driven (Manual control, no auto-walk script) ===");
+        Console.WriteLine($"ControlMode after entering town: {gs.ControlMode} (expect Manual)");
 
-        Console.WriteLine("\n=== Step 4: Mining ===");
+        Console.WriteLine("\n=== Step 4: Mining (player action) ===");
         int oreBefore = gs.Hero.Resources.GetValueOrDefault("iron-ore", 0);
-        for (int t = 0; t < 300 && gs.CurrentOverworldGoal != OverworldGoal.ToSmithy; t++) gs.Tick();
+        gs.MineOre();
+        for (int t = 0; t < 300 && gs.CurrentActivity != null; t++) gs.Tick();
         int oreAfter = gs.Hero.Resources.GetValueOrDefault("iron-ore", 0);
-        Console.WriteLine($"Goal after mining: {gs.CurrentOverworldGoal}, iron-ore {oreBefore}->{oreAfter}, CurrentActivity null: {gs.CurrentActivity == null}");
+        Console.WriteLine($"iron-ore {oreBefore}->{oreAfter} (expect 3), CurrentActivity null: {gs.CurrentActivity == null}");
 
-        Console.WriteLine("\n=== Step 5: Smelt + craft at the Smithy ===");
-        int itemCountBefore = gs.Hero.Inventory.Count + gs.Hero.Loadout.Count;
-        for (int t = 0; t < 2000 && gs.CurrentOverworldGoal != OverworldGoal.ToStall; t++) gs.Tick();
-        int itemCountAfter = gs.Hero.Inventory.Count + gs.Hero.Loadout.Count;
+        Console.WriteLine("\n=== Step 5: Smelt + craft at the Smithy (player actions) ===");
+        var smelt = RecipeDataService.Instance.Get("smelt-iron")!;
+        var craftSword = RecipeDataService.Instance.Get("craft-iron-sword")!;
+        Console.WriteLine($"CanCraft smelt-iron: {gs.CanCraft(smelt)} (expect True with 3 ore)");
+        gs.Craft(smelt);
+        for (int t = 0; t < 2000 && gs.CurrentActivity != null; t++) gs.Tick();
+        Console.WriteLine($"After smelt: iron-ore={gs.Hero.Resources.GetValueOrDefault("iron-ore", 0)} (expect 1), iron-ingot={gs.Hero.Resources.GetValueOrDefault("iron-ingot", 0)} (expect 1)");
+        gs.Craft(craftSword);
+        for (int t = 0; t < 2000 && gs.CurrentActivity != null; t++) gs.Tick();
         var sword = gs.Hero.Inventory.Concat(gs.Hero.Loadout).OfType<Weapon>().FirstOrDefault(w => w.Id == "iron-sword");
-        Console.WriteLine($"Goal after crafting: {gs.CurrentOverworldGoal}, iron-ore={gs.Hero.Resources.GetValueOrDefault("iron-ore", 0)}, iron-ingot={gs.Hero.Resources.GetValueOrDefault("iron-ingot", 0)}");
-        Console.WriteLine($"Item count {itemCountBefore}->{itemCountAfter}, Iron Sword crafted: {sword != null}");
+        Console.WriteLine($"After craft: Iron Sword in inventory: {sword != null}, iron-ingot={gs.Hero.Resources.GetValueOrDefault("iron-ingot", 0)} (expect 0)");
 
-        // Verify Forge-combine is reachable at the Smithy (reusing the Phase 1 combine system).
+        // Forge-combine is still reachable at the Smithy (reusing the Phase 1 combine system).
         var combined = gs.CombineAtForge(CombinableCatalog.Sword(), CombinableCatalog.Dagger());
         Console.WriteLine($"Forge-combine reachable: {combined != null} -> {combined?.Name} ({combined?.Kind})");
 
-        Console.WriteLine("\n=== Step 6: Selling at the Stall ===");
+        Console.WriteLine("\n=== Step 6: Selling at the Stall (player action) ===");
         int goldBefore = gs.Hero.Gold;
-        for (int t = 0; t < 300 && gs.CurrentOverworldGoal != OverworldGoal.ToDungeonEntrance; t++) gs.Tick();
+        if (sword != null) gs.SellItem(sword);
         bool swordStillOwned = gs.Hero.Inventory.Concat(gs.Hero.Loadout).OfType<Weapon>().Any(w => w.Id == "iron-sword");
-        Console.WriteLine($"Goal after selling: {gs.CurrentOverworldGoal}, Gold {goldBefore}->{gs.Hero.Gold} (expect +30 for a Common item), sword still owned: {swordStillOwned}");
+        Console.WriteLine($"Gold {goldBefore}->{gs.Hero.Gold} (expect +30 for a Common item), sword still owned: {swordStillOwned}");
 
-        // Walk onto the dungeon entrance to start the return trip.
-        gs.Hero.X = entrance!.X;
-        gs.Hero.Y = entrance.Y;
-        for (int t = 0; t < 10 && gs.IsInOverworld; t++) gs.Tick();
-        Console.WriteLine($"After walking onto DungeonEntrance -> IsInOverworld={gs.IsInOverworld}, Floor={gs.CurrentFloor}");
+        Console.WriteLine("\n=== Step 7: Enter the Dungeon (player action) ===");
+        gs.EnterDungeon();
+        Console.WriteLine($"After EnterDungeon -> IsInOverworld={gs.IsInOverworld}, Floor={gs.CurrentFloor}");
 
         Console.WriteLine("\n=== Full loop proven, same Hero object throughout ===");
         Console.WriteLine($"{gs.Hero.Name}: Level {gs.Hero.Level}, Gold {gs.Hero.Gold}, back in the dungeon at Floor {gs.CurrentFloor}");
-        Console.WriteLine("Dungeon exit -> mine ore -> smelt+craft a sword -> sell it -> return to a fresh dive: complete.");
+        Console.WriteLine("Dungeon exit -> mine ore -> smelt+craft a sword -> sell it -> return to a fresh dive: complete (all player-driven).");
     }
-
-    private static float Dist(float x1, float y1, float x2, float y2)
-        => MathF.Sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
 
     // Debug/test entrypoint: if TEST_SAVE=1 is set, exercise the save/load round-trip and exit
     public static void RunSaveLoadDemo()

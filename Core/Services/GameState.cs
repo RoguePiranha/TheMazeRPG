@@ -8,27 +8,11 @@ namespace TheMazeRPG.Core.Services
 {
 
 /// <summary>
-/// The hero's current scripted objective while in the Overworld. This is an explicit,
-/// deliberately-flagged placeholder for real player choice/input (see Implementation Plan
-/// section 0a) — a linear scripted sequence, not "AI deciding," proving the first Overworld
-/// vertical slice (mine -> smelt/craft -> sell or equip -> return to the dungeon).
-/// </summary>
-public enum OverworldGoal
-{
-    ToMine,
-    Mining,
-    ToSmithy,
-    Crafting,
-    ToStall,
-    Selling,
-    ToDungeonEntrance
-}
-
-/// <summary>
-/// How the hero is driven. <see cref="Auto"/> is the default: the hero auto-explores, auto-fights,
-/// and follows the Overworld goal script (the original screensaver-style behavior). <see cref="Manual"/>
-/// hands movement to the player (attacks still auto-fire at engaged enemies) — the two are toggled
-/// live, never removing the auto-run option.
+/// How the hero is driven. <see cref="Auto"/> is the default in the dungeon: the hero auto-explores
+/// and auto-fights (the original screensaver-style behavior). <see cref="Manual"/> hands movement to
+/// the player (attacks still auto-fire at engaged enemies) — the two are toggled live, never removing
+/// the auto-run option. The Overworld is always player-driven (Manual): the town is entered in Manual
+/// and structures are used via the Press-E interaction, not an auto script.
 /// </summary>
 public enum ControlMode
 {
@@ -68,12 +52,13 @@ public class GameState
     /// rather than the dungeon. Set by EnterOverworld/StartFreshDungeonDive.</summary>
     public bool IsInOverworld { get; private set; }
 
-    /// <summary>The hero's current scripted Overworld objective — see OverworldGoal doc comment.</summary>
-    public OverworldGoal CurrentOverworldGoal { get; private set; } = OverworldGoal.ToMine;
-
     /// <summary>Auto-run vs. player-driven movement — see ControlMode. Defaults to Auto; a session
-    /// preference, not saved.</summary>
+    /// preference, not saved. Forced to Manual while in the Overworld (the town is player-driven).</summary>
     public ControlMode ControlMode { get; private set; } = ControlMode.Auto;
+
+    /// <summary>While in the Overworld, the town structure the hero is standing close enough to
+    /// interact with (Press-E), or null. Recomputed each tick by UpdateOverworldInteractable.</summary>
+    public MazeFeature? NearbyInteractable { get; private set; }
 
     // Player movement intent for Manual mode, set by the UI from held keys (each component in
     // [-1,1]); consumed once per Tick. Ignored entirely in Auto mode.
@@ -492,20 +477,9 @@ public class GameState
             {
                 if (IsInOverworld)
                 {
-                    // Placeholder scripted sequence standing in for real player choice/input,
-                    // exactly like the safe room's shrine-vs-Guardian default below — see
-                    // Implementation Plan section 0a. Walks the hero toward whatever feature the
-                    // current OverworldGoal points at; goals with no walk target (the hero is mid-
-                    // Activity) leave movement alone.
-                    var targetType = OverworldGoalTarget(CurrentOverworldGoal);
-                    if (targetType.HasValue)
-                    {
-                        var target = CurrentMaze.Features.FirstOrDefault(f => f.Type == targetType.Value);
-                        if (target != null)
-                        {
-                            _movementSystem.MoveHeroTowardTarget(Hero, target.X, target.Y, CurrentMaze);
-                        }
-                    }
+                    // The Overworld is player-driven only (Manual control, handled above) — there is
+                    // no auto-movement in town. The player walks with WASD and uses structures via
+                    // the Press-E interaction. Nothing to do here.
                 }
                 else if (IsInSafeRoom)
                 {
@@ -601,6 +575,12 @@ public class GameState
         if (!Hero.InCombat)
         {
             CheckFeatures();
+        }
+
+        // Overworld: track which town structure (if any) is in Press-E range, for the prompt/menu.
+        if (IsInOverworld)
+        {
+            UpdateOverworldInteractable();
         }
 
         // Auto mode auto-collects loot off nearby corpses (the manual player loots deliberately via
@@ -1230,18 +1210,63 @@ public class GameState
         Hero.Resources[materialId] = Hero.Resources.GetValueOrDefault(materialId, 0) + amount;
     }
 
-    /// <summary>Advance the scripted Overworld goal sequence. Called by activities on completion
-    /// (e.g. MineOreActivity finishing moves to ToSmithy).</summary>
-    internal void AdvanceOverworldGoal(OverworldGoal next) => CurrentOverworldGoal = next;
+    // ---- Player-initiated Overworld actions (Press-E structure menus) ---------------------
+    // These replace the old scripted OverworldGoal sequence: the player walks up to a structure
+    // and chooses an action, rather than the hero auto-walking a fixed mine->craft->sell path.
 
-    /// <summary>Whether an Overworld feature's proximity trigger may fire. In Auto mode the hero
-    /// follows the scripted goal sequence, so a feature only triggers when it's the current goal;
-    /// in Manual mode the player walks wherever they like, so any feature they reach triggers
-    /// (activities validate their own inputs, so e.g. crafting with no ore is a safe no-op).</summary>
-    private bool OverworldTriggerAllowed(OverworldGoal requiredGoal) =>
-        ControlMode == ControlMode.Manual || CurrentOverworldGoal == requiredGoal;
+    /// <summary>How close (tiles) the hero must be to a town structure to interact with it.</summary>
+    private const float InteractRadius = 1.3f;
+
+    /// <summary>Refresh NearbyInteractable: the nearest in-range town structure, or null. Skipped
+    /// while mid-Activity (mining/crafting) so the prompt doesn't invite a second overlapping
+    /// action. Called each tick from Tick() while in the Overworld.</summary>
+    private void UpdateOverworldInteractable()
+    {
+        if (CurrentActivity != null) { NearbyInteractable = null; return; }
+
+        MazeFeature? nearest = null;
+        float nearestSq = InteractRadius * InteractRadius;
+        foreach (var f in CurrentMaze.Features)
+        {
+            if (!IsOverworldInteractable(f.Type)) continue;
+            float dx = f.X - Hero.X, dy = f.Y - Hero.Y;
+            float d2 = dx * dx + dy * dy;
+            if (d2 <= nearestSq) { nearestSq = d2; nearest = f; }
+        }
+        NearbyInteractable = nearest;
+    }
+
+    /// <summary>Mine ore at the Mine (starts a MineOreActivity). No-op if already busy.</summary>
+    public void MineOre()
+    {
+        if (CurrentActivity != null) return;
+        StartActivity(new MineOreActivity("iron-ore", 3, GameSettings.Current.SecondsToTicks(5f)));
+    }
+
+    /// <summary>Whether the hero currently holds every input a recipe needs.</summary>
+    public bool CanCraft(RecipeDef recipe) =>
+        recipe.Inputs.All(kv => Hero.Resources.GetValueOrDefault(kv.Key, 0) >= kv.Value);
+
+    /// <summary>Run a crafting recipe at the Smithy (smelt or forge). Validates inputs first; the
+    /// CraftActivity itself consumes the inputs and produces the output (material or Weapon via the
+    /// loot pipeline). No-op if busy or missing inputs.</summary>
+    public bool Craft(RecipeDef recipe)
+    {
+        if (CurrentActivity != null || !CanCraft(recipe)) return false;
+        StartActivity(new CraftActivity(recipe, GameSettings.Current.SecondsToTicks(recipe.DurationSeconds), _ => { }));
+        return true;
+    }
+
+    /// <summary>Leave town for a fresh dungeon dive (the Dungeon Entrance action).</summary>
+    public void EnterDungeon() => StartFreshDungeonDive();
 
     /// <summary>
+    /// Combine two owned Combinables at the Smithy (Forge-gated). Reuses the CombinationEngine/
+    /// RecipeBook system built in Phase 1 rather than duplicating it — the Smithy's new recipe-
+    /// crafting (ore -> ingot -> gear) and this pre-existing merge system are two different ways
+    /// to make things, both available at the same location. Returns null (with a logged reason)
+    /// if the combination isn't allowed.
+    /// </summary>
     /// Combine two owned Combinables at the Smithy (Forge-gated). Reuses the CombinationEngine/
     /// RecipeBook system built in Phase 1 rather than duplicating it — the Smithy's new recipe-
     /// crafting (ore -> ingot -> gear) and this pre-existing merge system are two different ways
@@ -1277,11 +1302,15 @@ public class GameState
         }
 
         if (wasEquipped) RefreshAttacks();
-        int price = CombinationEngine.RarityPoints(item.Rarity) * GoldPerRarityPoint;
+        int price = SellPrice(item);
         Hero.Gold += price;
         LogMessage($"Sold {item.Name} for {price} gold", MessageKind.Loot);
         return price;
     }
+
+    /// <summary>The gold a Combinable would sell for (rarity-based). Used by the Stall sell UI to
+    /// preview prices before committing a sale.</summary>
+    public int SellPrice(Combinable item) => CombinationEngine.RarityPoints(item.Rarity) * GoldPerRarityPoint;
 
     private void CheckFeatures()
     {
@@ -1322,53 +1351,10 @@ public class GameState
                 continue;
             }
 
-            // Overworld: reaching the dungeon entrance starts a fresh dive (the return trip).
-            if (feature.Type == MazeFeatureType.DungeonEntrance && distance < 0.6f && IsInOverworld)
-            {
-                StartFreshDungeonDive();
-                return; // state just reset — stop processing this tick's features
-            }
-
-            // Overworld: mining at the MineEntrance.
-            if (feature.Type == MazeFeatureType.MineEntrance && distance < 0.6f
-                && OverworldTriggerAllowed(OverworldGoal.ToMine))
-            {
-                CurrentOverworldGoal = OverworldGoal.Mining;
-                StartActivity(new MineOreActivity("iron-ore", 3, GameSettings.Current.SecondsToTicks(5f),
-                    gs => gs.AdvanceOverworldGoal(OverworldGoal.ToSmithy)));
-                continue;
-            }
-
-            // Overworld: smelt then craft at the Smithy — two chained recipes, proving the
-            // recipe system generalizes rather than being a single hardcoded transformation.
-            if (feature.Type == MazeFeatureType.Smithy && distance < 0.6f
-                && OverworldTriggerAllowed(OverworldGoal.ToSmithy))
-            {
-                CurrentOverworldGoal = OverworldGoal.Crafting;
-                var smelt = RecipeDataService.Instance.Get("smelt-iron")!;
-                StartActivity(new CraftActivity(smelt, GameSettings.Current.SecondsToTicks(smelt.DurationSeconds), gs =>
-                {
-                    var craft = RecipeDataService.Instance.Get("craft-iron-sword")!;
-                    gs.StartActivity(new CraftActivity(craft, GameSettings.Current.SecondsToTicks(craft.DurationSeconds),
-                        gs2 => gs2.AdvanceOverworldGoal(OverworldGoal.ToStall)));
-                }));
-                continue;
-            }
-
-            // Overworld: sell the crafted item at the Stall (instant — unlike mining/crafting,
-            // "handing an item to a merchant" doesn't need a multi-tick Activity for v1).
-            if (feature.Type == MazeFeatureType.Stall && distance < 0.6f
-                && OverworldTriggerAllowed(OverworldGoal.ToStall))
-            {
-                var sword = Hero.Inventory.Concat(Hero.Loadout).OfType<Weapon>()
-                    .FirstOrDefault(w => w.Id == "iron-sword");
-                if (sword != null)
-                {
-                    SellItem(sword);
-                }
-                CurrentOverworldGoal = OverworldGoal.ToDungeonEntrance;
-                continue;
-            }
+            // Overworld structures (DungeonEntrance / MineEntrance / Smithy / Stall) are no longer
+            // triggered by walking onto them — they're used via the player's Press-E interaction
+            // (see MineOre/Craft/EnterDungeon and GameView's structure menus). Proximity detection
+            // for the E prompt is UpdateOverworldInteractable, not this feature-trigger loop.
 
             if (feature.Type == MazeFeatureType.Shrine)
             {
@@ -1659,12 +1645,12 @@ public class GameState
         StairsLocation = null;
 
         IsInOverworld = true;
-        CurrentOverworldGoal = OverworldGoal.ToMine;
+        NearbyInteractable = null;
+        ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
         CurrentMaze = OverworldGenerator.Generate();
         var entrance = CurrentMaze.Features.First(f => f.Type == MazeFeatureType.DungeonEntrance);
-        // Placed one tile away, not exactly on the entrance — it's also the return-trip trigger
-        // (see CheckFeatures), so arriving directly on top of it would immediately re-trigger a
-        // new dive before the Overworld goal logic gets a turn.
+        // Placed one tile off the entrance so the hero isn't standing inside the structure they'd
+        // interact with; re-diving is now an explicit "Enter the Dungeon" action, not a walk-on.
         Hero.X = entrance.X + 1;
         Hero.Y = entrance.Y;
         LogMessage("You emerge into the town by the dungeon mouth. Progress saved.", MessageKind.System);
@@ -1724,7 +1710,8 @@ public class GameState
         else
         {
             IsInOverworld = true;
-            CurrentOverworldGoal = OverworldGoal.ToMine;
+            NearbyInteractable = null;
+            ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
             CurrentMaze = OverworldGenerator.Generate();
             var entrance = CurrentMaze.Features.First(f => f.Type == MazeFeatureType.DungeonEntrance);
             Hero.X = entrance.X + 1;
@@ -1732,16 +1719,13 @@ public class GameState
         }
     }
 
-    /// <summary>The map feature (if any) the hero should walk toward for a given Overworld goal.
-    /// Goals with no target (Mining/Crafting/Selling) mean the hero is mid-Activity and should
-    /// stay put — movement is left alone in that case.</summary>
-    private static MazeFeatureType? OverworldGoalTarget(OverworldGoal goal) => goal switch
+    /// <summary>The town structures the hero can interact with via Press-E (proximity-detected in
+    /// UpdateOverworldInteractable).</summary>
+    private static bool IsOverworldInteractable(MazeFeatureType t) => t switch
     {
-        OverworldGoal.ToMine => MazeFeatureType.MineEntrance,
-        OverworldGoal.ToSmithy => MazeFeatureType.Smithy,
-        OverworldGoal.ToStall => MazeFeatureType.Stall,
-        OverworldGoal.ToDungeonEntrance => MazeFeatureType.DungeonEntrance,
-        _ => null
+        MazeFeatureType.MineEntrance or MazeFeatureType.Smithy or
+        MazeFeatureType.Stall or MazeFeatureType.DungeonEntrance => true,
+        _ => false
     };
 
     /// <summary>

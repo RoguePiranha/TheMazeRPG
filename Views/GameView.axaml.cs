@@ -57,7 +57,40 @@ public partial class GameView : UserControl
             _deathOverlay.SetGameState(viewModel.GameState);
             _deathOverlay.NewHeroRequested += () => NewHeroRequested?.Invoke();
         }
+
+        // Refresh the "Press E" interaction prompt from GameState.NearbyInteractable each frame
+        // (mirrors GameCanvas's own render timer — the prompt is UI state, not drawn on the canvas).
+        _promptTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1000.0 / 30) };
+        _promptTimer.Tick -= PromptTimer_Tick;
+        _promptTimer.Tick += PromptTimer_Tick;
+        _promptTimer.Start();
     }
+
+    private DispatcherTimer? _promptTimer;
+
+    private void PromptTimer_Tick(object? sender, EventArgs e)
+    {
+        var overlay = this.FindControl<Border>("InteractPromptOverlay");
+        var text = this.FindControl<TextBlock>("InteractPromptText");
+        if (overlay == null || text == null || _viewModel == null) return;
+
+        // Show only while a structure is in range and no blocking overlay/menu is up.
+        var near = _viewModel.GameState.NearbyInteractable;
+        bool show = near != null && !IsPauseMenuOpen && !IsInventoryOpen && !IsLootOpen
+                    && !IsSellOpen && !IsStatsOpen && !IsContextMenuOpen && !IsConsoleOpen;
+        overlay.IsVisible = show;
+        if (show) text.Text = $"Press [E] — {StructureName(near!.Type)}";
+    }
+
+    /// <summary>Friendly label for a town structure.</summary>
+    private static string StructureName(MazeFeatureType t) => t switch
+    {
+        MazeFeatureType.MineEntrance => "Mine",
+        MazeFeatureType.Smithy => "Smithy",
+        MazeFeatureType.Stall => "Stall",
+        MazeFeatureType.DungeonEntrance => "Dungeon Entrance",
+        _ => "Structure"
+    };
 
     // Movement keys currently held down, for real-time Manual-mode movement.
     private readonly HashSet<Key> _heldMoveKeys = new();
@@ -101,6 +134,7 @@ public partial class GameView : UserControl
             e.Handled = true;
             // Escape backs out of overlays in order, else toggles the pause menu.
             if (IsContextMenuOpen) CloseContextMenu();
+            else if (IsSellOpen) CloseSell();
             else if (IsLootOpen) CloseLoot();
             else if (IsInventoryOpen) CloseInventory();
             else if (IsStatsOpen) ToggleStats();
@@ -110,6 +144,12 @@ public partial class GameView : UserControl
         {
             e.Handled = true;
             ToggleInventory();
+        }
+        else if (e.Key == Key.E && !AnyOverlayOpen && _viewModel?.GameState.NearbyInteractable is { } structure)
+        {
+            // Overworld: use the town structure the hero is standing next to.
+            e.Handled = true;
+            OpenStructureMenu(structure);
         }
         else if (e.Key == Key.Space && _viewModel != null && !IsPauseMenuOpen && !IsInventoryOpen && !IsLootOpen)
         {
@@ -365,9 +405,61 @@ public partial class GameView : UserControl
             loot.IsEnabled = hasLoot;
         }
 
+        box.HorizontalAlignment = HorizontalAlignment.Left;
+        box.VerticalAlignment = VerticalAlignment.Top;
         box.Margin = new Avalonia.Thickness(target.ScreenPoint.X, target.ScreenPoint.Y, 0, 0);
         overlay.IsVisible = true;
     }
+
+    /// <summary>Overworld: open the action menu for a town structure (triggered by the E key while
+    /// standing next to it). Reuses the right-click context-menu overlay, opened centered.</summary>
+    private void OpenStructureMenu(MazeFeature feature)
+    {
+        var overlay = this.FindControl<Border>("ContextMenuOverlay");
+        var box = this.FindControl<Border>("ContextMenuBox");
+        var panel = this.FindControl<StackPanel>("ContextMenuPanel");
+        if (overlay == null || box == null || panel == null || _viewModel == null) return;
+        var gs = _viewModel.GameState;
+        panel.Children.Clear();
+        _heldMoveKeys.Clear();
+        gs.SetManualMoveIntent(0, 0);
+
+        switch (feature.Type)
+        {
+            case MazeFeatureType.MineEntrance:
+                AddMenuItem(panel, "Mine Iron Ore (~5s)", () => { gs.MineOre(); CloseContextMenu(); });
+                break;
+            case MazeFeatureType.Smithy:
+                foreach (var recipe in RecipeDataService.Instance.Recipes.Values)
+                {
+                    var r = recipe;
+                    bool can = gs.CanCraft(r);
+                    var item = AddMenuItem(panel, can ? r.Name : $"{r.Name}  ({NeedText(r, gs)})",
+                        () => { gs.Craft(r); CloseContextMenu(); });
+                    item.IsEnabled = can;
+                }
+                break;
+            case MazeFeatureType.Stall:
+                AddMenuItem(panel, "Sell items…", () => { CloseContextMenu(); OpenSell(); });
+                break;
+            case MazeFeatureType.DungeonEntrance:
+                AddMenuItem(panel, "Enter the Dungeon", () => { CloseContextMenu(); gs.EnterDungeon(); });
+                break;
+        }
+        AddMenuItem(panel, "Cancel", CloseContextMenu);
+
+        // Centered (opened via the E key, not at a click point).
+        box.HorizontalAlignment = HorizontalAlignment.Center;
+        box.VerticalAlignment = VerticalAlignment.Center;
+        box.Margin = new Avalonia.Thickness(0);
+        overlay.IsVisible = true;
+    }
+
+    /// <summary>"need 2 iron-ore, 1 …" — the recipe inputs the hero is short on.</summary>
+    private static string NeedText(RecipeDef r, GameState gs) =>
+        "need " + string.Join(", ", r.Inputs
+            .Where(kv => gs.Hero.Resources.GetValueOrDefault(kv.Key, 0) < kv.Value)
+            .Select(kv => $"{kv.Value} {kv.Key}"));
 
     private Button AddMenuItem(StackPanel panel, string text, Action onClick)
     {
