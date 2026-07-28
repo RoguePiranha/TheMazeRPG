@@ -68,6 +68,14 @@ public partial class GameView : UserControl
 
     private DispatcherTimer? _promptTimer;
 
+    protected override void OnDetachedFromVisualTree(Avalonia.VisualTreeAttachmentEventArgs e)
+    {
+        // A fresh GameView is created per game; stop the prompt timer so the discarded view (and the
+        // stale GameState it captures) can be collected.
+        base.OnDetachedFromVisualTree(e);
+        _promptTimer?.Stop();
+    }
+
     private void PromptTimer_Tick(object? sender, EventArgs e)
     {
         var overlay = this.FindControl<Border>("InteractPromptOverlay");
