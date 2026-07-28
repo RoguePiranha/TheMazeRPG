@@ -151,12 +151,12 @@ public partial class GameView : UserControl
             e.Handled = true;
             OpenStructureMenu(structure);
         }
-        else if (e.Key == Key.Space && _viewModel != null && !IsPauseMenuOpen && !IsInventoryOpen && !IsLootOpen)
+        else if (e.Key == Key.Space && _viewModel != null && !AnyOverlayOpen)
         {
             e.Handled = true;
             _viewModel.GameState.TryDash();
         }
-        else if (_viewModel != null && !IsPauseMenuOpen && !IsInventoryOpen && !IsLootOpen)
+        else if (_viewModel != null && !AnyOverlayOpen)
         {
             var gs = _viewModel.GameState;
             if (e.Key == Key.M)
@@ -461,6 +461,12 @@ public partial class GameView : UserControl
             .Where(kv => gs.Hero.Resources.GetValueOrDefault(kv.Key, 0) < kv.Value)
             .Select(kv => $"{kv.Value} {kv.Key}"));
 
+    /// <summary>True while any blocking overlay/menu is up — used to suppress the Overworld E prompt
+    /// and its action while the player is in another UI.</summary>
+    private bool AnyOverlayOpen =>
+        IsPauseMenuOpen || IsInventoryOpen || IsLootOpen || IsSellOpen ||
+        IsStatsOpen || IsContextMenuOpen || IsConsoleOpen;
+
     private Button AddMenuItem(StackPanel panel, string text, Action onClick)
     {
         var btn = new Button
@@ -495,6 +501,72 @@ public partial class GameView : UserControl
         for (Control? cur = c; cur != null; cur = cur.Parent as Control)
             if (ReferenceEquals(cur, box)) return true;
         return false;
+    }
+
+    // --- Stall sell window ---
+
+    private bool IsSellOpen =>
+        this.FindControl<Border>("SellOverlay")?.IsVisible == true;
+
+    /// <summary>Open the Stall sell list. Pauses + releases movement like the other overlays.</summary>
+    private void OpenSell()
+    {
+        var overlay = this.FindControl<Border>("SellOverlay");
+        if (overlay == null || _viewModel == null) return;
+
+        _viewModel.GameState.IsRunning = false;
+        _heldMoveKeys.Clear();
+        _viewModel.GameState.SetManualMoveIntent(0, 0);
+
+        PopulateSell();
+        overlay.IsVisible = true;
+    }
+
+    private void CloseSell()
+    {
+        var overlay = this.FindControl<Border>("SellOverlay");
+        if (overlay == null || _viewModel == null) return;
+        overlay.IsVisible = false;
+        _viewModel.GameState.IsRunning = true;
+    }
+
+    private void SellCloseButton_Click(object? sender, RoutedEventArgs e) => CloseSell();
+
+    private void PopulateSell()
+    {
+        if (_viewModel == null) return;
+        var gs = _viewModel.GameState;
+        var hero = gs.Hero;
+
+        if (this.FindControl<TextBlock>("SellGoldText") is { } goldText)
+            goldText.Text = hero.Gold.ToString();
+        if (this.FindControl<TextBlock>("SellDetailsText") is { } detailsText)
+            detailsText.Text = "Select an item to inspect it.";
+
+        var panel = this.FindControl<StackPanel>("SellPanel");
+        if (panel == null) return;
+        panel.Children.Clear();
+
+        // SellItem works on both inventory and equipped gear.
+        var items = hero.Inventory.Concat(hero.Loadout).ToList();
+        if (items.Count == 0)
+        {
+            panel.Children.Add(MutedRow("You have no items to sell."));
+            return;
+        }
+
+        foreach (var item in items)
+        {
+            int price = gs.SellPrice(item);
+            panel.Children.Add(ItemRow(item, $"{price}g", arrowEnabled: true,
+                onArrow: () => { gs.SellItem(item); PopulateSell(); },
+                onSelect: () =>
+                {
+                    ShowDetails("SellDetailsText", item);
+                    if (this.FindControl<TextBlock>("SellDetailsText") is { } d)
+                        d.Text += $"\nSell price: {price} gold";
+                }));
+        }
     }
 
     // --- Loot window (body + player inventory) ---
