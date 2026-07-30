@@ -10,7 +10,14 @@
 
   <ItemGroup>
     <Folder Include="Models\" />
-    <AvaloniaResource Include="Assets\**" />
+    <!-- Bundle only game-ready assets: the font/icon plus the curated flat sprite folders
+         (Assets\Sprites\characters|enemies|items|structures|tiles). The raw "Pixel Crawler - *"
+         pack directories stay in the repo as an art library but are deliberately NOT shipped —
+         they hold ~480 editor/source files (.aseprite/.import/.png~/.gif) and hundreds of sheets
+         the game has no slot for yet. To use a new sheet, copy it into a curated folder and map
+         it in Data\Sprites\sprites.json. -->
+    <AvaloniaResource Include="Assets\**"
+                      Exclude="Assets\Sprites\Pixel Crawler*\**;Assets\**\*.aseprite;Assets\**\*.import;Assets\**\*.png~;Assets\**\*.gif;Assets\**\*.txt" />
   </ItemGroup>
 
   <ItemGroup>

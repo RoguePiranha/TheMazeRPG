@@ -898,55 +898,76 @@ public class MazeRenderer
             float px = enemy.X * CellSize + CellSize / 2f;
             float py = enemy.Y * CellSize + CellSize / 2f;
             
-            // Color + shape derived from the enemy's character class; size scales with radius
-            // (bosses have a larger radius, so they read bigger).
-            SKColor baseColor = ClassColor(enemy.Class);
-            SKColor enemyColor = enemy.IsAlive ? baseColor
-                : new SKColor((byte)(baseColor.Red / 2), (byte)(baseColor.Green / 2), (byte)(baseColor.Blue / 2));
-
-            using var paint = new SKPaint
-            {
-                Color = enemyColor,
-                Style = SKPaintStyle.Fill,
-                IsAntialias = true
-            };
-
+            // Size scales with radius (bosses have a larger radius, so they read bigger).
             float sz = 10f * (enemy.Radius / 0.35f);
-            switch (ClassShape(enemy.Class))
+
+            // Sprite (resolved race+class -> race -> class in Data/Sprites/sprites.json) replaces
+            // the procedural class shape when one exists; unmapped enemies keep their old shape.
+            var sprite = SpriteService.ForEnemy(enemy.Race, enemy.Class);
+            if (sprite != null)
             {
-                case 0: // square (melee tank / generalist)
-                    canvas.DrawRect(px - sz, py - sz, sz * 2, sz * 2, paint);
-                    break;
-                case 1: // diamond (fast melee)
-                    var diamond = new SKPath();
-                    diamond.MoveTo(px, py - sz);
-                    diamond.LineTo(px + sz, py);
-                    diamond.LineTo(px, py + sz);
-                    diamond.LineTo(px - sz, py);
-                    diamond.Close();
-                    canvas.DrawPath(diamond, paint);
-                    break;
-                case 2: // triangle (ranged)
-                    var tri = new SKPath();
-                    tri.MoveTo(px, py - sz);
-                    tri.LineTo(px + sz * 0.9f, py + sz * 0.8f);
-                    tri.LineTo(px - sz * 0.9f, py + sz * 0.8f);
-                    tri.Close();
-                    canvas.DrawPath(tri, paint);
-                    break;
-                default: // pentagon (caster / support)
-                    var penta = new SKPath();
-                    for (int i = 0; i < 5; i++)
-                    {
-                        float angle = (float)(i * 2 * Math.PI / 5 - Math.PI / 2);
-                        float x = px + sz * MathF.Cos(angle);
-                        float y = py + sz * MathF.Sin(angle);
-                        if (i == 0) penta.MoveTo(x, y);
-                        else penta.LineTo(x, y);
-                    }
-                    penta.Close();
-                    canvas.DrawPath(penta, paint);
-                    break;
+                using var spritePaint = new SKPaint();
+                if (!enemy.IsAlive)
+                {
+                    // Corpses read as darkened, matching the dimmed-color treatment shapes get.
+                    spritePaint.ColorFilter = SKColorFilter.CreateBlendMode(
+                        new SKColor(0, 0, 0, 140), SKBlendMode.SrcATop);
+                }
+                // Same scale basis as the hero: a normal-radius enemy fills a cell.
+                float maxSize = CellSize * (enemy.Radius / 0.35f);
+                SpriteService.Draw(canvas, sprite, px, py,
+                    SpriteService.CrispSize(sprite, maxSize), spritePaint);
+            }
+            else
+            {
+                // Color + shape derived from the enemy's character class.
+                SKColor baseColor = ClassColor(enemy.Class);
+                SKColor enemyColor = enemy.IsAlive ? baseColor
+                    : new SKColor((byte)(baseColor.Red / 2), (byte)(baseColor.Green / 2), (byte)(baseColor.Blue / 2));
+
+                using var paint = new SKPaint
+                {
+                    Color = enemyColor,
+                    Style = SKPaintStyle.Fill,
+                    IsAntialias = true
+                };
+
+                switch (ClassShape(enemy.Class))
+                {
+                    case 0: // square (melee tank / generalist)
+                        canvas.DrawRect(px - sz, py - sz, sz * 2, sz * 2, paint);
+                        break;
+                    case 1: // diamond (fast melee)
+                        var diamond = new SKPath();
+                        diamond.MoveTo(px, py - sz);
+                        diamond.LineTo(px + sz, py);
+                        diamond.LineTo(px, py + sz);
+                        diamond.LineTo(px - sz, py);
+                        diamond.Close();
+                        canvas.DrawPath(diamond, paint);
+                        break;
+                    case 2: // triangle (ranged)
+                        var tri = new SKPath();
+                        tri.MoveTo(px, py - sz);
+                        tri.LineTo(px + sz * 0.9f, py + sz * 0.8f);
+                        tri.LineTo(px - sz * 0.9f, py + sz * 0.8f);
+                        tri.Close();
+                        canvas.DrawPath(tri, paint);
+                        break;
+                    default: // pentagon (caster / support)
+                        var penta = new SKPath();
+                        for (int i = 0; i < 5; i++)
+                        {
+                            float angle = (float)(i * 2 * Math.PI / 5 - Math.PI / 2);
+                            float x = px + sz * MathF.Cos(angle);
+                            float y = py + sz * MathF.Sin(angle);
+                            if (i == 0) penta.MoveTo(x, y);
+                            else penta.LineTo(x, y);
+                        }
+                        penta.Close();
+                        canvas.DrawPath(penta, paint);
+                        break;
+                }
             }
 
             // Elite/Boss get a distinguishing halo ring (gold for Boss, silver for Elite) on top
@@ -1594,7 +1615,15 @@ public class MazeRenderer
         float px = (hero.X + hero.AnimationOffsetX) * CellSize + CellSize / 2f;
         float py = (hero.Y + hero.AnimationOffsetY) * CellSize + CellSize / 2f;
         float heroRadius = CellSize / 6f;
-        
+
+        // Sprite (mapped by class in Data/Sprites/sprites.json) replaces the procedural
+        // race/class circles when one exists; unmapped classes fall through to the circles below.
+        if (SpriteService.ForHero(hero.Class) is { } sprite)
+        {
+            SpriteService.Draw(canvas, sprite, px, py, SpriteService.CrispSize(sprite, CellSize));
+            return;
+        }
+
         // Parse race color for inner circle
         SKColor raceColor = HeroColor; // default
         try

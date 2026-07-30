@@ -115,6 +115,13 @@ sealed class Program
             return;
         }
 
+        // If TEST_SPRITES is set, validate the sprite manifest against the files on disk and exit
+        if (Environment.GetEnvironmentVariable("TEST_SPRITES") == "1")
+        {
+            RunSpritesDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 
@@ -346,6 +353,114 @@ sealed class Program
             UnspentStatPoints = 7, ResumePoint = ResumePoint.DungeonStart
         });
         Console.WriteLine($"LoadFrom unspent points: {g2.Hero.UnspentStatPoints} (expect 7)");
+    }
+
+    // Debug/test entrypoint: validate Data/Sprites/sprites.json against the files on disk — every
+    // mapped sheet exists and slices cleanly, and every class/race the game can actually produce
+    // resolves through the lookup chain. Deliberately file-level (reads PNG headers directly) rather
+    // than going through SpriteService, which needs an initialized Avalonia asset loader.
+    public static void RunSpritesDemo()
+    {
+        Console.WriteLine("=== Sprite manifest ===");
+
+        const string manifestPath = "Data/Sprites/sprites.json";
+        const string spriteRoot = "Assets/Sprites/";
+        if (!System.IO.File.Exists(manifestPath))
+        {
+            Console.WriteLine($"MISSING manifest: {manifestPath}");
+            return;
+        }
+
+        using var doc = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(manifestPath));
+        var map = new Dictionary<string, string>();
+        foreach (var prop in doc.RootElement.GetProperty("sprites").EnumerateObject())
+            map[prop.Name] = prop.Value.GetString() ?? "";
+        Console.WriteLine($"Mappings: {map.Count}");
+
+        // (a) Every mapped path exists and is a horizontal strip of square frames.
+        int missing = 0, unsliceable = 0;
+        foreach (var (key, rel) in map)
+        {
+            string full = spriteRoot + rel;
+            if (!System.IO.File.Exists(full)) { Console.WriteLine($"  MISSING FILE  {key} -> {rel}"); missing++; continue; }
+            var (w, h) = PngSize(full);
+            if (h <= 0 || w % h != 0) { Console.WriteLine($"  NOT SLICEABLE {key} -> {rel} ({w}x{h})"); unsliceable++; }
+        }
+        Console.WriteLine($"Missing files: {missing} (expect 0); non-sliceable sheets: {unsliceable} (expect 0)");
+
+        // (b) Every hero class resolves (hero:{Class}).
+        var cds = new CharacterDataService();
+        var unmappedHeroes = cds.Classes.Keys.Where(c => !map.ContainsKey($"hero:{c}")).ToList();
+        Console.WriteLine($"Hero classes mapped: {cds.Classes.Count - unmappedHeroes.Count}/{cds.Classes.Count}"
+            + (unmappedHeroes.Count > 0 ? $" — unmapped (will draw circles): {string.Join(", ", unmappedHeroes)}" : ""));
+
+        // (c) Every spawnable race x class resolves through race+class -> race -> class.
+        var spawnRaces = cds.Races.Where(kv => !kv.Value.Debug).Select(kv => kv.Key).ToList();
+        int resolved = 0, total = 0;
+        var unresolved = new List<string>();
+        foreach (var race in spawnRaces)
+            foreach (var cls in cds.Classes.Keys)
+            {
+                total++;
+                if (map.ContainsKey($"enemy:{race}:{cls}") || map.ContainsKey($"enemy:{race}") || map.ContainsKey($"enemy:{cls}")) resolved++;
+                else unresolved.Add($"{race} {cls}");
+            }
+        Console.WriteLine($"Enemy race x class resolved: {resolved}/{total} (expect all — the class-level fallback covers any race)");
+        if (unresolved.Count > 0) Console.WriteLine($"  unresolved: {string.Join(", ", unresolved.Take(10))}");
+
+        // (d) Show which sheet a few real spawns would use, proving the specificity order.
+        Console.WriteLine("Resolution samples (most specific wins):");
+        foreach (var (race, cls) in new[] { ("Orc", "Warrior"), ("Orc", "Priest"), ("Elf", "Mage Apprentice"), ("Dwarf", "Rogue"), ("Kobold", "Warrior") })
+        {
+            string key = map.ContainsKey($"enemy:{race}:{cls}") ? $"enemy:{race}:{cls}"
+                       : map.ContainsKey($"enemy:{race}") ? $"enemy:{race}"
+                       : map.ContainsKey($"enemy:{cls}") ? $"enemy:{cls}" : "(none)";
+            Console.WriteLine($"  {race,-8} {cls,-16} -> {(key == "(none)" ? "procedural shape" : map[key])}   [{key}]");
+        }
+
+        // (e) The real runtime path: sprites ship as embedded avares:// resources, so a correct file
+        // on disk still renders as a circle if the URI/bundling is wrong. Initialize Avalonia far
+        // enough to use the asset loader and actually decode every sheet through SpriteService.
+        Console.WriteLine("Runtime load check (embedded avares:// resources via SpriteService):");
+        try
+        {
+            BuildAvaloniaApp().SetupWithoutStarting();
+            int loaded = 0, failed = 0;
+            foreach (var cls in cds.Classes.Keys)
+            {
+                var bmp = TheMazeRPG.UI.Rendering.SpriteService.ForHero(cls);
+                if (bmp == null) { Console.WriteLine($"  hero:{cls} did NOT load"); failed++; }
+                else if (bmp.Width != bmp.Height) { Console.WriteLine($"  hero:{cls} frame not square ({bmp.Width}x{bmp.Height})"); failed++; }
+                else loaded++;
+            }
+            foreach (var (race, cls) in new[] { ("Orc", "Warrior"), ("Elf", "Mage Apprentice"), ("Human", "Archer"), ("Kobold", "Rogue"), ("Dwarf", "Priest") })
+            {
+                var bmp = TheMazeRPG.UI.Rendering.SpriteService.ForEnemy(race, cls);
+                if (bmp == null) { Console.WriteLine($"  enemy {race} {cls} did NOT load"); failed++; }
+                else loaded++;
+            }
+            Console.WriteLine($"  decoded {loaded} sprite(s), {failed} failure(s) (expect 0 failures)");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  SKIPPED — could not init Avalonia headlessly ({ex.GetType().Name}: {ex.Message})");
+        }
+    }
+
+    /// <summary>Read a PNG's dimensions straight from its IHDR chunk (width/height are big-endian
+    /// ints at byte offsets 16 and 20) — avoids pulling in an image library just to sanity-check.</summary>
+    private static (int w, int h) PngSize(string path)
+    {
+        try
+        {
+            using var fs = System.IO.File.OpenRead(path);
+            var head = new byte[24];
+            if (fs.Read(head, 0, 24) < 24) return (0, 0);
+            int w = (head[16] << 24) | (head[17] << 16) | (head[18] << 8) | head[19];
+            int h = (head[20] << 24) | (head[21] << 16) | (head[22] << 8) | head[23];
+            return (w, h);
+        }
+        catch { return (0, 0); }
     }
 
     // Debug/test entrypoint: verify the debug-console command executor (GameState.ExecuteDebugCommand).
