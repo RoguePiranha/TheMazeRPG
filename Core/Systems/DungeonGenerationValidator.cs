@@ -25,6 +25,13 @@ public static class DungeonGenerationValidator
         {
             if (!maze.Walls[x, 0] || !maze.Walls[x, maze.Height - 1])
                 errors.Add($"Open tile on north/south boundary at x={x}");
+
+            for (int y = 0; y < maze.Height; y++)
+            {
+                bool semanticWall = layout.Tiles[x, y] == DungeonTileType.Wall;
+                if (maze.Walls[x, y] != semanticWall)
+                    errors.Add($"Collision and semantic tiles disagree at ({x},{y})");
+            }
         }
         for (int y = 0; y < maze.Height; y++)
         {
@@ -48,6 +55,17 @@ public static class DungeonGenerationValidator
             }
             if (!maze.IsWalkable(room.CenterX, room.CenterY))
                 errors.Add($"Room {room.Id} center is not walkable");
+
+            var expectedArchetype = room.Role switch
+            {
+                DungeonRoomRole.Entrance => DungeonRoomArchetype.EntranceHall,
+                DungeonRoomRole.Exit => DungeonRoomArchetype.ExitChamber,
+                DungeonRoomRole.Treasure => DungeonRoomArchetype.Vault,
+                DungeonRoomRole.Hazard => DungeonRoomArchetype.TrapGallery,
+                _ => room.Archetype
+            };
+            if (room.Archetype != expectedArchetype)
+                errors.Add($"Room {room.Id} role {room.Role} has incompatible archetype {room.Archetype}");
 
             for (int x = room.X; x <= room.Right; x++)
             {
@@ -87,6 +105,18 @@ public static class DungeonGenerationValidator
         if (!layout.Tiles.Cast<DungeonTileType>().Any(tile =>
                 tile is DungeonTileType.CorridorFloor or DungeonTileType.Doorway))
             errors.Add("Dungeon has no corridor tiles");
+
+        var decorationCells = new HashSet<(int x, int y)>();
+        foreach (var decoration in layout.Decorations)
+        {
+            var room = layout.RoomAt(decoration.X, decoration.Y);
+            if (room?.Id != decoration.RoomId)
+                errors.Add($"Decoration at ({decoration.X},{decoration.Y}) is outside room {decoration.RoomId}");
+            if (!decorationCells.Add((decoration.X, decoration.Y)))
+                errors.Add($"Multiple decorations occupy ({decoration.X},{decoration.Y})");
+        }
+        if (layout.Decorations.Count < layout.Rooms.Count)
+            errors.Add("Not every room received environmental dressing");
 
         return errors;
     }

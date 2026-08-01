@@ -880,6 +880,9 @@ sealed class Program
         int minimumExitDistance = int.MaxValue;
         int maximumExitDistance = 0;
         int totalLoops = 0;
+        int totalDecorations = 0;
+        int totalEncounters = 0;
+        int totalPatrols = 0;
 
         Console.WriteLine("=== Dungeon map generation validation ===");
         for (int seed = 1; seed <= seedCount; seed++)
@@ -899,6 +902,20 @@ sealed class Program
                 int exitDistance = maze.BfsDistancesFrom(layout.EntranceX, layout.EntranceY)
                     .GetValueOrDefault((layout.ExitX, layout.ExitY), -1);
                 int loopCount = layout.Connections.Count(connection => connection.IsLoop);
+                var requiredArchetypes = new[]
+                {
+                    DungeonRoomArchetype.EntranceHall,
+                    DungeonRoomArchetype.GuardPost,
+                    DungeonRoomArchetype.Barracks,
+                    DungeonRoomArchetype.Lair,
+                    DungeonRoomArchetype.Vault,
+                    DungeonRoomArchetype.TrapGallery,
+                    DungeonRoomArchetype.AbandonedCamp,
+                    DungeonRoomArchetype.StoreRoom,
+                    DungeonRoomArchetype.ExitChamber
+                };
+                if (requiredArchetypes.Any(archetype => layout.Rooms.All(room => room.Archetype != archetype)))
+                    throw new InvalidOperationException($"Seed {seed}, floor {floor} lacks required room variety.");
 
                 generated++;
                 minimumRooms = Math.Min(minimumRooms, layout.Rooms.Count);
@@ -906,6 +923,7 @@ sealed class Program
                 minimumExitDistance = Math.Min(minimumExitDistance, exitDistance);
                 maximumExitDistance = Math.Max(maximumExitDistance, exitDistance);
                 totalLoops += loopCount;
+                totalDecorations += layout.Decorations.Count;
             }
             // The compact simulation map uses the same generator contract and needs its own
             // coverage because room packing behaves differently at this size.
@@ -943,13 +961,42 @@ sealed class Program
                 if (room == null || room.Role is DungeonRoomRole.Entrance or DungeonRoomRole.Treasure)
                     throw new InvalidOperationException(
                         $"Seed {seed}: enemy at ({enemyX},{enemyY}) is outside an encounter room.");
+                if (enemy.EncounterId < 0 || enemy.HomeRoomId < 0)
+                    throw new InvalidOperationException($"Seed {seed}: enemy has no encounter assignment.");
             }
+
+            var decorationCells = layout.Decorations.Select(item => (item.X, item.Y)).ToHashSet();
+            if (gameState.CurrentMaze.Features.Any(feature => decorationCells.Contains((feature.X, feature.Y))) ||
+                gameState.Enemies.Any(enemy => decorationCells.Contains(
+                    ((int)MathF.Round(enemy.X), (int)MathF.Round(enemy.Y)))))
+            {
+                throw new InvalidOperationException($"Seed {seed}: an actor or feature spawned on a decoration.");
+            }
+
+            foreach (var encounter in layout.Encounters)
+            {
+                var members = gameState.Enemies.Where(enemy => enemy.EncounterId == encounter.Id).ToList();
+                if (members.Count != encounter.MemberCount || members.Any(enemy =>
+                        enemy.HomeRoomId != encounter.HomeRoomId || enemy.Race != encounter.Race ||
+                        !enemy.PatrolRoomIds.SequenceEqual(encounter.PatrolRoomIds)))
+                {
+                    throw new InvalidOperationException($"Seed {seed}: encounter {encounter.Id} membership is inconsistent.");
+                }
+            }
+
+            totalEncounters += layout.Encounters.Count;
+            totalPatrols += layout.Encounters.Count(encounter => encounter.PatrolRoomIds.Count > 1);
         }
+
+        if (totalPatrols == 0)
+            throw new InvalidOperationException("No patrol routes were produced by the population sweep.");
 
         Console.WriteLine($"Validated {generated} floors ({seedCount} seeds x {floorCount} floors).");
         Console.WriteLine($"Rooms: {minimumRooms}-{maximumRooms}; exit BFS distance: {minimumExitDistance}-{maximumExitDistance}; " +
                           $"average loops: {(double)totalLoops / generated:0.00}.");
-        Console.WriteLine("Validated deterministic output and room-aware population for 50 GameState seeds.");
+        Console.WriteLine($"Average decorations: {(double)totalDecorations / generated:0.00}; " +
+                          $"encounters: {totalEncounters}; patrols: {totalPatrols}.");
+        Console.WriteLine("Validated deterministic output, room archetypes, and grouped population for 50 GameState seeds.");
     }
 
     private static void AssertFeatureRoomRole(
@@ -973,7 +1020,8 @@ sealed class Program
         if (first.Width != second.Width || first.Height != second.Height ||
             first.Dungeon == null || second.Dungeon == null ||
             first.Dungeon.Rooms.Count != second.Dungeon.Rooms.Count ||
-            first.Dungeon.Connections.Count != second.Dungeon.Connections.Count)
+            first.Dungeon.Connections.Count != second.Dungeon.Connections.Count ||
+            first.Dungeon.Decorations.Count != second.Dungeon.Decorations.Count)
         {
             return false;
         }
@@ -996,7 +1044,29 @@ sealed class Program
             var left = first.Dungeon.Rooms[i];
             var right = second.Dungeon.Rooms[i];
             if (left.X != right.X || left.Y != right.Y || left.Width != right.Width ||
-                left.Height != right.Height || left.Role != right.Role)
+                left.Height != right.Height || left.Role != right.Role || left.Archetype != right.Archetype)
+            {
+                return false;
+            }
+        }
+
+        for (int i = 0; i < first.Dungeon.Connections.Count; i++)
+        {
+            var left = first.Dungeon.Connections[i];
+            var right = second.Dungeon.Connections[i];
+            if (left.FromRoomId != right.FromRoomId || left.ToRoomId != right.ToRoomId ||
+                left.IsLoop != right.IsLoop)
+            {
+                return false;
+            }
+        }
+
+        for (int i = 0; i < first.Dungeon.Decorations.Count; i++)
+        {
+            var left = first.Dungeon.Decorations[i];
+            var right = second.Dungeon.Decorations[i];
+            if (left.X != right.X || left.Y != right.Y || left.RoomId != right.RoomId ||
+                left.Type != right.Type || left.Variant != right.Variant)
             {
                 return false;
             }

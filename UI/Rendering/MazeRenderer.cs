@@ -171,6 +171,9 @@ public class MazeRenderer
         // Draw maze
         DrawMaze(canvas, gameState.CurrentMaze, fog);
 
+        // Draw static room dressing below interactive features and actors.
+        DrawDecorations(canvas, gameState.CurrentMaze, fog);
+
         // Draw features (chests, stairs)
         DrawFeatures(canvas, gameState.CurrentMaze, fog);
 
@@ -674,6 +677,174 @@ public class MazeRenderer
 
             if (dimmed || unperceived) canvas.RestoreToCount(layer);
         }
+    }
+
+    private static void DrawDecorations(SKCanvas canvas, Maze maze, FogView fog)
+    {
+        var decorations = maze.Dungeon?.Decorations;
+        if (decorations == null) return;
+
+        foreach (var decoration in decorations)
+        {
+            if (!fog.FloorSeen(decoration.X, decoration.Y)) continue;
+            bool dimmed = !fog.FloorVisible(decoration.X, decoration.Y);
+            int layer = 0;
+            if (dimmed)
+            {
+                using var layerPaint = new SKPaint { Color = SKColors.White.WithAlpha(DimAlpha) };
+                layer = canvas.SaveLayer(layerPaint);
+            }
+
+            float x = decoration.X * CellSize + CellSize / 2f;
+            float y = decoration.Y * CellSize + CellSize / 2f;
+            DrawDecoration(canvas, x, y, decoration);
+
+            if (dimmed) canvas.RestoreToCount(layer);
+        }
+    }
+
+    private static void DrawDecoration(SKCanvas canvas, float x, float y, DungeonDecoration decoration)
+    {
+        using var outline = new SKPaint
+        {
+            Color = new SKColor(0x12, 0x12, 0x12),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 2f,
+            IsAntialias = true,
+            StrokeCap = SKStrokeCap.Round
+        };
+        using var primary = new SKPaint
+        {
+            Color = new SKColor(0x72, 0x68, 0x56),
+            Style = SKPaintStyle.Fill,
+            IsAntialias = true
+        };
+        using var secondary = new SKPaint
+        {
+            Color = new SKColor(0xA0, 0x91, 0x70),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 2f,
+            IsAntialias = true,
+            StrokeCap = SKStrokeCap.Round
+        };
+
+        canvas.Save();
+        canvas.RotateDegrees(decoration.Variant * 90f, x, y);
+        switch (decoration.Type)
+        {
+            case DungeonDecorationType.Rubble:
+                primary.Color = new SKColor(0x59, 0x5A, 0x58);
+                canvas.DrawCircle(x - 7, y + 4, 5, primary);
+                canvas.DrawCircle(x + 2, y - 3, 7, primary);
+                canvas.DrawCircle(x + 9, y + 6, 4, primary);
+                break;
+
+            case DungeonDecorationType.Bones:
+                secondary.Color = new SKColor(0xC0, 0xB8, 0x9A);
+                canvas.DrawLine(x - 10, y - 7, x + 10, y + 7, secondary);
+                canvas.DrawLine(x - 9, y + 8, x + 8, y - 9, secondary);
+                canvas.DrawCircle(x - 10, y - 7, 2.5f, secondary);
+                canvas.DrawCircle(x + 10, y + 7, 2.5f, secondary);
+                break;
+
+            case DungeonDecorationType.Crate:
+                primary.Color = new SKColor(0x70, 0x4F, 0x2E);
+                canvas.DrawRect(x - 12, y - 12, 24, 24, primary);
+                canvas.DrawRect(x - 12, y - 12, 24, 24, outline);
+                canvas.DrawLine(x - 9, y - 9, x + 9, y + 9, secondary);
+                canvas.DrawLine(x + 9, y - 9, x - 9, y + 9, secondary);
+                break;
+
+            case DungeonDecorationType.Barrel:
+                primary.Color = new SKColor(0x69, 0x49, 0x2C);
+                canvas.DrawOval(new SKRect(x - 10, y - 14, x + 10, y + 14), primary);
+                canvas.DrawOval(new SKRect(x - 10, y - 14, x + 10, y + 14), outline);
+                canvas.DrawLine(x - 9, y - 5, x + 9, y - 5, secondary);
+                canvas.DrawLine(x - 9, y + 5, x + 9, y + 5, secondary);
+                break;
+
+            case DungeonDecorationType.Bedroll:
+                primary.Color = new SKColor(0x3F, 0x65, 0x67);
+                canvas.DrawRoundRect(x - 15, y - 8, 30, 16, 4, 4, primary);
+                canvas.DrawRoundRect(x - 15, y - 8, 30, 16, 4, 4, outline);
+                canvas.DrawLine(x + 7, y - 7, x + 7, y + 7, secondary);
+                break;
+
+            case DungeonDecorationType.Banner:
+            {
+                primary.Color = new SKColor(0x86, 0x32, 0x35);
+                canvas.DrawRect(x - 11, y - 13, 22, 23, primary);
+                using var bannerTail = BannerTail(x, y);
+                canvas.DrawPath(bannerTail, primary);
+                canvas.DrawLine(x - 14, y - 14, x + 14, y - 14, secondary);
+                break;
+            }
+
+            case DungeonDecorationType.Brazier:
+                primary.Color = new SKColor(0x58, 0x5D, 0x60);
+                canvas.DrawCircle(x, y, 12, primary);
+                canvas.DrawCircle(x, y, 12, outline);
+                primary.Color = new SKColor(0xD8, 0x73, 0x2F);
+                canvas.DrawCircle(x, y, 7, primary);
+                primary.Color = new SKColor(0xF1, 0xC7, 0x57);
+                canvas.DrawCircle(x - 1, y - 1, 3.5f, primary);
+                break;
+
+            case DungeonDecorationType.Mushrooms:
+                secondary.Color = new SKColor(0x9A, 0x9C, 0x82);
+                canvas.DrawLine(x - 7, y + 9, x - 7, y, secondary);
+                canvas.DrawLine(x + 5, y + 8, x + 5, y - 4, secondary);
+                primary.Color = new SKColor(0x69, 0x75, 0x52);
+                canvas.DrawOval(new SKRect(x - 14, y - 4, x, y + 4), primary);
+                canvas.DrawOval(new SKRect(x - 3, y - 9, x + 13, y), primary);
+                break;
+
+            case DungeonDecorationType.BrokenTable:
+                primary.Color = new SKColor(0x62, 0x47, 0x30);
+                canvas.DrawRect(x - 14, y - 8, 23, 16, primary);
+                canvas.DrawLine(x - 12, y - 10, x + 12, y + 10, outline);
+                canvas.DrawLine(x - 12, y + 11, x - 16, y + 16, secondary);
+                canvas.DrawLine(x + 8, y + 8, x + 13, y + 15, secondary);
+                break;
+
+            case DungeonDecorationType.Rune:
+                secondary.Color = new SKColor(0x62, 0x9A, 0xA8);
+                canvas.DrawCircle(x, y, 12, secondary);
+                canvas.DrawLine(x, y - 9, x + 8, y + 7, secondary);
+                canvas.DrawLine(x + 8, y + 7, x - 8, y + 7, secondary);
+                canvas.DrawLine(x - 8, y + 7, x, y - 9, secondary);
+                break;
+
+            case DungeonDecorationType.Campfire:
+                secondary.Color = new SKColor(0x65, 0x43, 0x2A);
+                canvas.DrawLine(x - 11, y - 7, x + 11, y + 7, secondary);
+                canvas.DrawLine(x + 11, y - 7, x - 11, y + 7, secondary);
+                primary.Color = new SKColor(0xD4, 0x62, 0x2D);
+                canvas.DrawCircle(x, y, 8, primary);
+                primary.Color = new SKColor(0xF0, 0xB8, 0x45);
+                canvas.DrawCircle(x, y + 1, 4, primary);
+                break;
+
+            case DungeonDecorationType.WeaponRack:
+                secondary.Color = new SKColor(0x82, 0x64, 0x42);
+                canvas.DrawLine(x - 13, y - 9, x - 13, y + 10, secondary);
+                canvas.DrawLine(x + 13, y - 9, x + 13, y + 10, secondary);
+                canvas.DrawLine(x - 14, y - 5, x + 14, y - 5, secondary);
+                canvas.DrawLine(x - 8, y - 12, x - 2, y + 11, outline);
+                canvas.DrawLine(x + 7, y - 12, x + 2, y + 11, outline);
+                break;
+        }
+        canvas.Restore();
+    }
+
+    private static SKPath BannerTail(float x, float y)
+    {
+        var path = new SKPath();
+        path.MoveTo(x - 11, y + 8);
+        path.LineTo(x, y + 15);
+        path.LineTo(x + 11, y + 8);
+        path.Close();
+        return path;
     }
 
     // Simple placeholder marker for Overworld points of interest: a colored circle with a glyph.

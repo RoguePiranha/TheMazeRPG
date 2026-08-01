@@ -524,7 +524,7 @@ public class GameState
                 // Idle wander (BFS waypoint) when not in combat, throttled for a calmer pace
                 if (TickCount % 2 == 0)
                 {
-                    _movementSystem.MoveEnemySmoothRandom(enemy, CurrentMaze);
+                    _movementSystem.MoveEnemyIdle(enemy, CurrentMaze);
                 }
             }
             else
@@ -727,6 +727,34 @@ public class GameState
                         enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
                         _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
                     }
+                }
+            }
+        }
+
+        // Alert nearby members of the same generated encounter. Packs respond together, but the
+        // distance cap prevents a patroller on the far side of the floor from gaining omniscience.
+        var alertedEncounterIds = engagedEnemies
+            .Where(enemy => enemy.EncounterId >= 0)
+            .Select(enemy => enemy.EncounterId)
+            .ToHashSet();
+        if (alertedEncounterIds.Count > 0)
+        {
+            foreach (var enemy in Enemies.Where(enemy =>
+                         enemy.IsAlive && alertedEncounterIds.Contains(enemy.EncounterId) &&
+                         !engagedEnemies.Contains(enemy)))
+            {
+                float dx = Hero.X - enemy.X;
+                float dy = Hero.Y - enemy.Y;
+                float distance = MathF.Sqrt(dx * dx + dy * dy);
+                if (distance > 12f) continue;
+
+                engagedEnemies.Add(enemy);
+                enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+                _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+                if (distance < closestDistance)
+                {
+                    closestDistance = distance;
+                    primaryTarget = enemy;
                 }
             }
         }
@@ -2251,6 +2279,13 @@ public class GameState
         // Remove cells too close to the hero start position
         emptyCells.RemoveAll(cell => 
             Math.Abs(cell.x - 1) < 5 && Math.Abs(cell.y - 1) < 5);
+
+        // Decorations are non-blocking, but actors and interactive features should not initially
+        // occupy the same tile as a prop.
+        var decorationCells = CurrentMaze.Dungeon?.Decorations
+            .Select(decoration => (decoration.X, decoration.Y))
+            .ToHashSet() ?? new HashSet<(int, int)>();
+        emptyCells.RemoveAll(cell => decorationCells.Contains(cell));
         
         // Spawn enemies in random valid locations
         Enemies.Clear();
@@ -2299,25 +2334,7 @@ public class GameState
             CurrentMaze.Features.Add(new MazeFeature { X = trapCell.x, Y = trapCell.y, Type = MazeFeatureType.Trap, Hidden = true });
         }
         // No per-floor boss anymore — the significant fight is the Guardian at each safe-room gate.
-        // Spawn regular enemies (weighted class, random race, random level in the floor's range).
-        var enemyRooms = CurrentMaze.Dungeon?.Rooms
-            .Where(room => room.Role is DungeonRoomRole.Standard or DungeonRoomRole.Hazard or DungeonRoomRole.Exit)
-            .OrderBy(_ => _random.Next())
-            .ToList() ?? new List<DungeonRoom>();
-
-        for (int i = 0; i < enemyCount && emptyCells.Count > 0; i++)
-        {
-            // Cycle through eligible rooms before reusing one. Encounters now belong to rooms
-            // instead of being scattered through arbitrary corridor cells.
-            var preferredRoom = enemyRooms.Count > 0 ? enemyRooms[i % enemyRooms.Count] : null;
-            var (x, y) = TakeRoomAwareCell(emptyCells, preferredRoom);
-            var enemy = EnemyFactory.RandomRegular(CurrentFloor, _characterDataService, _random);
-            enemy.X = x;
-            enemy.Y = y;
-            enemy.TargetX = x;
-            enemy.TargetY = y;
-            Enemies.Add(enemy);
-        }
+        PopulateDungeonEncounters(emptyCells, enemyCount);
     }
 
     private (int x, int y) TakeRoomAwareCell(List<(int x, int y)> available, DungeonRoomRole role)
@@ -2336,6 +2353,122 @@ public class GameState
         available.Remove(selected);
         return selected;
     }
+
+    private void PopulateDungeonEncounters(List<(int x, int y)> available, int enemyCount)
+    {
+        var layout = CurrentMaze.Dungeon;
+        if (layout == null)
+        {
+            for (int i = 0; i < enemyCount && available.Count > 0; i++)
+                SpawnEncounterEnemy(TakeRoomAwareCell(available, null), -1, -1, new List<int>(), null);
+            return;
+        }
+
+        layout.Encounters.Clear();
+        var encounterRooms = layout.Rooms
+            .Where(room => EncounterKindFor(room.Archetype).HasValue)
+            .OrderBy(_ => _random.Next())
+            .ToList();
+        int remaining = enemyCount;
+        int roomCursor = 0;
+
+        while (remaining > 0 && encounterRooms.Count > 0)
+        {
+            var room = encounterRooms[roomCursor % encounterRooms.Count];
+            roomCursor++;
+            var roomCells = available.Where(cell => room.Contains(cell.x, cell.y)).ToList();
+            if (roomCells.Count == 0)
+            {
+                encounterRooms.Remove(room);
+                continue;
+            }
+
+            var kind = EncounterKindFor(room.Archetype)!.Value;
+            int groupSize = Math.Min(remaining, Math.Min(roomCells.Count, GroupSizeFor(kind)));
+            string race = EnemyFactory.RandomRace(_characterDataService, _random);
+            var patrolRoute = BuildPatrolRoute(layout, room);
+            var encounter = new DungeonEncounter
+            {
+                Id = layout.Encounters.Count,
+                HomeRoomId = room.Id,
+                Kind = kind,
+                Race = race,
+                MemberCount = groupSize
+            };
+            encounter.PatrolRoomIds.AddRange(patrolRoute);
+            layout.Encounters.Add(encounter);
+
+            for (int member = 0; member < groupSize; member++)
+            {
+                var spawnCell = roomCells[_random.Next(roomCells.Count)];
+                roomCells.Remove(spawnCell);
+                available.Remove(spawnCell);
+                SpawnEncounterEnemy(spawnCell, encounter.Id, room.Id, patrolRoute, race);
+            }
+
+            remaining -= groupSize;
+        }
+    }
+
+    private void SpawnEncounterEnemy(
+        (int x, int y) cell,
+        int encounterId,
+        int homeRoomId,
+        List<int> patrolRoute,
+        string? race)
+    {
+        var enemy = race == null
+            ? EnemyFactory.RandomRegular(CurrentFloor, _characterDataService, _random)
+            : EnemyFactory.RandomRegularForRace(CurrentFloor, race, _characterDataService, _random);
+        enemy.X = cell.x;
+        enemy.Y = cell.y;
+        enemy.TargetX = cell.x;
+        enemy.TargetY = cell.y;
+        enemy.EncounterId = encounterId;
+        enemy.HomeRoomId = homeRoomId;
+        enemy.PatrolRoomIds = new List<int>(patrolRoute);
+        enemy.PatrolRouteIndex = patrolRoute.Count > 1 ? 1 : 0;
+        Enemies.Add(enemy);
+    }
+
+    private List<int> BuildPatrolRoute(DungeonLayout layout, DungeonRoom homeRoom)
+    {
+        bool canPatrol = homeRoom.Archetype is DungeonRoomArchetype.GuardPost or DungeonRoomArchetype.Lair;
+        if (!canPatrol || _random.NextDouble() >= 0.65)
+            return new List<int> { homeRoom.Id };
+
+        var neighboringRooms = layout.Connections
+            .Where(connection => connection.FromRoomId == homeRoom.Id || connection.ToRoomId == homeRoom.Id)
+            .Select(connection => connection.FromRoomId == homeRoom.Id
+                ? layout.Rooms[connection.ToRoomId]
+                : layout.Rooms[connection.FromRoomId])
+            .Where(room => room.Role == DungeonRoomRole.Standard && room.Archetype != DungeonRoomArchetype.StoreRoom)
+            .OrderBy(_ => _random.Next())
+            .ToList();
+        return neighboringRooms.Count > 0
+            ? new List<int> { homeRoom.Id, neighboringRooms[0].Id }
+            : new List<int> { homeRoom.Id };
+    }
+
+    private int GroupSizeFor(DungeonEncounterKind kind) => kind switch
+    {
+        DungeonEncounterKind.Sentries => _random.Next(1, 3),
+        DungeonEncounterKind.Garrison => _random.Next(2, 5),
+        DungeonEncounterKind.HuntingPack => _random.Next(2, 4),
+        DungeonEncounterKind.Ambush => _random.Next(1, 3),
+        DungeonEncounterKind.Gatekeepers => _random.Next(2, 4),
+        _ => 1
+    };
+
+    private static DungeonEncounterKind? EncounterKindFor(DungeonRoomArchetype archetype) => archetype switch
+    {
+        DungeonRoomArchetype.GuardPost => DungeonEncounterKind.Sentries,
+        DungeonRoomArchetype.Barracks => DungeonEncounterKind.Garrison,
+        DungeonRoomArchetype.Lair => DungeonEncounterKind.HuntingPack,
+        DungeonRoomArchetype.TrapGallery => DungeonEncounterKind.Ambush,
+        DungeonRoomArchetype.ExitChamber => DungeonEncounterKind.Gatekeepers,
+        _ => null
+    };
 
     /// <summary>
     /// Run a short deterministic simulation for testing (prints events to console)

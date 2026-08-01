@@ -61,11 +61,20 @@ public static class EnemyFactory
     /// small chance to roll Elite).</summary>
     public static Enemy RandomRegular(int floor, CharacterDataService cds, Random rng)
     {
+        return RandomRegularForRace(floor, PickRace(cds, rng), cds, rng);
+    }
+
+    /// <summary>A regular enemy from a specified race. Encounter groups use this to share a
+    /// faction identity while retaining varied class roles, levels, and tiers.</summary>
+    public static Enemy RandomRegularForRace(int floor, string raceName, CharacterDataService cds, Random rng)
+    {
         var (min, max) = LevelRange(floor);
         int level = rng.Next(min, max + 1);
         var tier = rng.NextDouble() < EliteChance ? EnemyTier.Elite : EnemyTier.Basic;
-        return Create(PickWeighted(RegularClassWeights, rng), PickRace(cds, rng), level, tier, cds, rng);
+        return Create(PickWeighted(RegularClassWeights, rng), raceName, level, tier, cds, rng);
     }
+
+    public static string RandomRace(CharacterDataService cds, Random rng) => PickRace(cds, rng);
 
     /// <summary>The floor boss: rarer class, top level for the floor.</summary>
     public static Enemy RandomBoss(int floor, CharacterDataService cds, Random rng)

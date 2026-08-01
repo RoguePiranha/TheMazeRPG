@@ -58,6 +58,8 @@ public sealed class MazeGenerator
         ConnectRooms(maze, layout, random);
         MarkDoorways(layout);
         AssignRoomRoles(maze, layout, random);
+        AssignRoomArchetypes(layout, random);
+        PlaceDecorations(layout, random);
 
         return maze;
     }
@@ -322,6 +324,105 @@ public sealed class MazeGenerator
         if (specialRooms.Count > 1)
             specialRooms[1].Role = DungeonRoomRole.Hazard;
     }
+
+    private static void AssignRoomArchetypes(DungeonLayout layout, Random random)
+    {
+        foreach (var room in layout.Rooms)
+        {
+            room.Archetype = room.Role switch
+            {
+                DungeonRoomRole.Entrance => DungeonRoomArchetype.EntranceHall,
+                DungeonRoomRole.Exit => DungeonRoomArchetype.ExitChamber,
+                DungeonRoomRole.Treasure => DungeonRoomArchetype.Vault,
+                DungeonRoomRole.Hazard => DungeonRoomArchetype.TrapGallery,
+                _ => DungeonRoomArchetype.StoreRoom
+            };
+        }
+
+        var standardRooms = layout.Rooms
+            .Where(room => room.Role == DungeonRoomRole.Standard)
+            .OrderBy(_ => random.Next())
+            .ToList();
+        var requiredVariety = new[]
+        {
+            DungeonRoomArchetype.GuardPost,
+            DungeonRoomArchetype.Barracks,
+            DungeonRoomArchetype.Lair,
+            DungeonRoomArchetype.AbandonedCamp,
+            DungeonRoomArchetype.StoreRoom
+        };
+        var additionalOptions = new[]
+        {
+            DungeonRoomArchetype.GuardPost,
+            DungeonRoomArchetype.Barracks,
+            DungeonRoomArchetype.Lair,
+            DungeonRoomArchetype.AbandonedCamp,
+            DungeonRoomArchetype.StoreRoom
+        };
+
+        for (int i = 0; i < standardRooms.Count; i++)
+        {
+            standardRooms[i].Archetype = i < requiredVariety.Length
+                ? requiredVariety[i]
+                : additionalOptions[random.Next(additionalOptions.Length)];
+        }
+    }
+
+    private static void PlaceDecorations(DungeonLayout layout, Random random)
+    {
+        foreach (var room in layout.Rooms)
+        {
+            int desiredCount = Math.Clamp(room.Width * room.Height / 14, 1, 4);
+            var available = new List<(int x, int y)>();
+            for (int x = room.X; x <= room.Right; x++)
+            {
+                for (int y = room.Y; y <= room.Bottom; y++)
+                {
+                    if ((x == layout.EntranceX && y == layout.EntranceY) ||
+                        (x == layout.ExitX && y == layout.ExitY) ||
+                        (x == room.CenterX && y == room.CenterY))
+                    {
+                        continue;
+                    }
+                    available.Add((x, y));
+                }
+            }
+
+            var decorationTypes = DecorationsFor(room.Archetype);
+            foreach (var (x, y) in available.OrderBy(_ => random.Next()).Take(desiredCount))
+            {
+                layout.Decorations.Add(new DungeonDecoration
+                {
+                    X = x,
+                    Y = y,
+                    RoomId = room.Id,
+                    Type = decorationTypes[random.Next(decorationTypes.Length)],
+                    Variant = random.Next(4)
+                });
+            }
+        }
+    }
+
+    private static DungeonDecorationType[] DecorationsFor(DungeonRoomArchetype archetype) => archetype switch
+    {
+        DungeonRoomArchetype.EntranceHall =>
+            new[] { DungeonDecorationType.Banner, DungeonDecorationType.Brazier, DungeonDecorationType.Rubble },
+        DungeonRoomArchetype.GuardPost =>
+            new[] { DungeonDecorationType.WeaponRack, DungeonDecorationType.Brazier, DungeonDecorationType.Crate },
+        DungeonRoomArchetype.Barracks =>
+            new[] { DungeonDecorationType.Bedroll, DungeonDecorationType.WeaponRack, DungeonDecorationType.Crate },
+        DungeonRoomArchetype.Lair =>
+            new[] { DungeonDecorationType.Bones, DungeonDecorationType.Mushrooms, DungeonDecorationType.Rubble },
+        DungeonRoomArchetype.Vault =>
+            new[] { DungeonDecorationType.Crate, DungeonDecorationType.Barrel, DungeonDecorationType.Rune },
+        DungeonRoomArchetype.TrapGallery =>
+            new[] { DungeonDecorationType.Rune, DungeonDecorationType.Bones, DungeonDecorationType.Rubble },
+        DungeonRoomArchetype.AbandonedCamp =>
+            new[] { DungeonDecorationType.Campfire, DungeonDecorationType.Bedroll, DungeonDecorationType.BrokenTable },
+        DungeonRoomArchetype.ExitChamber =>
+            new[] { DungeonDecorationType.Brazier, DungeonDecorationType.Banner, DungeonDecorationType.Rune },
+        _ => new[] { DungeonDecorationType.Crate, DungeonDecorationType.Barrel, DungeonDecorationType.BrokenTable }
+    };
 
     private int DeriveSeed(int width, int height, int floorNumber, int attempt)
     {

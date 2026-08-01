@@ -24,6 +24,44 @@ public enum DungeonRoomRole
     Exit
 }
 
+public enum DungeonRoomArchetype
+{
+    EntranceHall,
+    GuardPost,
+    Barracks,
+    Lair,
+    Vault,
+    TrapGallery,
+    AbandonedCamp,
+    StoreRoom,
+    ExitChamber
+}
+
+public enum DungeonDecorationType
+{
+    Rubble,
+    Bones,
+    Crate,
+    Barrel,
+    Bedroll,
+    Banner,
+    Brazier,
+    Mushrooms,
+    BrokenTable,
+    Rune,
+    Campfire,
+    WeaponRack
+}
+
+public enum DungeonEncounterKind
+{
+    Sentries,
+    Garrison,
+    HuntingPack,
+    Ambush,
+    Gatekeepers
+}
+
 public sealed class DungeonRoom
 {
     public int Id { get; init; }
@@ -32,6 +70,7 @@ public sealed class DungeonRoom
     public int Width { get; init; }
     public int Height { get; init; }
     public DungeonRoomRole Role { get; set; } = DungeonRoomRole.Standard;
+    public DungeonRoomArchetype Archetype { get; set; } = DungeonRoomArchetype.StoreRoom;
 
     public int Right => X + Width - 1;
     public int Bottom => Y + Height - 1;
@@ -48,12 +87,33 @@ public sealed class DungeonConnection
     public bool IsLoop { get; init; }
 }
 
+public sealed class DungeonDecoration
+{
+    public int X { get; init; }
+    public int Y { get; init; }
+    public int RoomId { get; init; }
+    public DungeonDecorationType Type { get; init; }
+    public int Variant { get; init; }
+}
+
+public sealed class DungeonEncounter
+{
+    public int Id { get; init; }
+    public int HomeRoomId { get; init; }
+    public DungeonEncounterKind Kind { get; init; }
+    public string Race { get; init; } = "Human";
+    public int MemberCount { get; set; }
+    public List<int> PatrolRoomIds { get; } = new();
+}
+
 public sealed class DungeonLayout
 {
     public DungeonTileType[,] Tiles { get; }
     public int[,] RegionIds { get; }
     public List<DungeonRoom> Rooms { get; } = new();
     public List<DungeonConnection> Connections { get; } = new();
+    public List<DungeonDecoration> Decorations { get; } = new();
+    public List<DungeonEncounter> Encounters { get; } = new();
 
     public int EntranceX { get; set; } = 1;
     public int EntranceY { get; set; } = 1;

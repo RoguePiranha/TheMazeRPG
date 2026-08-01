@@ -19,6 +19,90 @@ public class MovementSystem
         _noise = new PerlinNoise(seed);
         _random = new Random(seed);
     }
+
+    /// <summary>
+    /// Generated enemies idle with a purpose: stationary groups stay inside their home room,
+    /// while patrol groups travel between room waypoints. Non-dungeon enemies retain the original
+    /// free wandering behavior.
+    /// </summary>
+    public void MoveEnemyIdle(Enemy enemy, Maze maze)
+    {
+        var layout = maze.Dungeon;
+        if (layout == null || enemy.HomeRoomId < 0 || enemy.HomeRoomId >= layout.Rooms.Count)
+        {
+            MoveEnemySmoothRandom(enemy, maze);
+            return;
+        }
+
+        enemy.TempData ??= new Dictionary<string, object>();
+        int enemyX = (int)MathF.Round(enemy.X);
+        int enemyY = (int)MathF.Round(enemy.Y);
+        int recalcIn = enemy.TempData.TryGetValue("idleRecalc", out var recalcObject)
+            ? (int)recalcObject
+            : 0;
+        int targetX = enemy.TempData.TryGetValue("idleTargetX", out var targetXObject)
+            ? (int)targetXObject
+            : -1;
+        int targetY = enemy.TempData.TryGetValue("idleTargetY", out var targetYObject)
+            ? (int)targetYObject
+            : -1;
+        bool reachedTarget = enemyX == targetX && enemyY == targetY;
+
+        if (reachedTarget && enemy.PatrolRoomIds.Count > 1)
+        {
+            enemy.PatrolRouteIndex = (enemy.PatrolRouteIndex + 1) % enemy.PatrolRoomIds.Count;
+            recalcIn = 0;
+        }
+
+        if (recalcIn <= 0 || targetX < 0 || targetY < 0 || !maze.IsWalkable(targetX, targetY))
+        {
+            int targetRoomId = enemy.HomeRoomId;
+            if (enemy.PatrolRoomIds.Count > 1)
+                targetRoomId = enemy.PatrolRoomIds[enemy.PatrolRouteIndex % enemy.PatrolRoomIds.Count];
+
+            var targetRoom = targetRoomId >= 0 && targetRoomId < layout.Rooms.Count
+                ? layout.Rooms[targetRoomId]
+                : layout.Rooms[enemy.HomeRoomId];
+            targetX = _random.Next(targetRoom.X, targetRoom.Right + 1);
+            targetY = _random.Next(targetRoom.Y, targetRoom.Bottom + 1);
+            enemy.TempData["idleTargetX"] = targetX;
+            enemy.TempData["idleTargetY"] = targetY;
+            enemy.TempData["idleRecalc"] = enemy.PatrolRoomIds.Count > 1
+                ? 600
+                : _random.Next(60, 180);
+        }
+        else
+        {
+            enemy.TempData["idleRecalc"] = recalcIn - 1;
+        }
+
+        var path = FindPathToTarget(enemyX, enemyY, targetX, targetY, maze);
+        if (path == null || path.Count <= 1)
+        {
+            enemy.TempData["idleRecalc"] = 0;
+            return;
+        }
+
+        MoveEnemyAlongPath(enemy, path[1]);
+    }
+
+    private static void MoveEnemyAlongPath(Enemy enemy, (int x, int y) next)
+    {
+        float dx = next.x - enemy.X;
+        float dy = next.y - enemy.Y;
+        float distance = MathF.Sqrt(dx * dx + dy * dy);
+        if (distance > 0.05f)
+        {
+            float speed = 0.06f * (1.0f + enemy.Agility * 0.04f);
+            enemy.X += dx / distance * speed;
+            enemy.Y += dy / distance * speed;
+        }
+        else
+        {
+            enemy.X = next.x;
+            enemy.Y = next.y;
+        }
+    }
     
     /// <summary>
     /// Move enemy using inertia-based smooth random walk (no Perlin)
@@ -77,22 +161,7 @@ public class MovementSystem
             return;
         }
 
-        var next = path[1];
-        float dx = next.x - enemy.X;
-        float dy = next.y - enemy.Y;
-        float dist = MathF.Sqrt(dx * dx + dy * dy);
-        if (dist > 0.05f)
-        {
-            float baseSpeed = 0.06f;
-            float speed = baseSpeed * (1.0f + enemy.Agility * 0.04f);
-            enemy.X += (dx / dist) * speed;
-            enemy.Y += (dy / dist) * speed;
-        }
-        else
-        {
-            enemy.X = next.x;
-            enemy.Y = next.y;
-        }
+        MoveEnemyAlongPath(enemy, path[1]);
     }
     
     /// <summary>
