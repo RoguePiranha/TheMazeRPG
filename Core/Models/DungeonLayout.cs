@@ -15,6 +15,16 @@ public enum DungeonTileType
     Doorway
 }
 
+public enum DungeonTheme
+{
+    Castle,
+    Sewer,
+    Cemetery,
+    Library,
+    Forge,
+    Hideout
+}
+
 public enum DungeonRoomRole
 {
     Entrance,
@@ -108,6 +118,7 @@ public sealed class DungeonEncounter
 
 public sealed class DungeonLayout
 {
+    public DungeonTheme Theme { get; set; }
     public DungeonTileType[,] Tiles { get; }
     public int[,] RegionIds { get; }
     public List<DungeonRoom> Rooms { get; } = new();

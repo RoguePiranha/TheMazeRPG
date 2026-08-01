@@ -50,6 +50,17 @@ public class MazeRenderer
     private static readonly SKColor ChestColor = new(255, 215, 0);
     private static readonly SKColor StairsColor = new(150, 255, 150);
 
+    private readonly record struct DungeonPalette(
+        SKColor Wall,
+        SKColor WallDetail,
+        SKColor FloorDetail,
+        SKColor Corridor,
+        SKColor StandardRoom,
+        SKColor EntranceRoom,
+        SKColor TreasureRoom,
+        SKColor HazardRoom,
+        SKColor ExitRoom);
+
     // Explored-but-out-of-sight tiles render at this alpha over the black void (SimpleRPG's 0.3).
     private const byte DimAlpha = 76;
 
@@ -542,34 +553,66 @@ public class MazeRenderer
         return (visible, seen);
     }
 
-    private static SKColor DungeonFloorColor(Maze maze, int x, int y)
+    private static DungeonPalette PaletteFor(Maze maze) => maze.Dungeon?.Theme switch
+    {
+        DungeonTheme.Castle => new DungeonPalette(
+            new SKColor(0x65, 0x63, 0x68), new SKColor(0x91, 0x8D, 0x91), new SKColor(0x3B, 0x39, 0x3E),
+            new SKColor(0x1C, 0x1C, 0x21), new SKColor(0x29, 0x28, 0x2D), new SKColor(0x24, 0x2B, 0x32),
+            new SKColor(0x35, 0x30, 0x21), new SKColor(0x36, 0x25, 0x29), new SKColor(0x25, 0x32, 0x2A)),
+        DungeonTheme.Sewer => new DungeonPalette(
+            new SKColor(0x3F, 0x52, 0x49), new SKColor(0x66, 0x78, 0x6A), new SKColor(0x30, 0x42, 0x36),
+            new SKColor(0x15, 0x1D, 0x1A), new SKColor(0x20, 0x2B, 0x25), new SKColor(0x20, 0x30, 0x2C),
+            new SKColor(0x31, 0x31, 0x1D), new SKColor(0x32, 0x26, 0x20), new SKColor(0x20, 0x35, 0x29)),
+        DungeonTheme.Cemetery => new DungeonPalette(
+            new SKColor(0x50, 0x52, 0x45), new SKColor(0x76, 0x78, 0x68), new SKColor(0x42, 0x3C, 0x30),
+            new SKColor(0x1C, 0x1D, 0x19), new SKColor(0x2B, 0x28, 0x22), new SKColor(0x28, 0x2E, 0x29),
+            new SKColor(0x36, 0x30, 0x1E), new SKColor(0x34, 0x24, 0x25), new SKColor(0x25, 0x31, 0x28)),
+        DungeonTheme.Library => new DungeonPalette(
+            new SKColor(0x68, 0x47, 0x34), new SKColor(0x9B, 0x70, 0x49), new SKColor(0x4D, 0x35, 0x28),
+            new SKColor(0x20, 0x18, 0x17), new SKColor(0x31, 0x24, 0x20), new SKColor(0x29, 0x2A, 0x32),
+            new SKColor(0x3A, 0x31, 0x1D), new SKColor(0x38, 0x23, 0x22), new SKColor(0x24, 0x31, 0x2B)),
+        DungeonTheme.Forge => new DungeonPalette(
+            new SKColor(0x67, 0x35, 0x38), new SKColor(0xA0, 0x55, 0x40), new SKColor(0x55, 0x31, 0x2E),
+            new SKColor(0x22, 0x17, 0x19), new SKColor(0x32, 0x22, 0x25), new SKColor(0x2C, 0x29, 0x32),
+            new SKColor(0x41, 0x31, 0x1D), new SKColor(0x42, 0x22, 0x20), new SKColor(0x29, 0x35, 0x29)),
+        DungeonTheme.Hideout => new DungeonPalette(
+            new SKColor(0x53, 0x4A, 0x3C), new SKColor(0x7B, 0x70, 0x56), new SKColor(0x41, 0x39, 0x2C),
+            new SKColor(0x1C, 0x1B, 0x17), new SKColor(0x2A, 0x28, 0x20), new SKColor(0x27, 0x2D, 0x2B),
+            new SKColor(0x39, 0x30, 0x1D), new SKColor(0x36, 0x25, 0x20), new SKColor(0x25, 0x32, 0x28)),
+        _ => new DungeonPalette(
+            WallColor, WallDetailColor, FloorDotColor, CorridorFloorColor, StandardRoomFloorColor,
+            EntranceRoomFloorColor, TreasureRoomFloorColor, HazardRoomFloorColor, ExitRoomFloorColor)
+    };
+
+    private static SKColor DungeonFloorColor(Maze maze, int x, int y, DungeonPalette palette)
     {
         var layout = maze.Dungeon;
         if (layout == null) return FloorColor;
         if (layout.Tiles[x, y] is DungeonTileType.CorridorFloor or DungeonTileType.Doorway)
-            return CorridorFloorColor;
+            return palette.Corridor;
 
         return layout.RoomAt(x, y)?.Role switch
         {
-            DungeonRoomRole.Entrance => EntranceRoomFloorColor,
-            DungeonRoomRole.Treasure => TreasureRoomFloorColor,
-            DungeonRoomRole.Hazard => HazardRoomFloorColor,
-            DungeonRoomRole.Exit => ExitRoomFloorColor,
-            _ => StandardRoomFloorColor
+            DungeonRoomRole.Entrance => palette.EntranceRoom,
+            DungeonRoomRole.Treasure => palette.TreasureRoom,
+            DungeonRoomRole.Hazard => palette.HazardRoom,
+            DungeonRoomRole.Exit => palette.ExitRoom,
+            _ => palette.StandardRoom
         };
     }
 
     private void DrawMaze(SKCanvas canvas, Maze maze, FogView fog)
     {
+        var palette = PaletteFor(maze);
         using var floorPaint = new SKPaint { Color = FloorColor, Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var floorDotPaint = new SKPaint { Color = FloorDotColor, Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var wallPaint = new SKPaint { Color = WallColor, Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var wallDetailPaint = new SKPaint { Color = WallDetailColor, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
+        using var floorDotPaint = new SKPaint { Color = palette.FloorDetail, Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallPaint = new SKPaint { Color = palette.Wall, Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallDetailPaint = new SKPaint { Color = palette.WallDetail, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
 
         using var floorPaintDim = new SKPaint { Color = FloorColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var floorDotPaintDim = new SKPaint { Color = FloorDotColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var wallPaintDim = new SKPaint { Color = WallColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var wallDetailPaintDim = new SKPaint { Color = WallDetailColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
+        using var floorDotPaintDim = new SKPaint { Color = palette.FloorDetail.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallPaintDim = new SKPaint { Color = palette.Wall.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallDetailPaintDim = new SKPaint { Color = palette.WallDetail.WithAlpha(DimAlpha), Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
 
         float dotSize = CellSize * 0.2f;
         float dotOffset = CellSize * 0.4f;
@@ -594,14 +637,16 @@ public class MazeRenderer
                     if (!fog.FloorSeen(x, y)) continue; // never seen: pure black void
                     bool visible = fog.FloorVisible(x, y);
 
-                    var tileFloorColor = DungeonFloorColor(maze, x, y);
+                    var tileFloorColor = DungeonFloorColor(maze, x, y, palette);
                     floorPaint.Color = tileFloorColor;
                     floorPaintDim.Color = tileFloorColor.WithAlpha(DimAlpha);
 
                     canvas.DrawRect(px, py, CellSize, CellSize, visible ? floorPaint : floorPaintDim);
+                    bool textured = maze.Dungeon != null && TerrainService.DrawFloor(
+                        canvas, maze.Dungeon.Theme, px, py, CellSize, visible ? (byte)170 : (byte)51);
                     bool isRoomFloor = maze.Dungeon == null ||
                         maze.Dungeon.Tiles[x, y] == DungeonTileType.RoomFloor;
-                    if (isRoomFloor)
+                    if (isRoomFloor && !textured)
                     {
                         canvas.DrawRect(px + dotOffset, py + dotOffset, dotSize, dotSize,
                             visible ? floorDotPaint : floorDotPaintDim);
@@ -1989,7 +2034,9 @@ public class MazeRenderer
         // Floor / location info (bottom-left, gold like SimpleRPG's info spans)
         string location = gameState.IsInOverworld ? "Town"
             : gameState.IsInSafeRoom ? $"Safe Room {gameState.CurrentFloor}.5"
-            : $"Floor {gameState.CurrentFloor}";
+            : gameState.CurrentMaze.Dungeon is { } dungeon
+                ? $"{dungeon.Theme} - Floor {gameState.CurrentFloor}"
+                : $"Floor {gameState.CurrentFloor}";
         DrawHudLine(canvas, $"{location}  Atk:{hero.Attack} Def:{hero.Defense} Gold:{hero.Gold}",
             10, viewportHeight - 10, new SKColor(0xFF, 0xCC, 0x00));
 

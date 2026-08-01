@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "Curated floor-material samples from the licensed Pixel Crawler atlases.",
+    "Coordinates are source pixels in 16px-aligned sheets copied under Assets/Sprites/tiles/.",
+    "The renderer falls back to its procedural theme palette when a mapping cannot load."
+  ],
+  "themes": {
+    "Castle": {
+      "atlas": "tiles/castle.png",
+      "sourceX": 64,
+      "sourceY": 288,
+      "tileSize": 16
+    },
+    "Sewer": {
+      "atlas": "tiles/sewer.png",
+      "sourceX": 32,
+      "sourceY": 80,
+      "tileSize": 16
+    },
+    "Cemetery": {
+      "atlas": "tiles/cemetery.png",
+      "sourceX": 16,
+      "sourceY": 16,
+      "tileSize": 16
+    },
+    "Library": {
+      "atlas": "tiles/library.png",
+      "sourceX": 336,
+      "sourceY": 64,
+      "tileSize": 16
+    },
+    "Forge": {
+      "atlas": "tiles/forge.png",
+      "sourceX": 0,
+      "sourceY": 192,
+      "tileSize": 32
+    },
+    "Hideout": {
+      "atlas": "tiles/hideout.png",
+      "sourceX": 16,
+      "sourceY": 80,
+      "tileSize": 16
+    }
+  }
+}

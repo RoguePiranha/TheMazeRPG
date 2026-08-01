@@ -76,6 +76,17 @@ public static class EnemyFactory
 
     public static string RandomRace(CharacterDataService cds, Random rng) => PickRace(cds, rng);
 
+    public static string RandomRaceFrom(
+        IEnumerable<string> preferredRaces,
+        CharacterDataService cds,
+        Random rng)
+    {
+        var available = preferredRaces
+            .Where(name => cds.Races.TryGetValue(name, out var race) && !race.Debug)
+            .ToList();
+        return available.Count > 0 ? available[rng.Next(available.Count)] : PickRace(cds, rng);
+    }
+
     /// <summary>The floor boss: rarer class, top level for the floor.</summary>
     public static Enemy RandomBoss(int floor, CharacterDataService cds, Random rng)
     {

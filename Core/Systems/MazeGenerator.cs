@@ -43,6 +43,7 @@ public sealed class MazeGenerator
     {
         var maze = new Maze(width, height) { FloorNumber = floorNumber };
         var layout = new DungeonLayout(width, height);
+        layout.Theme = ThemeForFloor(floorNumber);
         maze.Dungeon = layout;
 
         for (int x = 0; x < width; x++)
@@ -351,14 +352,7 @@ public sealed class MazeGenerator
             DungeonRoomArchetype.AbandonedCamp,
             DungeonRoomArchetype.StoreRoom
         };
-        var additionalOptions = new[]
-        {
-            DungeonRoomArchetype.GuardPost,
-            DungeonRoomArchetype.Barracks,
-            DungeonRoomArchetype.Lair,
-            DungeonRoomArchetype.AbandonedCamp,
-            DungeonRoomArchetype.StoreRoom
-        };
+        var additionalOptions = AdditionalArchetypesFor(layout.Theme);
 
         for (int i = 0; i < standardRooms.Count; i++)
         {
@@ -388,9 +382,13 @@ public sealed class MazeGenerator
                 }
             }
 
-            var decorationTypes = DecorationsFor(room.Archetype);
+            var archetypeDecorations = DecorationsFor(room.Archetype);
+            var themeDecorations = DecorationsFor(layout.Theme);
             foreach (var (x, y) in available.OrderBy(_ => random.Next()).Take(desiredCount))
             {
+                var decorationTypes = random.NextDouble() < 0.65
+                    ? archetypeDecorations
+                    : themeDecorations;
                 layout.Decorations.Add(new DungeonDecoration
                 {
                     X = x,
@@ -423,6 +421,76 @@ public sealed class MazeGenerator
             new[] { DungeonDecorationType.Brazier, DungeonDecorationType.Banner, DungeonDecorationType.Rune },
         _ => new[] { DungeonDecorationType.Crate, DungeonDecorationType.Barrel, DungeonDecorationType.BrokenTable }
     };
+
+    private static DungeonRoomArchetype[] AdditionalArchetypesFor(DungeonTheme theme) => theme switch
+    {
+        DungeonTheme.Castle => new[]
+        {
+            DungeonRoomArchetype.GuardPost, DungeonRoomArchetype.Barracks,
+            DungeonRoomArchetype.GuardPost, DungeonRoomArchetype.StoreRoom
+        },
+        DungeonTheme.Sewer => new[]
+        {
+            DungeonRoomArchetype.Lair, DungeonRoomArchetype.Lair,
+            DungeonRoomArchetype.StoreRoom, DungeonRoomArchetype.AbandonedCamp
+        },
+        DungeonTheme.Cemetery => new[]
+        {
+            DungeonRoomArchetype.Lair, DungeonRoomArchetype.AbandonedCamp,
+            DungeonRoomArchetype.Lair, DungeonRoomArchetype.StoreRoom
+        },
+        DungeonTheme.Library => new[]
+        {
+            DungeonRoomArchetype.StoreRoom, DungeonRoomArchetype.StoreRoom,
+            DungeonRoomArchetype.GuardPost, DungeonRoomArchetype.AbandonedCamp
+        },
+        DungeonTheme.Forge => new[]
+        {
+            DungeonRoomArchetype.Barracks, DungeonRoomArchetype.GuardPost,
+            DungeonRoomArchetype.StoreRoom, DungeonRoomArchetype.GuardPost
+        },
+        _ => new[]
+        {
+            DungeonRoomArchetype.GuardPost, DungeonRoomArchetype.AbandonedCamp,
+            DungeonRoomArchetype.Barracks, DungeonRoomArchetype.Lair
+        }
+    };
+
+    private static DungeonDecorationType[] DecorationsFor(DungeonTheme theme) => theme switch
+    {
+        DungeonTheme.Castle => new[]
+        {
+            DungeonDecorationType.Banner, DungeonDecorationType.Brazier, DungeonDecorationType.WeaponRack
+        },
+        DungeonTheme.Sewer => new[]
+        {
+            DungeonDecorationType.Barrel, DungeonDecorationType.Mushrooms, DungeonDecorationType.Rubble
+        },
+        DungeonTheme.Cemetery => new[]
+        {
+            DungeonDecorationType.Bones, DungeonDecorationType.Rune, DungeonDecorationType.Rubble
+        },
+        DungeonTheme.Library => new[]
+        {
+            DungeonDecorationType.BrokenTable, DungeonDecorationType.Crate, DungeonDecorationType.Rune
+        },
+        DungeonTheme.Forge => new[]
+        {
+            DungeonDecorationType.Brazier, DungeonDecorationType.WeaponRack, DungeonDecorationType.Rubble
+        },
+        _ => new[]
+        {
+            DungeonDecorationType.Campfire, DungeonDecorationType.Bedroll, DungeonDecorationType.Crate
+        }
+    };
+
+    private DungeonTheme ThemeForFloor(int floorNumber)
+    {
+        var themes = Enum.GetValues<DungeonTheme>();
+        long value = (long)_seed + floorNumber - 1;
+        int index = (int)((value % themes.Length + themes.Length) % themes.Length);
+        return themes[index];
+    }
 
     private int DeriveSeed(int width, int height, int floorNumber, int attempt)
     {

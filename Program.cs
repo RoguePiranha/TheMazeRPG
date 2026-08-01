@@ -131,6 +131,12 @@ sealed class Program
             return;
         }
 
+        if (Environment.GetEnvironmentVariable("TEST_MAPRENDER") == "1")
+        {
+            RunMapRenderDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 
@@ -397,6 +403,52 @@ sealed class Program
         }
         Console.WriteLine($"Missing files: {missing} (expect 0); non-sliceable sheets: {unsliceable} (expect 0)");
 
+        // Terrain atlases use explicit source rectangles rather than animation-strip slicing.
+        const string terrainManifestPath = "Data/Sprites/terrain.json";
+        int terrainFailures = 0;
+        if (!System.IO.File.Exists(terrainManifestPath))
+        {
+            Console.WriteLine($"MISSING terrain manifest: {terrainManifestPath}");
+            terrainFailures++;
+        }
+        else
+        {
+            using var terrainDoc = System.Text.Json.JsonDocument.Parse(
+                System.IO.File.ReadAllText(terrainManifestPath));
+            var terrainMap = terrainDoc.RootElement.GetProperty("themes");
+            foreach (var theme in Enum.GetValues<DungeonTheme>())
+            {
+                if (!terrainMap.TryGetProperty(theme.ToString(), out var definition))
+                {
+                    Console.WriteLine($"  MISSING TERRAIN {theme}");
+                    terrainFailures++;
+                    continue;
+                }
+
+                string relativePath = definition.GetProperty("atlas").GetString() ?? "";
+                string fullPath = spriteRoot + relativePath;
+                int sourceX = definition.GetProperty("sourceX").GetInt32();
+                int sourceY = definition.GetProperty("sourceY").GetInt32();
+                int tileSize = definition.GetProperty("tileSize").GetInt32();
+                if (!System.IO.File.Exists(fullPath))
+                {
+                    Console.WriteLine($"  MISSING TERRAIN FILE {theme} -> {relativePath}");
+                    terrainFailures++;
+                    continue;
+                }
+
+                var (atlasWidth, atlasHeight) = PngSize(fullPath);
+                if (tileSize <= 0 || sourceX < 0 || sourceY < 0 ||
+                    sourceX + tileSize > atlasWidth || sourceY + tileSize > atlasHeight)
+                {
+                    Console.WriteLine($"  INVALID TERRAIN RECT {theme} -> ({sourceX},{sourceY},{tileSize}) " +
+                                      $"in {atlasWidth}x{atlasHeight}");
+                    terrainFailures++;
+                }
+            }
+        }
+        Console.WriteLine($"Terrain mapping failures: {terrainFailures} (expect 0)");
+
         // (b) Every hero class resolves (hero:{Class}).
         var cds = new CharacterDataService();
         var unmappedHeroes = cds.Classes.Keys.Where(c => !map.ContainsKey($"hero:{c}")).ToList();
@@ -447,6 +499,20 @@ sealed class Program
                 var bmp = TheMazeRPG.UI.Rendering.SpriteService.ForEnemy(race, cls);
                 if (bmp == null) { Console.WriteLine($"  enemy {race} {cls} did NOT load"); failed++; }
                 else loaded++;
+            }
+            using var terrainSurface = SkiaSharp.SKSurface.Create(new SkiaSharp.SKImageInfo(64, 64));
+            foreach (var theme in Enum.GetValues<DungeonTheme>())
+            {
+                if (terrainSurface == null || !TheMazeRPG.UI.Rendering.TerrainService.DrawFloor(
+                        terrainSurface.Canvas, theme, 0, 0, 64, 255))
+                {
+                    Console.WriteLine($"  terrain {theme} did NOT load");
+                    failed++;
+                }
+                else
+                {
+                    loaded++;
+                }
             }
             Console.WriteLine($"  decoded {loaded} sprite(s), {failed} failure(s) (expect 0 failures)");
         }
@@ -870,6 +936,43 @@ sealed class Program
         return distances.GetValueOrDefault((stairs.X, stairs.Y), -1);
     }
 
+    public static void RunMapRenderDemo()
+    {
+        const int panelWidth = 640;
+        const int panelHeight = 420;
+        const int columns = 3;
+        var themes = Enum.GetValues<DungeonTheme>();
+
+        BuildAvaloniaApp().SetupWithoutStarting();
+        using var montage = SkiaSharp.SKSurface.Create(new SkiaSharp.SKImageInfo(
+            panelWidth * columns, panelHeight * 2));
+        montage.Canvas.Clear(SkiaSharp.SKColors.Black);
+
+        for (int i = 0; i < themes.Length; i++)
+        {
+            var theme = themes[i];
+            var gameState = new GameState((int)theme, $"{theme} Tester", "Warrior", "Human");
+            using var panel = SkiaSharp.SKSurface.Create(new SkiaSharp.SKImageInfo(panelWidth, panelHeight));
+            var renderer = new TheMazeRPG.UI.Rendering.MazeRenderer();
+            renderer.Render(panel.Canvas, gameState, panelWidth, panelHeight);
+            using var panelImage = panel.Snapshot();
+            int column = i % columns;
+            int row = i / columns;
+            montage.Canvas.DrawImage(panelImage,
+                new SkiaSharp.SKRect(
+                    column * panelWidth, row * panelHeight,
+                    (column + 1) * panelWidth, (row + 1) * panelHeight));
+        }
+
+        System.IO.Directory.CreateDirectory("obj");
+        const string outputPath = "obj/map-theme-preview.png";
+        using var image = montage.Snapshot();
+        using var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+        using var stream = System.IO.File.Open(outputPath, System.IO.FileMode.Create, System.IO.FileAccess.Write);
+        data.SaveTo(stream);
+        Console.WriteLine($"Rendered six-theme preview: {System.IO.Path.GetFullPath(outputPath)}");
+    }
+
     public static void RunMapGenerationDemo()
     {
         const int seedCount = 200;
@@ -883,10 +986,12 @@ sealed class Program
         int totalDecorations = 0;
         int totalEncounters = 0;
         int totalPatrols = 0;
+        var themeCounts = Enum.GetValues<DungeonTheme>().ToDictionary(theme => theme, _ => 0);
 
         Console.WriteLine("=== Dungeon map generation validation ===");
         for (int seed = 1; seed <= seedCount; seed++)
         {
+            DungeonTheme? previousTheme = null;
             for (int floor = 1; floor <= floorCount; floor++)
             {
                 var maze = new MazeGenerator(seed).Generate(41, 31, floor);
@@ -899,6 +1004,10 @@ sealed class Program
                     throw new InvalidOperationException($"Seed {seed}, floor {floor} was not deterministic.");
 
                 var layout = maze.Dungeon!;
+                if (layout.Theme == previousTheme)
+                    throw new InvalidOperationException($"Seed {seed}: theme repeated on consecutive floor {floor}.");
+                previousTheme = layout.Theme;
+                themeCounts[layout.Theme]++;
                 int exitDistance = maze.BfsDistancesFrom(layout.EntranceX, layout.EntranceY)
                     .GetValueOrDefault((layout.ExitX, layout.ExitY), -1);
                 int loopCount = layout.Connections.Count(connection => connection.IsLoop);
@@ -982,6 +1091,9 @@ sealed class Program
                 {
                     throw new InvalidOperationException($"Seed {seed}: encounter {encounter.Id} membership is inconsistent.");
                 }
+                if (!ExpectedThemeRaces(layout.Theme).Contains(encounter.Race))
+                    throw new InvalidOperationException(
+                        $"Seed {seed}: {layout.Theme} encounter used unexpected race {encounter.Race}.");
             }
 
             totalEncounters += layout.Encounters.Count;
@@ -996,8 +1108,19 @@ sealed class Program
                           $"average loops: {(double)totalLoops / generated:0.00}.");
         Console.WriteLine($"Average decorations: {(double)totalDecorations / generated:0.00}; " +
                           $"encounters: {totalEncounters}; patrols: {totalPatrols}.");
-        Console.WriteLine("Validated deterministic output, room archetypes, and grouped population for 50 GameState seeds.");
+        Console.WriteLine("Themes: " + string.Join(", ", themeCounts.Select(item => $"{item.Key}={item.Value}")));
+        Console.WriteLine("Validated deterministic themes, room archetypes, and grouped population for 50 GameState seeds.");
     }
+
+    private static string[] ExpectedThemeRaces(DungeonTheme theme) => theme switch
+    {
+        DungeonTheme.Castle => new[] { "Human", "Elf", "Dwarf" },
+        DungeonTheme.Sewer => new[] { "Kobold", "Goblin", "Orc" },
+        DungeonTheme.Cemetery => new[] { "Tiefling", "Orc", "Human" },
+        DungeonTheme.Library => new[] { "Elf", "Human", "Tiefling" },
+        DungeonTheme.Forge => new[] { "Dwarf", "Dragonborn", "Orc" },
+        _ => new[] { "Human", "Halfling", "Goblin", "Orc" }
+    };
 
     private static void AssertFeatureRoomRole(
         GameState gameState,
@@ -1019,6 +1142,7 @@ sealed class Program
     {
         if (first.Width != second.Width || first.Height != second.Height ||
             first.Dungeon == null || second.Dungeon == null ||
+            first.Dungeon.Theme != second.Dungeon.Theme ||
             first.Dungeon.Rooms.Count != second.Dungeon.Rooms.Count ||
             first.Dungeon.Connections.Count != second.Dungeon.Connections.Count ||
             first.Dungeon.Decorations.Count != second.Dungeon.Decorations.Count)

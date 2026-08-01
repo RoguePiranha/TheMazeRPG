@@ -2385,7 +2385,8 @@ public class GameState
 
             var kind = EncounterKindFor(room.Archetype)!.Value;
             int groupSize = Math.Min(remaining, Math.Min(roomCells.Count, GroupSizeFor(kind)));
-            string race = EnemyFactory.RandomRace(_characterDataService, _random);
+            string race = EnemyFactory.RandomRaceFrom(
+                EncounterRacesFor(layout.Theme), _characterDataService, _random);
             var patrolRoute = BuildPatrolRoute(layout, room);
             var encounter = new DungeonEncounter
             {
@@ -2468,6 +2469,16 @@ public class GameState
         DungeonRoomArchetype.TrapGallery => DungeonEncounterKind.Ambush,
         DungeonRoomArchetype.ExitChamber => DungeonEncounterKind.Gatekeepers,
         _ => null
+    };
+
+    private static string[] EncounterRacesFor(DungeonTheme theme) => theme switch
+    {
+        DungeonTheme.Castle => new[] { "Human", "Elf", "Dwarf" },
+        DungeonTheme.Sewer => new[] { "Kobold", "Goblin", "Orc" },
+        DungeonTheme.Cemetery => new[] { "Tiefling", "Orc", "Human" },
+        DungeonTheme.Library => new[] { "Elf", "Human", "Tiefling" },
+        DungeonTheme.Forge => new[] { "Dwarf", "Dragonborn", "Orc" },
+        _ => new[] { "Human", "Halfling", "Goblin", "Orc" }
     };
 
     /// <summary>
