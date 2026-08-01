@@ -8,30 +8,17 @@ using TheMazeRPG.Core.Services;
 namespace TheMazeRPG.UI.Rendering;
 
 /// <summary>
-/// Loads entity sprites from the Data/Sprites/sprites.json manifest (same static-singleton content
-/// pattern as MaterialDataService/RecipeDataService) and hands the renderer ready-to-draw bitmaps.
-///
-/// Sheets are horizontal animation strips, so frame size is derived rather than configured:
-/// frame size = sheet height, frame count = width / height. This first pass extracts frame 0 only
-/// (a static pose); the remaining frames are already available for a later animation pass.
-///
-/// Every failure path returns null so the renderer falls back to its original procedural shapes —
-/// a missing/misnamed sprite degrades to the old look instead of crashing or drawing nothing.
-///
-/// Lives in UI/Rendering (not Core) because it deals in SkiaSharp bitmaps: Core stays UI-agnostic
-/// so the headless TEST_* demos keep working without a rendering stack.
+/// Loads entity sprites from Data/Sprites/sprites.json and returns normalized static frames.
+/// Sheets are horizontal animation strips with square frames; this pass extracts frame zero.
+/// Missing or invalid sprites return null so the renderer can use its procedural fallback.
 /// </summary>
 public static class SpriteService
 {
     private const string ManifestPath = "Data/Sprites/sprites.json";
     private const string AssetRoot = "avares://TheMazeRPG/Assets/Sprites/";
 
-    // Manifest key -> asset path, from sprites.json.
-    private static readonly Dictionary<string, string> _paths = LoadManifest();
-
-    // Asset path -> decoded frame-0 bitmap. Null is cached too, so a broken path is only
-    // attempted (and logged) once rather than every frame.
-    private static readonly Dictionary<string, SKBitmap?> _cache = new();
+    private static readonly Dictionary<string, string> Paths = LoadManifest();
+    private static readonly Dictionary<string, SKBitmap?> Cache = new();
 
     private sealed class Manifest
     {
@@ -44,9 +31,10 @@ public static class SpriteService
         {
             if (!File.Exists(ManifestPath))
             {
-                GameLog.Debug($"SpriteService: no manifest at {ManifestPath} — using procedural shapes.");
+                GameLog.Debug($"SpriteService: no manifest at {ManifestPath}; using procedural shapes.");
                 return new Dictionary<string, string>();
             }
+
             var json = File.ReadAllText(ManifestPath);
             var manifest = JsonSerializer.Deserialize<Manifest>(json,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
@@ -56,7 +44,7 @@ public static class SpriteService
         }
         catch (Exception ex)
         {
-            GameLog.Debug($"SpriteService: failed to read {ManifestPath} ({ex.Message}) — using procedural shapes.");
+            GameLog.Debug($"SpriteService: failed to read {ManifestPath} ({ex.Message}); using procedural shapes.");
             return new Dictionary<string, string>();
         }
     }
@@ -64,18 +52,23 @@ public static class SpriteService
     /// <summary>The hero's sprite, or null to draw the procedural hero.</summary>
     public static SKBitmap? ForHero(string heroClass) => Lookup($"hero:{heroClass}");
 
-    /// <summary>An enemy's sprite, resolved most-specific-first: race+class, then race, then class.
-    /// Null means no mapping — draw the procedural class shape.</summary>
+    /// <summary>
+    /// Resolve an enemy by race and class, then race, then class. Null uses the procedural shape.
+    /// </summary>
     public static SKBitmap? ForEnemy(string race, string enemyClass) =>
         Lookup($"enemy:{race}:{enemyClass}") ?? Lookup($"enemy:{race}") ?? Lookup($"enemy:{enemyClass}");
 
     private static SKBitmap? Lookup(string key) =>
-        _paths.TryGetValue(key, out var path) ? Load(path) : null;
+        Paths.TryGetValue(key, out var path) ? Load(path) : null;
 
-    /// <summary>Decode a sheet's first frame, cached by asset path.</summary>
+    /// <summary>
+    /// Decode frame zero and normalize its visible pixels onto a padded, feet-anchored square.
+    /// Source packs use both 32px and 64px frames, but their characters occupy roughly 30px in
+    /// either case. Cropping transparent padding makes a common draw box produce a common scale.
+    /// </summary>
     private static SKBitmap? Load(string relativePath)
     {
-        if (_cache.TryGetValue(relativePath, out var cached)) return cached;
+        if (Cache.TryGetValue(relativePath, out var cached)) return cached;
 
         SKBitmap? frame = null;
         try
@@ -86,17 +79,32 @@ public static class SpriteService
             {
                 GameLog.Debug($"SpriteService: could not decode '{relativePath}'.");
             }
-            else
+            else if (TryOpaqueBounds(sheet, sheet.Height, out var bounds))
             {
-                // Square frames laid out left-to-right: the first frame is the leading NxN block.
-                int size = sheet.Height;
-                frame = new SKBitmap(size, size, sheet.ColorType, sheet.AlphaType);
+                const int padding = 4;
+                int contentWidth = bounds.Width;
+                int contentHeight = bounds.Height;
+                int normalizedSize = Math.Max(contentWidth, contentHeight) + padding;
+                int destinationX = (normalizedSize - contentWidth) / 2;
+                int destinationY = normalizedSize - contentHeight;
+
+                frame = new SKBitmap(normalizedSize, normalizedSize, sheet.ColorType, sheet.AlphaType);
                 using var canvas = new SKCanvas(frame);
                 canvas.Clear(SKColors.Transparent);
-                // Copy (rather than subset-alias) so the full sheet can be released here.
+                using var copyPaint = new SKPaint
+                {
+                    FilterQuality = SKFilterQuality.None,
+                    IsAntialias = false
+                };
                 canvas.DrawBitmap(sheet,
-                    new SKRect(0, 0, size, size),
-                    new SKRect(0, 0, size, size));
+                    new SKRect(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom),
+                    new SKRect(destinationX, destinationY,
+                        destinationX + contentWidth, destinationY + contentHeight),
+                    copyPaint);
+            }
+            else
+            {
+                GameLog.Debug($"SpriteService: first frame of '{relativePath}' is empty.");
             }
         }
         catch (Exception ex)
@@ -105,38 +113,59 @@ public static class SpriteService
             frame = null;
         }
 
-        _cache[relativePath] = frame;
+        Cache[relativePath] = frame;
         return frame;
     }
 
-    /// <summary>The draw size to use for a sprite so pixel art lands on whole-pixel scaling: the
-    /// largest integer multiple of the sprite's frame size that still fits <paramref name="maxSize"/>.
-    /// (A 32px frame in a 64px cell draws at 2x; a 64px frame draws at 1x — never at 1.8x, which is
-    /// what makes scaled pixel art look mushy and uneven.)</summary>
-    public static float CrispSize(SKBitmap sprite, float maxSize)
+    private static bool TryOpaqueBounds(SKBitmap sheet, int frameSize, out SKRectI bounds)
     {
-        int scale = Math.Max(1, (int)(maxSize / sprite.Height));
-        return sprite.Height * scale;
+        int left = frameSize;
+        int top = frameSize;
+        int right = -1;
+        int bottom = -1;
+
+        for (int y = 0; y < frameSize; y++)
+        {
+            for (int x = 0; x < frameSize; x++)
+            {
+                if (sheet.GetPixel(x, y).Alpha <= 8) continue;
+                left = Math.Min(left, x);
+                top = Math.Min(top, y);
+                right = Math.Max(right, x);
+                bottom = Math.Max(bottom, y);
+            }
+        }
+
+        if (right < left || bottom < top)
+        {
+            bounds = SKRectI.Empty;
+            return false;
+        }
+
+        bounds = new SKRectI(left, top, right + 1, bottom + 1);
+        return true;
     }
 
-    /// <summary>Draw a sprite centered on a world point, scaled to <paramref name="targetSize"/>
-    /// pixels with nearest-neighbour filtering so pixel art stays crisp rather than blurring.</summary>
+    /// <summary>
+    /// Draw a normalized sprite into a common square with nearest-neighbor filtering. Sprites keep
+    /// their authored orientation and the API intentionally exposes no rotation or mirroring.
+    /// </summary>
     public static void Draw(SKCanvas canvas, SKBitmap sprite, float centerX, float centerY,
         float targetSize, SKPaint? paint = null)
     {
-        // Orthographic contract: sprites are always drawn in their authored orientation. This API
-        // intentionally exposes no rotation argument because the camera direction never changes.
         float half = targetSize / 2f;
-        var dest = new SKRect(centerX - half, centerY - half, centerX + half, centerY + half);
+        var destination = new SKRect(
+            centerX - half, centerY - half,
+            centerX + half, centerY + half);
 
         if (paint != null)
         {
             paint.FilterQuality = SKFilterQuality.None;
-            canvas.DrawBitmap(sprite, dest, paint);
+            canvas.DrawBitmap(sprite, destination, paint);
             return;
         }
 
         using var crisp = new SKPaint { FilterQuality = SKFilterQuality.None, IsAntialias = false };
-        canvas.DrawBitmap(sprite, dest, crisp);
+        canvas.DrawBitmap(sprite, destination, crisp);
     }
 }

@@ -490,19 +490,46 @@ sealed class Program
         {
             BuildAvaloniaApp().SetupWithoutStarting();
             int loaded = 0, failed = 0;
+            var normalizedFrames = new HashSet<SkiaSharp.SKBitmap>();
             foreach (var cls in cds.Classes.Keys)
             {
                 var bmp = TheMazeRPG.UI.Rendering.SpriteService.ForHero(cls);
                 if (bmp == null) { Console.WriteLine($"  hero:{cls} did NOT load"); failed++; }
                 else if (bmp.Width != bmp.Height) { Console.WriteLine($"  hero:{cls} frame not square ({bmp.Width}x{bmp.Height})"); failed++; }
-                else loaded++;
+                else { loaded++; normalizedFrames.Add(bmp); }
             }
-            foreach (var (race, cls) in new[] { ("Orc", "Warrior"), ("Elf", "Mage Apprentice"), ("Human", "Archer"), ("Kobold", "Rogue"), ("Dwarf", "Priest") })
+            foreach (var race in spawnRaces)
             {
-                var bmp = TheMazeRPG.UI.Rendering.SpriteService.ForEnemy(race, cls);
-                if (bmp == null) { Console.WriteLine($"  enemy {race} {cls} did NOT load"); failed++; }
-                else loaded++;
+                foreach (var cls in cds.Classes.Keys)
+                {
+                    var bmp = TheMazeRPG.UI.Rendering.SpriteService.ForEnemy(race, cls);
+                    if (bmp == null) { Console.WriteLine($"  enemy {race} {cls} did NOT load"); failed++; }
+                    else { loaded++; normalizedFrames.Add(bmp); }
+                }
             }
+
+            var occupancies = new List<float>();
+            foreach (var frame in normalizedFrames)
+            {
+                var bounds = OpaqueBounds(frame);
+                if (bounds == null || frame.Width != frame.Height || bounds.Value.Bottom != frame.Height)
+                {
+                    Console.WriteLine($"  normalized frame invalid ({frame.Width}x{frame.Height})");
+                    failed++;
+                    continue;
+                }
+
+                float occupancy = bounds.Value.Height / (float)frame.Height;
+                occupancies.Add(occupancy);
+                if (occupancy is < 0.80f or > 0.95f)
+                {
+                    Console.WriteLine($"  normalized frame has {occupancy:P0} visible-height occupancy");
+                    failed++;
+                }
+            }
+            Console.WriteLine($"  normalized {normalizedFrames.Count} unique actor frame(s); " +
+                              $"visible-height occupancy {occupancies.Min():P0}-{occupancies.Max():P0}");
+
             using var terrainSurface = SkiaSharp.SKSurface.Create(new SkiaSharp.SKImageInfo(64, 64));
             foreach (var theme in Enum.GetValues<DungeonTheme>())
             {
@@ -539,6 +566,29 @@ sealed class Program
             return (w, h);
         }
         catch { return (0, 0); }
+    }
+
+    private static SkiaSharp.SKRectI? OpaqueBounds(SkiaSharp.SKBitmap bitmap)
+    {
+        int left = bitmap.Width;
+        int top = bitmap.Height;
+        int right = -1;
+        int bottom = -1;
+        for (int y = 0; y < bitmap.Height; y++)
+        {
+            for (int x = 0; x < bitmap.Width; x++)
+            {
+                if (bitmap.GetPixel(x, y).Alpha <= 8) continue;
+                left = Math.Min(left, x);
+                top = Math.Min(top, y);
+                right = Math.Max(right, x);
+                bottom = Math.Max(bottom, y);
+            }
+        }
+
+        return right < left || bottom < top
+            ? null
+            : new SkiaSharp.SKRectI(left, top, right + 1, bottom + 1);
     }
 
     // Debug/test entrypoint: verify the debug-console command executor (GameState.ExecuteDebugCommand).

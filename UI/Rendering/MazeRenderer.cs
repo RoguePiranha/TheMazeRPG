@@ -1313,8 +1313,7 @@ public class MazeRenderer
                 }
                 // Same scale basis as the hero: a normal-radius enemy fills a cell.
                 float maxSize = CellSize * (enemy.Radius / 0.35f);
-                SpriteService.Draw(canvas, sprite, px, py,
-                    SpriteService.CrispSize(sprite, maxSize), spritePaint);
+                SpriteService.Draw(canvas, sprite, px, py, maxSize, spritePaint);
             }
             else
             {
@@ -2018,7 +2017,7 @@ public class MazeRenderer
         // race/class circles when one exists; unmapped classes fall through to the circles below.
         if (SpriteService.ForHero(hero.Class) is { } sprite)
         {
-            SpriteService.Draw(canvas, sprite, px, py, SpriteService.CrispSize(sprite, CellSize));
+            SpriteService.Draw(canvas, sprite, px, py, CellSize);
             return;
         }
 
