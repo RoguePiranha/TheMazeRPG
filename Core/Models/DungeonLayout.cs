@@ -15,6 +15,12 @@ public enum DungeonTileType
     Doorway
 }
 
+public enum DungeonPassageOrientation
+{
+    EastWest,
+    NorthSouth
+}
+
 public enum DungeonTheme
 {
     Castle,
@@ -174,4 +180,28 @@ public sealed class DungeonLayout
         int roomId = RegionIds[x, y];
         return roomId >= 0 && roomId < Rooms.Count ? Rooms[roomId] : null;
     }
+
+    public DungeonPassageOrientation DoorwayOrientationAt(int x, int y)
+    {
+        bool roomEastWest = IsRoomFloor(x - 1, y) || IsRoomFloor(x + 1, y);
+        bool roomNorthSouth = IsRoomFloor(x, y - 1) || IsRoomFloor(x, y + 1);
+        if (roomEastWest != roomNorthSouth)
+            return roomEastWest
+                ? DungeonPassageOrientation.EastWest
+                : DungeonPassageOrientation.NorthSouth;
+
+        bool openEastWest = IsWalkable(x - 1, y) && IsWalkable(x + 1, y);
+        return openEastWest
+            ? DungeonPassageOrientation.EastWest
+            : DungeonPassageOrientation.NorthSouth;
+    }
+
+    private bool IsRoomFloor(int x, int y) =>
+        InBounds(x, y) && Tiles[x, y] == DungeonTileType.RoomFloor;
+
+    private bool IsWalkable(int x, int y) =>
+        InBounds(x, y) && Tiles[x, y] != DungeonTileType.Wall;
+
+    private bool InBounds(int x, int y) =>
+        x >= 0 && y >= 0 && x < Tiles.GetLength(0) && y < Tiles.GetLength(1);
 }

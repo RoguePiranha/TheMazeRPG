@@ -22,7 +22,23 @@ public static class SpriteService
 
     private sealed class Manifest
     {
-        public Dictionary<string, string> Sprites { get; set; } = new();
+        public Dictionary<string, ActorSetDefinition> Sets { get; set; } = new();
+    }
+
+    private sealed class ActorSetDefinition
+    {
+        public string SourcePack { get; set; } = "";
+        public string Placement { get; set; } = "actor";
+        public string Facing { get; set; } = "screen-south";
+        public string Anchor { get; set; } = "bottom-center";
+        public string Animation { get; set; } = "idle";
+        public int Frame { get; set; }
+        public Dictionary<string, ActorSpriteDefinition> Sprites { get; set; } = new();
+    }
+
+    private sealed class ActorSpriteDefinition
+    {
+        public string Asset { get; set; } = "";
     }
 
     private static Dictionary<string, string> LoadManifest()
@@ -38,8 +54,16 @@ public static class SpriteService
             var json = File.ReadAllText(ManifestPath);
             var manifest = JsonSerializer.Deserialize<Manifest>(json,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            var map = manifest?.Sprites ?? new Dictionary<string, string>();
-            GameLog.Debug($"SpriteService: loaded {map.Count} sprite mappings.");
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (setName, set) in manifest?.Sets ?? new Dictionary<string, ActorSetDefinition>())
+            {
+                foreach (var (key, sprite) in set.Sprites)
+                {
+                    if (!map.TryAdd(key, sprite.Asset))
+                        GameLog.Debug($"SpriteService: duplicate key '{key}' in set '{setName}'.");
+                }
+            }
+            GameLog.Debug($"SpriteService: loaded {map.Count} sprite mappings from {manifest?.Sets.Count ?? 0} sets.");
             return map;
         }
         catch (Exception ex)

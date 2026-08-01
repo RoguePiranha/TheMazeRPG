@@ -388,9 +388,37 @@ sealed class Program
 
         using var doc = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(manifestPath));
         var map = new Dictionary<string, string>();
-        foreach (var prop in doc.RootElement.GetProperty("sprites").EnumerateObject())
-            map[prop.Name] = prop.Value.GetString() ?? "";
-        Console.WriteLine($"Mappings: {map.Count}");
+        int actorCatalogFailures = 0;
+        var actorSets = doc.RootElement.GetProperty("sets");
+        foreach (var setProperty in actorSets.EnumerateObject())
+        {
+            var set = setProperty.Value;
+            string sourcePack = set.GetProperty("sourcePack").GetString() ?? "";
+            string placement = set.GetProperty("placement").GetString() ?? "";
+            string facing = set.GetProperty("facing").GetString() ?? "";
+            string anchor = set.GetProperty("anchor").GetString() ?? "";
+            string animation = set.GetProperty("animation").GetString() ?? "";
+            int frame = set.GetProperty("frame").GetInt32();
+            if (string.IsNullOrWhiteSpace(sourcePack) || placement != "actor" ||
+                facing != "screen-south" || anchor != "bottom-center" ||
+                animation != "idle" || frame < 0)
+            {
+                Console.WriteLine($"  INVALID ACTOR SET METADATA {setProperty.Name}");
+                actorCatalogFailures++;
+            }
+
+            foreach (var sprite in set.GetProperty("sprites").EnumerateObject())
+            {
+                string asset = sprite.Value.GetProperty("asset").GetString() ?? "";
+                if (!map.TryAdd(sprite.Name, asset))
+                {
+                    Console.WriteLine($"  DUPLICATE ACTOR KEY {sprite.Name}");
+                    actorCatalogFailures++;
+                }
+            }
+        }
+        Console.WriteLine($"Actor sets: {actorSets.EnumerateObject().Count()}; mappings: {map.Count}; " +
+                          $"catalog failures: {actorCatalogFailures} (expect 0)");
 
         // (a) Every mapped path exists and is a horizontal strip of square frames.
         int missing = 0, unsliceable = 0;
@@ -415,7 +443,12 @@ sealed class Program
         {
             using var terrainDoc = System.Text.Json.JsonDocument.Parse(
                 System.IO.File.ReadAllText(terrainManifestPath));
-            var terrainMap = terrainDoc.RootElement.GetProperty("themes");
+            var terrainMap = terrainDoc.RootElement.GetProperty("sets");
+            string[] requiredSprites =
+            {
+                "floor.room", "floor.corridor", "doorway.east-west",
+                "doorway.north-south", "wall.fill"
+            };
             foreach (var theme in Enum.GetValues<DungeonTheme>())
             {
                 if (!terrainMap.TryGetProperty(theme.ToString(), out var definition))
@@ -426,12 +459,9 @@ sealed class Program
                 }
 
                 string relativePath = definition.GetProperty("atlas").GetString() ?? "";
+                string sourcePack = definition.GetProperty("sourcePack").GetString() ?? "";
                 string fullPath = spriteRoot + relativePath;
-                int sourceX = definition.GetProperty("sourceX").GetInt32();
-                int sourceY = definition.GetProperty("sourceY").GetInt32();
-                int tileSize = definition.GetProperty("tileSize").GetInt32();
-                int columns = definition.GetProperty("columns").GetInt32();
-                int rows = definition.GetProperty("rows").GetInt32();
+                int tileSize = definition.GetProperty("gridSize").GetInt32();
                 if (!System.IO.File.Exists(fullPath))
                 {
                     Console.WriteLine($"  MISSING TERRAIN FILE {theme} -> {relativePath}");
@@ -440,13 +470,51 @@ sealed class Program
                 }
 
                 var (atlasWidth, atlasHeight) = PngSize(fullPath);
-                if (tileSize <= 0 || columns <= 0 || rows <= 0 || sourceX < 0 || sourceY < 0 ||
-                    sourceX + tileSize * columns > atlasWidth || sourceY + tileSize * rows > atlasHeight)
+                var sprites = definition.GetProperty("sprites");
+                foreach (string spriteId in requiredSprites)
                 {
-                    Console.WriteLine($"  INVALID TERRAIN PATTERN {theme} -> " +
-                                      $"({sourceX},{sourceY},{tileSize},{columns}x{rows}) " +
-                                      $"in {atlasWidth}x{atlasHeight}");
-                    terrainFailures++;
+                    if (!sprites.TryGetProperty(spriteId, out var sprite))
+                    {
+                        Console.WriteLine($"  MISSING TERRAIN SPRITE {theme}:{spriteId}");
+                        terrainFailures++;
+                        continue;
+                    }
+
+                    int sourceX = sprite.GetProperty("sourceX").GetInt32();
+                    int sourceY = sprite.GetProperty("sourceY").GetInt32();
+                    int columns = sprite.GetProperty("columns").GetInt32();
+                    int rows = sprite.GetProperty("rows").GetInt32();
+                    string placement = sprite.GetProperty("placement").GetString() ?? "";
+                    string facing = sprite.GetProperty("facing").GetString() ?? "";
+                    string layer = sprite.GetProperty("layer").GetString() ?? "";
+                    bool walkable = sprite.GetProperty("walkable").GetBoolean();
+                    string expectedPlacement = spriteId switch
+                    {
+                        "floor.room" => "room-floor",
+                        "floor.corridor" => "corridor-floor",
+                        "wall.fill" => "wall",
+                        _ => "doorway"
+                    };
+                    string expectedFacing = spriteId switch
+                    {
+                        "doorway.east-west" => "east-west",
+                        "doorway.north-south" => "north-south",
+                        _ => "none"
+                    };
+                    bool expectedWalkable = spriteId != "wall.fill";
+                    string expectedLayer = expectedWalkable ? "ground" : "structure";
+                    if (string.IsNullOrWhiteSpace(sourcePack) || tileSize <= 0 || columns <= 0 ||
+                        rows <= 0 || sourceX < 0 || sourceY < 0 ||
+                        sourceX + tileSize * columns > atlasWidth ||
+                        sourceY + tileSize * rows > atlasHeight ||
+                        placement != expectedPlacement || facing != expectedFacing ||
+                        layer != expectedLayer || walkable != expectedWalkable)
+                    {
+                        Console.WriteLine($"  INVALID TERRAIN SPRITE {theme}:{spriteId} -> " +
+                                          $"({sourceX},{sourceY},{tileSize},{columns}x{rows}) " +
+                                          $"{placement}/{facing}/{layer}/walkable={walkable}");
+                        terrainFailures++;
+                    }
                 }
             }
         }
@@ -531,17 +599,25 @@ sealed class Program
                               $"visible-height occupancy {occupancies.Min():P0}-{occupancies.Max():P0}");
 
             using var terrainSurface = SkiaSharp.SKSurface.Create(new SkiaSharp.SKImageInfo(64, 64));
+            string[] runtimeTerrainSprites =
+            {
+                "floor.room", "floor.corridor", "doorway.east-west",
+                "doorway.north-south", "wall.fill"
+            };
             foreach (var theme in Enum.GetValues<DungeonTheme>())
             {
-                if (terrainSurface == null || !TheMazeRPG.UI.Rendering.TerrainService.DrawFloor(
-                        terrainSurface.Canvas, theme, 0, 0, 0, 0, 64, 255))
+                foreach (string spriteId in runtimeTerrainSprites)
                 {
-                    Console.WriteLine($"  terrain {theme} did NOT load");
-                    failed++;
-                }
-                else
-                {
-                    loaded++;
+                    if (terrainSurface == null || !TheMazeRPG.UI.Rendering.TerrainService.DrawTile(
+                            terrainSurface.Canvas, theme, spriteId, 0, 0, 0, 0, 64, 255))
+                    {
+                        Console.WriteLine($"  terrain {theme}:{spriteId} did NOT load");
+                        failed++;
+                    }
+                    else
+                    {
+                        loaded++;
+                    }
                 }
             }
             Console.WriteLine($"  decoded {loaded} sprite(s), {failed} failure(s) (expect 0 failures)");
@@ -1053,6 +1129,8 @@ sealed class Program
         int totalDecorations = 0;
         int totalEncounters = 0;
         int totalPatrols = 0;
+        int eastWestDoorways = 0;
+        int northSouthDoorways = 0;
         var themeCounts = Enum.GetValues<DungeonTheme>().ToDictionary(theme => theme, _ => 0);
 
         Console.WriteLine("=== Dungeon map generation validation ===");
@@ -1104,6 +1182,17 @@ sealed class Program
                 maximumExitDistance = Math.Max(maximumExitDistance, exitDistance);
                 totalLoops += loopCount;
                 totalDecorations += layout.Decorations.Count;
+                for (int x = 0; x < maze.Width; x++)
+                {
+                    for (int y = 0; y < maze.Height; y++)
+                    {
+                        if (layout.Tiles[x, y] != DungeonTileType.Doorway) continue;
+                        if (layout.DoorwayOrientationAt(x, y) == DungeonPassageOrientation.EastWest)
+                            eastWestDoorways++;
+                        else
+                            northSouthDoorways++;
+                    }
+                }
             }
             // The compact simulation map uses the same generator contract and needs its own
             // coverage because room packing behaves differently at this size.
@@ -1175,6 +1264,8 @@ sealed class Program
 
         if (totalPatrols == 0)
             throw new InvalidOperationException("No patrol routes were produced by the population sweep.");
+        if (eastWestDoorways == 0 || northSouthDoorways == 0)
+            throw new InvalidOperationException("Dungeon sweep did not produce both doorway orientations.");
 
         foreach (var theme in Enum.GetValues<DungeonTheme>())
         {
@@ -1197,6 +1288,7 @@ sealed class Program
                           $"average loops: {(double)totalLoops / generated:0.00}.");
         Console.WriteLine($"Average decorations: {(double)totalDecorations / generated:0.00}; " +
                           $"encounters: {totalEncounters}; patrols: {totalPatrols}.");
+        Console.WriteLine($"Doorways: east-west={eastWestDoorways}, north-south={northSouthDoorways}.");
         Console.WriteLine("Themes: " + string.Join(", ", themeCounts.Select(item => $"{item.Key}={item.Value}")));
         Console.WriteLine("Validated deterministic themes, room archetypes, and grouped population for 50 GameState seeds.");
     }

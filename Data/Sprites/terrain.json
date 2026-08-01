@@ -1,58 +1,81 @@
 {
   "_comment": [
-    "Curated floor-material patterns from the licensed Pixel Crawler atlases.",
-    "Coordinates identify the top-left of an authored, 16px-aligned pattern. World cells walk",
-    "across its columns and rows in order so adjacent source tiles remain adjacent on the map.",
-    "The renderer falls back to its procedural theme palette when a mapping cannot load."
+    "Curated runtime dungeon-tile catalog grouped by theme set.",
+    "Every source rectangle is used in its authored orientation; the renderer never rotates or mirrors it.",
+    "Pattern columns/rows walk through adjacent atlas cells using world coordinates."
   ],
-  "themes": {
+  "sets": {
     "Castle": {
+      "sourcePack": "Pixel Crawler - Castle Environment 0.3",
       "atlas": "tiles/castle.png",
-      "sourceX": 96,
-      "sourceY": 288,
-      "tileSize": 16,
-      "columns": 3,
-      "rows": 1
+      "gridSize": 16,
+      "sprites": {
+        "floor.room": { "placement": "room-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 96, "sourceY": 288, "columns": 3, "rows": 1 },
+        "floor.corridor": { "placement": "corridor-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 96, "sourceY": 288, "columns": 3, "rows": 1 },
+        "doorway.east-west": { "placement": "doorway", "facing": "east-west", "layer": "ground", "walkable": true, "sourceX": 96, "sourceY": 288, "columns": 3, "rows": 1 },
+        "doorway.north-south": { "placement": "doorway", "facing": "north-south", "layer": "ground", "walkable": true, "sourceX": 96, "sourceY": 288, "columns": 3, "rows": 1 },
+        "wall.fill": { "placement": "wall", "facing": "none", "layer": "structure", "walkable": false, "sourceX": 80, "sourceY": 16, "columns": 5, "rows": 2 }
+      }
     },
     "Sewer": {
+      "sourcePack": "Pixel Crawler - Sewer",
       "atlas": "tiles/sewer.png",
-      "sourceX": 48,
-      "sourceY": 80,
-      "tileSize": 16,
-      "columns": 2,
-      "rows": 2
+      "gridSize": 16,
+      "sprites": {
+        "floor.room": { "placement": "room-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 48, "sourceY": 80, "columns": 2, "rows": 2 },
+        "floor.corridor": { "placement": "corridor-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 48, "sourceY": 80, "columns": 2, "rows": 2 },
+        "doorway.east-west": { "placement": "doorway", "facing": "east-west", "layer": "ground", "walkable": true, "sourceX": 48, "sourceY": 80, "columns": 2, "rows": 2 },
+        "doorway.north-south": { "placement": "doorway", "facing": "north-south", "layer": "ground", "walkable": true, "sourceX": 48, "sourceY": 80, "columns": 2, "rows": 2 },
+        "wall.fill": { "placement": "wall", "facing": "none", "layer": "structure", "walkable": false, "sourceX": 0, "sourceY": 16, "columns": 3, "rows": 2 }
+      }
     },
     "Cemetery": {
+      "sourcePack": "Pixel Crawler - Cemetery",
       "atlas": "tiles/cemetery.png",
-      "sourceX": 16,
-      "sourceY": 16,
-      "tileSize": 16,
-      "columns": 3,
-      "rows": 3
+      "gridSize": 16,
+      "sprites": {
+        "floor.room": { "placement": "room-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 16, "sourceY": 16, "columns": 3, "rows": 3 },
+        "floor.corridor": { "placement": "corridor-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 16, "sourceY": 16, "columns": 3, "rows": 3 },
+        "doorway.east-west": { "placement": "doorway", "facing": "east-west", "layer": "ground", "walkable": true, "sourceX": 16, "sourceY": 16, "columns": 3, "rows": 3 },
+        "doorway.north-south": { "placement": "doorway", "facing": "north-south", "layer": "ground", "walkable": true, "sourceX": 16, "sourceY": 16, "columns": 3, "rows": 3 },
+        "wall.fill": { "placement": "wall", "facing": "none", "layer": "structure", "walkable": false, "sourceX": 352, "sourceY": 16, "columns": 3, "rows": 2 }
+      }
     },
     "Library": {
+      "sourcePack": "Pixel Crawler - Library",
       "atlas": "tiles/library.png",
-      "sourceX": 336,
-      "sourceY": 64,
-      "tileSize": 16,
-      "columns": 3,
-      "rows": 2
+      "gridSize": 16,
+      "sprites": {
+        "floor.room": { "placement": "room-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 336, "sourceY": 64, "columns": 3, "rows": 2 },
+        "floor.corridor": { "placement": "corridor-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 336, "sourceY": 64, "columns": 3, "rows": 2 },
+        "doorway.east-west": { "placement": "doorway", "facing": "east-west", "layer": "ground", "walkable": true, "sourceX": 336, "sourceY": 64, "columns": 3, "rows": 2 },
+        "doorway.north-south": { "placement": "doorway", "facing": "north-south", "layer": "ground", "walkable": true, "sourceX": 336, "sourceY": 64, "columns": 3, "rows": 2 },
+        "wall.fill": { "placement": "wall", "facing": "none", "layer": "structure", "walkable": false, "sourceX": 96, "sourceY": 16, "columns": 4, "rows": 2 }
+      }
     },
     "Forge": {
+      "sourcePack": "Pixel Crawler - Forge 1.2",
       "atlas": "tiles/forge.png",
-      "sourceX": 0,
-      "sourceY": 128,
-      "tileSize": 16,
-      "columns": 7,
-      "rows": 2
+      "gridSize": 16,
+      "sprites": {
+        "floor.room": { "placement": "room-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 0, "sourceY": 128, "columns": 7, "rows": 2 },
+        "floor.corridor": { "placement": "corridor-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 0, "sourceY": 128, "columns": 7, "rows": 2 },
+        "doorway.east-west": { "placement": "doorway", "facing": "east-west", "layer": "ground", "walkable": true, "sourceX": 0, "sourceY": 128, "columns": 7, "rows": 2 },
+        "doorway.north-south": { "placement": "doorway", "facing": "north-south", "layer": "ground", "walkable": true, "sourceX": 0, "sourceY": 128, "columns": 7, "rows": 2 },
+        "wall.fill": { "placement": "wall", "facing": "none", "layer": "structure", "walkable": false, "sourceX": 80, "sourceY": 16, "columns": 4, "rows": 2 }
+      }
     },
     "Hideout": {
+      "sourcePack": "Pixel Crawler - Hideout 1.0",
       "atlas": "tiles/hideout.png",
-      "sourceX": 16,
-      "sourceY": 80,
-      "tileSize": 16,
-      "columns": 3,
-      "rows": 1
+      "gridSize": 16,
+      "sprites": {
+        "floor.room": { "placement": "room-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 16, "sourceY": 80, "columns": 3, "rows": 1 },
+        "floor.corridor": { "placement": "corridor-floor", "facing": "none", "layer": "ground", "walkable": true, "sourceX": 16, "sourceY": 80, "columns": 3, "rows": 1 },
+        "doorway.east-west": { "placement": "doorway", "facing": "east-west", "layer": "ground", "walkable": true, "sourceX": 16, "sourceY": 80, "columns": 3, "rows": 1 },
+        "doorway.north-south": { "placement": "doorway", "facing": "north-south", "layer": "ground", "walkable": true, "sourceX": 16, "sourceY": 80, "columns": 3, "rows": 1 },
+        "wall.fill": { "placement": "wall", "facing": "none", "layer": "structure", "walkable": false, "sourceX": 16, "sourceY": 64, "columns": 3, "rows": 1 }
+      }
     }
   }
 }

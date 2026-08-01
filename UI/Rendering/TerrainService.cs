@@ -9,35 +9,46 @@ using TheMazeRPG.Core.Services;
 namespace TheMazeRPG.UI.Rendering;
 
 /// <summary>
-/// Loads curated terrain atlases and reconstructs authored floor patterns from explicit 16px
-/// source regions. Unlike actor sprites, terrain files are atlases rather than animation strips,
-/// so they need source-pattern mappings instead of SpriteService's first-frame convention.
+/// Draws semantic dungeon tiles from the grouped catalog in Data/Sprites/terrain.json.
+/// Catalog entries carry placement and facing metadata; source sprites are never rotated or
+/// mirrored. Multi-cell patterns preserve the atlas's authored adjacency through world position.
 /// </summary>
 public static class TerrainService
 {
     private const string ManifestPath = "Data/Sprites/terrain.json";
     private const string AssetRoot = "avares://TheMazeRPG/Assets/Sprites/";
-    private static readonly Dictionary<string, TerrainDefinition> Definitions = LoadManifest();
+    private static readonly Dictionary<string, TileSetDefinition> Sets = LoadManifest();
     private static readonly Dictionary<string, SKBitmap?> Atlases = new();
 
     private sealed class TerrainManifest
     {
-        public Dictionary<string, TerrainDefinition> Themes { get; set; } = new();
+        public Dictionary<string, TileSetDefinition> Sets { get; set; } = new();
     }
 
-    private sealed class TerrainDefinition
+    private sealed class TileSetDefinition
     {
+        public string SourcePack { get; set; } = "";
         public string Atlas { get; set; } = "";
+        public int GridSize { get; set; } = 16;
+        public Dictionary<string, TileSpriteDefinition> Sprites { get; set; } = new();
+    }
+
+    private sealed class TileSpriteDefinition
+    {
+        public string Placement { get; set; } = "";
+        public string Facing { get; set; } = "none";
+        public string Layer { get; set; } = "ground";
+        public bool Walkable { get; set; }
         public int SourceX { get; set; }
         public int SourceY { get; set; }
-        public int TileSize { get; set; } = 16;
         public int Columns { get; set; } = 1;
         public int Rows { get; set; } = 1;
     }
 
-    public static bool DrawFloor(
+    public static bool DrawTile(
         SKCanvas canvas,
         DungeonTheme theme,
+        string spriteId,
         int tileX,
         int tileY,
         float x,
@@ -45,25 +56,23 @@ public static class TerrainService
         float size,
         byte alpha)
     {
-        if (!Definitions.TryGetValue(theme.ToString(), out var definition)) return false;
-        var atlas = LoadAtlas(definition.Atlas);
-        if (atlas == null || definition.TileSize <= 0 || definition.Columns <= 0 || definition.Rows <= 0 ||
-            definition.SourceX < 0 || definition.SourceY < 0 ||
-            definition.SourceX + definition.TileSize * definition.Columns > atlas.Width ||
-            definition.SourceY + definition.TileSize * definition.Rows > atlas.Height)
+        if (!Sets.TryGetValue(theme.ToString(), out var set) ||
+            !set.Sprites.TryGetValue(spriteId, out var definition))
         {
             return false;
         }
 
-        int sourceX = definition.SourceX + PositiveModulo(tileX, definition.Columns) * definition.TileSize;
-        int sourceY = definition.SourceY + PositiveModulo(tileY, definition.Rows) * definition.TileSize;
+        var atlas = LoadAtlas(set.Atlas);
+        if (atlas == null || !IsValid(set, definition, atlas.Width, atlas.Height)) return false;
+
+        int sourceX = definition.SourceX + PositiveModulo(tileX, definition.Columns) * set.GridSize;
+        int sourceY = definition.SourceY + PositiveModulo(tileY, definition.Rows) * set.GridSize;
         var source = new SKRect(
             sourceX,
             sourceY,
-            sourceX + definition.TileSize,
-            sourceY + definition.TileSize);
+            sourceX + set.GridSize,
+            sourceY + set.GridSize);
         var destination = new SKRect(x, y, x + size, y + size);
-        // Orthographic contract: terrain samples are scaled only, never rotated or mirrored.
         using var paint = new SKPaint
         {
             Color = SKColors.White.WithAlpha(alpha),
@@ -74,24 +83,29 @@ public static class TerrainService
         return true;
     }
 
+    private static bool IsValid(TileSetDefinition set, TileSpriteDefinition sprite, int width, int height) =>
+        set.GridSize > 0 && sprite.Columns > 0 && sprite.Rows > 0 &&
+        sprite.SourceX >= 0 && sprite.SourceY >= 0 &&
+        sprite.SourceX + set.GridSize * sprite.Columns <= width &&
+        sprite.SourceY + set.GridSize * sprite.Rows <= height;
+
     private static int PositiveModulo(int value, int modulus) => (value % modulus + modulus) % modulus;
 
-    private static Dictionary<string, TerrainDefinition> LoadManifest()
+    private static Dictionary<string, TileSetDefinition> LoadManifest()
     {
         try
         {
-            if (!File.Exists(ManifestPath))
-                return new Dictionary<string, TerrainDefinition>();
+            if (!File.Exists(ManifestPath)) return new Dictionary<string, TileSetDefinition>();
 
             var json = File.ReadAllText(ManifestPath);
             var manifest = JsonSerializer.Deserialize<TerrainManifest>(json,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            return manifest?.Themes ?? new Dictionary<string, TerrainDefinition>();
+            return manifest?.Sets ?? new Dictionary<string, TileSetDefinition>();
         }
         catch (Exception ex)
         {
             GameLog.Debug($"TerrainService: failed to read {ManifestPath} ({ex.Message}).");
-            return new Dictionary<string, TerrainDefinition>();
+            return new Dictionary<string, TileSetDefinition>();
         }
     }
 

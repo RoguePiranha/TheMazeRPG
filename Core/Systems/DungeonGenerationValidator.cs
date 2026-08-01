@@ -106,6 +106,20 @@ public static class DungeonGenerationValidator
                 tile is DungeonTileType.CorridorFloor or DungeonTileType.Doorway))
             errors.Add("Dungeon has no corridor tiles");
 
+        for (int x = 1; x < maze.Width - 1; x++)
+        {
+            for (int y = 1; y < maze.Height - 1; y++)
+            {
+                if (layout.Tiles[x, y] != DungeonTileType.Doorway) continue;
+                bool besideRoom = layout.Tiles[x - 1, y] == DungeonTileType.RoomFloor ||
+                                  layout.Tiles[x + 1, y] == DungeonTileType.RoomFloor ||
+                                  layout.Tiles[x, y - 1] == DungeonTileType.RoomFloor ||
+                                  layout.Tiles[x, y + 1] == DungeonTileType.RoomFloor;
+                if (!besideRoom || maze.Walls[x, y])
+                    errors.Add($"Invalid doorway at ({x},{y})");
+            }
+        }
+
         var decorationCells = new HashSet<(int x, int y)>();
         foreach (var decoration in layout.Decorations)
         {

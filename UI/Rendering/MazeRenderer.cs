@@ -611,11 +611,15 @@ public class MazeRenderer
         using var floorDotPaint = new SKPaint { Color = palette.FloorDetail, Style = SKPaintStyle.Fill, IsAntialias = false };
         using var wallPaint = new SKPaint { Color = palette.Wall, Style = SKPaintStyle.Fill, IsAntialias = false };
         using var wallDetailPaint = new SKPaint { Color = palette.WallDetail, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
+        using var doorwayBackPaint = new SKPaint { Color = palette.Wall, Style = SKPaintStyle.Stroke, StrokeWidth = 7f, StrokeCap = SKStrokeCap.Round, IsAntialias = false };
+        using var doorwayPaint = new SKPaint { Color = palette.WallDetail, Style = SKPaintStyle.Stroke, StrokeWidth = 3f, StrokeCap = SKStrokeCap.Round, IsAntialias = false };
 
         using var floorPaintDim = new SKPaint { Color = FloorColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
         using var floorDotPaintDim = new SKPaint { Color = palette.FloorDetail.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
         using var wallPaintDim = new SKPaint { Color = palette.Wall.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
         using var wallDetailPaintDim = new SKPaint { Color = palette.WallDetail.WithAlpha(DimAlpha), Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
+        using var doorwayBackPaintDim = new SKPaint { Color = palette.Wall.WithAlpha(DimAlpha), Style = SKPaintStyle.Stroke, StrokeWidth = 7f, StrokeCap = SKStrokeCap.Round, IsAntialias = false };
+        using var doorwayPaintDim = new SKPaint { Color = palette.WallDetail.WithAlpha(DimAlpha), Style = SKPaintStyle.Stroke, StrokeWidth = 3f, StrokeCap = SKStrokeCap.Round, IsAntialias = false };
 
         float dotSize = CellSize * 0.2f;
         float dotOffset = CellSize * 0.4f;
@@ -633,7 +637,18 @@ public class MazeRenderer
                     if (!visible && !seen) continue; // never seen: pure black void
 
                     canvas.DrawRect(px, py, CellSize, CellSize, visible ? wallPaint : wallPaintDim);
-                    canvas.DrawRect(px + 2, py + 2, CellSize - 4, CellSize - 4, visible ? wallDetailPaint : wallDetailPaintDim);
+                    if (maze.Dungeon != null)
+                    {
+                        TerrainService.DrawTile(canvas, maze.Dungeon.Theme, "wall.fill",
+                            x, y, px, py, CellSize, visible ? (byte)180 : (byte)54);
+                        DrawWallTopology(canvas, maze, x, y, px, py,
+                            visible ? wallDetailPaint : wallDetailPaintDim);
+                    }
+                    else
+                    {
+                        canvas.DrawRect(px + 2, py + 2, CellSize - 4, CellSize - 4,
+                            visible ? wallDetailPaint : wallDetailPaintDim);
+                    }
                 }
                 else
                 {
@@ -645,9 +660,16 @@ public class MazeRenderer
                     floorPaintDim.Color = tileFloorColor.WithAlpha(DimAlpha);
 
                     canvas.DrawRect(px, py, CellSize, CellSize, visible ? floorPaint : floorPaintDim);
-                    bool textured = maze.Dungeon != null && TerrainService.DrawFloor(
-                        canvas, maze.Dungeon.Theme, x, y, px, py, CellSize,
+                    string terrainSprite = TerrainSpriteId(maze, x, y);
+                    bool textured = maze.Dungeon != null && TerrainService.DrawTile(
+                        canvas, maze.Dungeon.Theme, terrainSprite, x, y, px, py, CellSize,
                         visible ? (byte)170 : (byte)51);
+                    if (maze.Dungeon?.Tiles[x, y] == DungeonTileType.Doorway)
+                    {
+                        DrawDoorwayThreshold(canvas, terrainSprite, px, py,
+                            visible ? doorwayBackPaint : doorwayBackPaintDim,
+                            visible ? doorwayPaint : doorwayPaintDim);
+                    }
                     bool isRoomFloor = maze.Dungeon == null ||
                         maze.Dungeon.Tiles[x, y] == DungeonTileType.RoomFloor;
                     if (isRoomFloor && !textured)
@@ -659,6 +681,66 @@ public class MazeRenderer
             }
         }
     }
+
+    private static string TerrainSpriteId(Maze maze, int x, int y)
+    {
+        var tile = maze.Dungeon?.Tiles[x, y] ?? DungeonTileType.RoomFloor;
+        if (tile == DungeonTileType.CorridorFloor) return "floor.corridor";
+        if (tile != DungeonTileType.Doorway) return "floor.room";
+
+        return maze.Dungeon!.DoorwayOrientationAt(x, y) == DungeonPassageOrientation.EastWest
+            ? "doorway.east-west"
+            : "doorway.north-south";
+    }
+
+    private static void DrawWallTopology(
+        SKCanvas canvas,
+        Maze maze,
+        int tileX,
+        int tileY,
+        float x,
+        float y,
+        SKPaint edgePaint)
+    {
+        const float inset = 2f;
+        float right = x + CellSize;
+        float bottom = y + CellSize;
+
+        if (IsOpen(maze, tileX, tileY - 1))
+            canvas.DrawLine(x + inset, y + inset, right - inset, y + inset, edgePaint);
+        if (IsOpen(maze, tileX + 1, tileY))
+            canvas.DrawLine(right - inset, y + inset, right - inset, bottom - inset, edgePaint);
+        if (IsOpen(maze, tileX, tileY + 1))
+            canvas.DrawLine(x + inset, bottom - inset, right - inset, bottom - inset, edgePaint);
+        if (IsOpen(maze, tileX - 1, tileY))
+            canvas.DrawLine(x + inset, y + inset, x + inset, bottom - inset, edgePaint);
+    }
+
+    private static void DrawDoorwayThreshold(
+        SKCanvas canvas,
+        string spriteId,
+        float x,
+        float y,
+        SKPaint backPaint,
+        SKPaint frontPaint)
+    {
+        const float margin = 9f;
+        float centerX = x + CellSize / 2f;
+        float centerY = y + CellSize / 2f;
+        if (spriteId == "doorway.east-west")
+        {
+            canvas.DrawLine(centerX, y + margin, centerX, y + CellSize - margin, backPaint);
+            canvas.DrawLine(centerX, y + margin, centerX, y + CellSize - margin, frontPaint);
+        }
+        else
+        {
+            canvas.DrawLine(x + margin, centerY, x + CellSize - margin, centerY, backPaint);
+            canvas.DrawLine(x + margin, centerY, x + CellSize - margin, centerY, frontPaint);
+        }
+    }
+
+    private static bool IsOpen(Maze maze, int x, int y) =>
+        x >= 0 && y >= 0 && x < maze.Width && y < maze.Height && !maze.Walls[x, y];
     
     private void DrawFeatures(SKCanvas canvas, Maze maze, FogView fog)
     {
