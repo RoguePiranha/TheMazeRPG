@@ -552,6 +552,10 @@ public class GameState
         if (_heroAlertTicks > 0) _heroAlertTicks--;
         UpdatePerception();
 
+        // Theme landmarks are visible, fixed-orientation world features. Handle their contact
+        // effects before combat discovery so alarms can wake the room's encounter this tick.
+        UpdateDungeonThemeFeatures();
+
         // Check for new combat encounters and process existing combat
         CheckCombat();
 
@@ -1468,6 +1472,114 @@ public class GameState
         LogMessage($"A trap springs! -{damage} HP", MessageKind.Warning);
     }
 
+    private void UpdateDungeonThemeFeatures()
+    {
+        var features = CurrentMaze?.Dungeon?.ThemeFeatures;
+        if (features == null || IsInOverworld || IsInSafeRoom) return;
+
+        foreach (var feature in features)
+        {
+            if (feature.CooldownTicks > 0) feature.CooldownTicks--;
+
+            float dx = Hero.X - feature.X;
+            float dy = Hero.Y - feature.Y;
+            if (dx * dx + dy * dy > 0.36f) continue;
+
+            switch (feature.Type)
+            {
+                case DungeonThemeFeatureType.CastleAlarm when !feature.IsTriggered:
+                    feature.IsTriggered = true;
+                    AlertEncounterInRoom(feature, "An alarm bell rings through the castle!");
+                    break;
+
+                case DungeonThemeFeatureType.SewerRunoff when feature.CooldownTicks == 0:
+                    feature.IsTriggered = true;
+                    feature.CooldownTicks = _ticksPerSecond * 3;
+                    ApplyThemeHazard(feature, 3 + CurrentFloor,
+                        "Caustic runoff burns through your boots!");
+                    break;
+
+                case DungeonThemeFeatureType.RestlessGrave when !feature.IsTriggered:
+                    feature.IsTriggered = true;
+                    int faithDrained = Math.Min(Hero.CurrentFaith, 8 + CurrentFloor);
+                    if (faithDrained > 0)
+                    {
+                        Hero.CurrentFaith -= faithDrained;
+                        LogMessage($"The restless grave chills your spirit. -{faithDrained} Faith",
+                            MessageKind.Warning);
+                    }
+                    else
+                    {
+                        ApplyThemeHazard(feature, 4 + CurrentFloor,
+                            "The restless grave feeds on your life!");
+                    }
+                    break;
+
+                case DungeonThemeFeatureType.ArcaneWard when !feature.IsTriggered:
+                    feature.IsTriggered = true;
+                    int manaDrained = Math.Min(Hero.CurrentMana, 10 + CurrentFloor * 2);
+                    if (manaDrained > 0)
+                    {
+                        Hero.CurrentMana -= manaDrained;
+                        LogMessage($"The ward consumes {manaDrained} Mana and falls dark.",
+                            MessageKind.Warning);
+                    }
+                    else
+                    {
+                        ApplyThemeHazard(feature, 5 + CurrentFloor,
+                            "The ward lashes out at your empty reserves!");
+                    }
+                    break;
+
+                case DungeonThemeFeatureType.HeatVent when feature.CooldownTicks == 0:
+                    feature.IsTriggered = true;
+                    feature.CooldownTicks = _ticksPerSecond * 4;
+                    ApplyThemeHazard(feature, 5 + CurrentFloor,
+                        "The forge vent erupts beneath you!");
+                    break;
+
+                case DungeonThemeFeatureType.HideoutTripwire when !feature.IsTriggered:
+                    feature.IsTriggered = true;
+                    AlertEncounterInRoom(feature, "A tripwire rattles the hideout's warning cans!");
+                    break;
+            }
+        }
+    }
+
+    private void AlertEncounterInRoom(DungeonThemeFeature feature, string message)
+    {
+        var roomEncounter = CurrentMaze.Dungeon?.Encounters
+            .FirstOrDefault(encounter => encounter.HomeRoomId == feature.RoomId);
+        if (roomEncounter != null)
+        {
+            foreach (var enemy in Enemies.Where(enemy =>
+                         enemy.IsAlive && enemy.EncounterId == roomEncounter.Id))
+            {
+                enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+                _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+            }
+        }
+
+        _heroAlertTicks = _alertTicks;
+        LogMessage(message, MessageKind.Warning);
+    }
+
+    private void ApplyThemeHazard(DungeonThemeFeature feature, int damage, string message)
+    {
+        Hero.CurrentHp = Math.Max(0, Hero.CurrentHp - damage);
+        ScreenShake = MathF.Max(ScreenShake, 4f);
+        HitEffects.Add(new HitEffect
+        {
+            X = feature.X,
+            Y = feature.Y,
+            LifeTime = 0,
+            MaxLifeTime = 10,
+            Type = HitEffectType.Impact,
+            Team = ProjectileTeam.Enemy
+        });
+        LogMessage($"{message} -{damage} HP", MessageKind.Warning);
+    }
+
     /// <summary>
     /// Each tick, give the hero a Wisdom-based chance to notice nearby hidden traps (within
     /// PerceptionRadius, with line of sight). Noticing one reveals it and pops the "!" alert.
@@ -2280,12 +2392,13 @@ public class GameState
         emptyCells.RemoveAll(cell => 
             Math.Abs(cell.x - 1) < 5 && Math.Abs(cell.y - 1) < 5);
 
-        // Decorations are non-blocking, but actors and interactive features should not initially
-        // occupy the same tile as a prop.
-        var decorationCells = CurrentMaze.Dungeon?.Decorations
+        // Dressing and theme landmarks are non-blocking, but actors and interactive features
+        // should not initially occupy the same tile as either one.
+        var reservedCells = CurrentMaze.Dungeon?.Decorations
             .Select(decoration => (decoration.X, decoration.Y))
+            .Concat(CurrentMaze.Dungeon.ThemeFeatures.Select(feature => (feature.X, feature.Y)))
             .ToHashSet() ?? new HashSet<(int, int)>();
-        emptyCells.RemoveAll(cell => decorationCells.Contains(cell));
+        emptyCells.RemoveAll(cell => reservedCells.Contains(cell));
         
         // Spawn enemies in random valid locations
         Enemies.Clear();
@@ -2365,9 +2478,11 @@ public class GameState
         }
 
         layout.Encounters.Clear();
+        int landmarkRoomId = layout.ThemeFeatures.FirstOrDefault()?.RoomId ?? -1;
         var encounterRooms = layout.Rooms
             .Where(room => EncounterKindFor(room.Archetype).HasValue)
-            .OrderBy(_ => _random.Next())
+            .OrderBy(room => room.Id == landmarkRoomId ? 0 : 1)
+            .ThenBy(_ => _random.Next())
             .ToList();
         int remaining = enemyCount;
         int roomCursor = 0;

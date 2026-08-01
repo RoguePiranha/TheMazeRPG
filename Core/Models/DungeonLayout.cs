@@ -72,6 +72,16 @@ public enum DungeonEncounterKind
     Gatekeepers
 }
 
+public enum DungeonThemeFeatureType
+{
+    CastleAlarm,
+    SewerRunoff,
+    RestlessGrave,
+    ArcaneWard,
+    HeatVent,
+    HideoutTripwire
+}
+
 public sealed class DungeonRoom
 {
     public int Id { get; init; }
@@ -116,6 +126,16 @@ public sealed class DungeonEncounter
     public List<int> PatrolRoomIds { get; } = new();
 }
 
+public sealed class DungeonThemeFeature
+{
+    public int X { get; init; }
+    public int Y { get; init; }
+    public int RoomId { get; init; }
+    public DungeonThemeFeatureType Type { get; init; }
+    public bool IsTriggered { get; set; }
+    public int CooldownTicks { get; set; }
+}
+
 public sealed class DungeonLayout
 {
     public DungeonTheme Theme { get; set; }
@@ -125,6 +145,7 @@ public sealed class DungeonLayout
     public List<DungeonConnection> Connections { get; } = new();
     public List<DungeonDecoration> Decorations { get; } = new();
     public List<DungeonEncounter> Encounters { get; } = new();
+    public List<DungeonThemeFeature> ThemeFeatures { get; } = new();
 
     public int EntranceX { get; set; } = 1;
     public int EntranceY { get; set; } = 1;

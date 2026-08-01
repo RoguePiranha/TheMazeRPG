@@ -124,6 +124,8 @@ public static class SpriteService
     public static void Draw(SKCanvas canvas, SKBitmap sprite, float centerX, float centerY,
         float targetSize, SKPaint? paint = null)
     {
+        // Orthographic contract: sprites are always drawn in their authored orientation. This API
+        // intentionally exposes no rotation argument because the camera direction never changes.
         float half = targetSize / 2f;
         var dest = new SKRect(centerX - half, centerY - half, centerX + half, centerY + half);
 

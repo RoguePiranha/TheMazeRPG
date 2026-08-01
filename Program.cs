@@ -952,9 +952,23 @@ sealed class Program
         {
             var theme = themes[i];
             var gameState = new GameState((int)theme, $"{theme} Tester", "Warrior", "Human");
+            var landmark = gameState.CurrentMaze.Dungeon?.ThemeFeatures.SingleOrDefault();
+            if (landmark != null)
+            {
+                var nearby = new[]
+                {
+                    (x: landmark.X - 1, y: landmark.Y),
+                    (x: landmark.X + 1, y: landmark.Y),
+                    (x: landmark.X, y: landmark.Y - 1),
+                    (x: landmark.X, y: landmark.Y + 1)
+                }.First(cell => !gameState.CurrentMaze.Walls[cell.x, cell.y]);
+                gameState.Hero.X = nearby.x;
+                gameState.Hero.Y = nearby.y;
+            }
             using var panel = SkiaSharp.SKSurface.Create(new SkiaSharp.SKImageInfo(panelWidth, panelHeight));
             var renderer = new TheMazeRPG.UI.Rendering.MazeRenderer();
-            renderer.Render(panel.Canvas, gameState, panelWidth, panelHeight);
+            for (int frame = 0; frame < 48; frame++)
+                renderer.Render(panel.Canvas, gameState, panelWidth, panelHeight);
             using var panelImage = panel.Snapshot();
             int column = i % columns;
             int row = i / columns;
@@ -1008,6 +1022,10 @@ sealed class Program
                     throw new InvalidOperationException($"Seed {seed}: theme repeated on consecutive floor {floor}.");
                 previousTheme = layout.Theme;
                 themeCounts[layout.Theme]++;
+                var landmark = layout.ThemeFeatures.Single();
+                if (landmark.Type != ExpectedThemeFeature(layout.Theme))
+                    throw new InvalidOperationException(
+                        $"Seed {seed}, floor {floor}: {layout.Theme} generated {landmark.Type}.");
                 int exitDistance = maze.BfsDistancesFrom(layout.EntranceX, layout.EntranceY)
                     .GetValueOrDefault((layout.ExitX, layout.ExitY), -1);
                 int loopCount = layout.Connections.Count(connection => connection.IsLoop);
@@ -1074,12 +1092,14 @@ sealed class Program
                     throw new InvalidOperationException($"Seed {seed}: enemy has no encounter assignment.");
             }
 
-            var decorationCells = layout.Decorations.Select(item => (item.X, item.Y)).ToHashSet();
-            if (gameState.CurrentMaze.Features.Any(feature => decorationCells.Contains((feature.X, feature.Y))) ||
-                gameState.Enemies.Any(enemy => decorationCells.Contains(
+            var reservedCells = layout.Decorations.Select(item => (item.X, item.Y))
+                .Concat(layout.ThemeFeatures.Select(item => (item.X, item.Y)))
+                .ToHashSet();
+            if (gameState.CurrentMaze.Features.Any(feature => reservedCells.Contains((feature.X, feature.Y))) ||
+                gameState.Enemies.Any(enemy => reservedCells.Contains(
                     ((int)MathF.Round(enemy.X), (int)MathF.Round(enemy.Y)))))
             {
-                throw new InvalidOperationException($"Seed {seed}: an actor or feature spawned on a decoration.");
+                throw new InvalidOperationException($"Seed {seed}: an actor or feature spawned on a reserved landmark tile.");
             }
 
             foreach (var encounter in layout.Encounters)
@@ -1103,6 +1123,22 @@ sealed class Program
         if (totalPatrols == 0)
             throw new InvalidOperationException("No patrol routes were produced by the population sweep.");
 
+        foreach (var theme in Enum.GetValues<DungeonTheme>())
+        {
+            var gameState = new GameState((int)theme, "Feature Tester", "Warrior", "Human")
+            {
+                IsRunning = true
+            };
+            var landmark = gameState.CurrentMaze.Dungeon!.ThemeFeatures.Single();
+            if (gameState.CurrentMaze.Dungeon.Theme != theme || landmark.Type != ExpectedThemeFeature(theme))
+                throw new InvalidOperationException($"Theme feature test seed did not produce {theme}.");
+            gameState.Hero.X = landmark.X;
+            gameState.Hero.Y = landmark.Y;
+            gameState.Tick();
+            if (!landmark.IsTriggered)
+                throw new InvalidOperationException($"{landmark.Type} did not trigger on contact.");
+        }
+
         Console.WriteLine($"Validated {generated} floors ({seedCount} seeds x {floorCount} floors).");
         Console.WriteLine($"Rooms: {minimumRooms}-{maximumRooms}; exit BFS distance: {minimumExitDistance}-{maximumExitDistance}; " +
                           $"average loops: {(double)totalLoops / generated:0.00}.");
@@ -1120,6 +1156,16 @@ sealed class Program
         DungeonTheme.Library => new[] { "Elf", "Human", "Tiefling" },
         DungeonTheme.Forge => new[] { "Dwarf", "Dragonborn", "Orc" },
         _ => new[] { "Human", "Halfling", "Goblin", "Orc" }
+    };
+
+    private static DungeonThemeFeatureType ExpectedThemeFeature(DungeonTheme theme) => theme switch
+    {
+        DungeonTheme.Castle => DungeonThemeFeatureType.CastleAlarm,
+        DungeonTheme.Sewer => DungeonThemeFeatureType.SewerRunoff,
+        DungeonTheme.Cemetery => DungeonThemeFeatureType.RestlessGrave,
+        DungeonTheme.Library => DungeonThemeFeatureType.ArcaneWard,
+        DungeonTheme.Forge => DungeonThemeFeatureType.HeatVent,
+        _ => DungeonThemeFeatureType.HideoutTripwire
     };
 
     private static void AssertFeatureRoomRole(
@@ -1145,7 +1191,8 @@ sealed class Program
             first.Dungeon.Theme != second.Dungeon.Theme ||
             first.Dungeon.Rooms.Count != second.Dungeon.Rooms.Count ||
             first.Dungeon.Connections.Count != second.Dungeon.Connections.Count ||
-            first.Dungeon.Decorations.Count != second.Dungeon.Decorations.Count)
+            first.Dungeon.Decorations.Count != second.Dungeon.Decorations.Count ||
+            first.Dungeon.ThemeFeatures.Count != second.Dungeon.ThemeFeatures.Count)
         {
             return false;
         }
@@ -1191,6 +1238,17 @@ sealed class Program
             var right = second.Dungeon.Decorations[i];
             if (left.X != right.X || left.Y != right.Y || left.RoomId != right.RoomId ||
                 left.Type != right.Type || left.Variant != right.Variant)
+            {
+                return false;
+            }
+        }
+
+        for (int i = 0; i < first.Dungeon.ThemeFeatures.Count; i++)
+        {
+            var left = first.Dungeon.ThemeFeatures[i];
+            var right = second.Dungeon.ThemeFeatures[i];
+            if (left.X != right.X || left.Y != right.Y || left.RoomId != right.RoomId ||
+                left.Type != right.Type)
             {
                 return false;
             }

@@ -57,6 +57,7 @@ public static class TerrainService
             definition.SourceX + definition.TileSize,
             definition.SourceY + definition.TileSize);
         var destination = new SKRect(x, y, x + size, y + size);
+        // Orthographic contract: terrain samples are scaled only, never rotated or mirrored.
         using var paint = new SKPaint
         {
             Color = SKColors.White.WithAlpha(alpha),

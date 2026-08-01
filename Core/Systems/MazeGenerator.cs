@@ -61,6 +61,7 @@ public sealed class MazeGenerator
         AssignRoomRoles(maze, layout, random);
         AssignRoomArchetypes(layout, random);
         PlaceDecorations(layout, random);
+        PlaceThemeFeature(layout);
 
         return maze;
     }
@@ -483,6 +484,39 @@ public sealed class MazeGenerator
             DungeonDecorationType.Campfire, DungeonDecorationType.Bedroll, DungeonDecorationType.Crate
         }
     };
+
+    private static void PlaceThemeFeature(DungeonLayout layout)
+    {
+        var preferredArchetypes = layout.Theme switch
+        {
+            DungeonTheme.Castle => new[] { DungeonRoomArchetype.GuardPost, DungeonRoomArchetype.Barracks },
+            DungeonTheme.Sewer => new[] { DungeonRoomArchetype.Lair, DungeonRoomArchetype.StoreRoom },
+            DungeonTheme.Cemetery => new[] { DungeonRoomArchetype.AbandonedCamp, DungeonRoomArchetype.Lair },
+            DungeonTheme.Library => new[] { DungeonRoomArchetype.StoreRoom, DungeonRoomArchetype.GuardPost },
+            DungeonTheme.Forge => new[] { DungeonRoomArchetype.Barracks, DungeonRoomArchetype.GuardPost },
+            _ => new[] { DungeonRoomArchetype.GuardPost, DungeonRoomArchetype.AbandonedCamp }
+        };
+        var room = preferredArchetypes
+            .Select(archetype => layout.Rooms.FirstOrDefault(candidate => candidate.Archetype == archetype))
+            .FirstOrDefault(candidate => candidate != null);
+        if (room == null) return;
+
+        layout.ThemeFeatures.Add(new DungeonThemeFeature
+        {
+            X = room.CenterX,
+            Y = room.CenterY,
+            RoomId = room.Id,
+            Type = layout.Theme switch
+            {
+                DungeonTheme.Castle => DungeonThemeFeatureType.CastleAlarm,
+                DungeonTheme.Sewer => DungeonThemeFeatureType.SewerRunoff,
+                DungeonTheme.Cemetery => DungeonThemeFeatureType.RestlessGrave,
+                DungeonTheme.Library => DungeonThemeFeatureType.ArcaneWard,
+                DungeonTheme.Forge => DungeonThemeFeatureType.HeatVent,
+                _ => DungeonThemeFeatureType.HideoutTripwire
+            }
+        });
+    }
 
     private DungeonTheme ThemeForFloor(int floorNumber)
     {

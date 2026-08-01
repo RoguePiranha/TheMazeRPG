@@ -185,6 +185,9 @@ public class MazeRenderer
         // Draw static room dressing below interactive features and actors.
         DrawDecorations(canvas, gameState.CurrentMaze, fog);
 
+        // Theme landmarks are world-space markers with a fixed orthographic orientation.
+        DrawThemeFeatures(canvas, gameState.CurrentMaze, fog);
+
         // Draw features (chests, stairs)
         DrawFeatures(canvas, gameState.CurrentMaze, fog);
 
@@ -748,6 +751,155 @@ public class MazeRenderer
         }
     }
 
+    private static void DrawThemeFeatures(SKCanvas canvas, Maze maze, FogView fog)
+    {
+        var features = maze.Dungeon?.ThemeFeatures;
+        if (features == null) return;
+
+        foreach (var feature in features)
+        {
+            if (!fog.FloorSeen(feature.X, feature.Y)) continue;
+            bool dimmed = !fog.FloorVisible(feature.X, feature.Y);
+            bool exhausted = feature.IsTriggered && feature.Type is
+                DungeonThemeFeatureType.CastleAlarm or
+                DungeonThemeFeatureType.RestlessGrave or
+                DungeonThemeFeatureType.ArcaneWard or
+                DungeonThemeFeatureType.HideoutTripwire;
+            int layer = 0;
+            if (dimmed || exhausted)
+            {
+                byte alpha = dimmed ? DimAlpha : (byte)150;
+                using var layerPaint = new SKPaint { Color = SKColors.White.WithAlpha(alpha) };
+                layer = canvas.SaveLayer(layerPaint);
+            }
+
+            float x = feature.X * CellSize + CellSize / 2f;
+            float y = feature.Y * CellSize + CellSize / 2f;
+            DrawThemeFeature(canvas, x, y, feature);
+
+            if (dimmed || exhausted) canvas.RestoreToCount(layer);
+        }
+    }
+
+    private static void DrawThemeFeature(
+        SKCanvas canvas,
+        float x,
+        float y,
+        DungeonThemeFeature feature)
+    {
+        using var dark = new SKPaint
+        {
+            Color = new SKColor(0x18, 0x18, 0x18),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 3f,
+            StrokeCap = SKStrokeCap.Round,
+            IsAntialias = true
+        };
+        using var solid = new SKPaint
+        {
+            Color = SKColors.White,
+            Style = SKPaintStyle.Fill,
+            IsAntialias = true
+        };
+        using var detail = new SKPaint
+        {
+            Color = SKColors.White,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 3f,
+            StrokeCap = SKStrokeCap.Round,
+            IsAntialias = true
+        };
+
+        // No canvas transforms belong here. Every landmark retains this authored, screen-facing
+        // orientation regardless of room layout or the direction an actor travels through it.
+        switch (feature.Type)
+        {
+            case DungeonThemeFeatureType.CastleAlarm:
+                detail.Color = new SKColor(0x71, 0x55, 0x35);
+                canvas.DrawLine(x - 17, y + 16, x - 17, y - 16, detail);
+                canvas.DrawLine(x + 17, y + 16, x + 17, y - 16, detail);
+                canvas.DrawLine(x - 17, y - 16, x + 17, y - 16, detail);
+                solid.Color = feature.IsTriggered
+                    ? new SKColor(0x74, 0x6B, 0x58)
+                    : new SKColor(0xD4, 0xA8, 0x3F);
+                canvas.DrawOval(new SKRect(x - 12, y - 10, x + 12, y + 10), solid);
+                canvas.DrawOval(new SKRect(x - 12, y - 10, x + 12, y + 10), dark);
+                canvas.DrawCircle(x, y + 12, 3, solid);
+                break;
+
+            case DungeonThemeFeatureType.SewerRunoff:
+                solid.Color = new SKColor(0x48, 0x79, 0x3A, 0xD8);
+                canvas.DrawOval(new SKRect(x - 22, y - 12, x + 20, y + 13), solid);
+                canvas.DrawCircle(x - 19, y + 8, 7, solid);
+                canvas.DrawCircle(x + 18, y - 7, 6, solid);
+                detail.Color = new SKColor(0x91, 0xB0, 0x54);
+                detail.StrokeWidth = 2f;
+                canvas.DrawCircle(x - 7, y - 2, 4, detail);
+                canvas.DrawCircle(x + 8, y + 5, 3, detail);
+                break;
+
+            case DungeonThemeFeatureType.RestlessGrave:
+                solid.Color = feature.IsTriggered
+                    ? new SKColor(0x61, 0x62, 0x5D)
+                    : new SKColor(0x83, 0x84, 0x78);
+                canvas.DrawRoundRect(x - 13, y - 20, 26, 38, 3, 3, solid);
+                canvas.DrawRoundRect(x - 13, y - 20, 26, 38, 3, 3, dark);
+                detail.Color = new SKColor(0xB0, 0xAD, 0x94);
+                detail.StrokeWidth = 2f;
+                canvas.DrawLine(x, y - 13, x, y + 7, detail);
+                canvas.DrawLine(x - 7, y - 6, x + 7, y - 6, detail);
+                break;
+
+            case DungeonThemeFeatureType.ArcaneWard:
+                solid.Color = feature.IsTriggered
+                    ? new SKColor(0x4C, 0x55, 0x66, 0x80)
+                    : new SKColor(0x55, 0xA7, 0xD8, 0x70);
+                canvas.DrawCircle(x, y, 22, solid);
+                detail.Color = feature.IsTriggered
+                    ? new SKColor(0x69, 0x72, 0x80)
+                    : new SKColor(0x8C, 0xD9, 0xFF);
+                detail.StrokeWidth = 2.5f;
+                canvas.DrawCircle(x, y, 18, detail);
+                canvas.DrawRect(x - 10, y - 10, 20, 20, detail);
+                canvas.DrawLine(x, y - 17, x, y + 17, detail);
+                canvas.DrawLine(x - 17, y, x + 17, y, detail);
+                break;
+
+            case DungeonThemeFeatureType.HeatVent:
+                solid.Color = feature.CooldownTicks > 0
+                    ? new SKColor(0xD9, 0x59, 0x24, 0xA0)
+                    : new SKColor(0x6B, 0x2D, 0x1F, 0x70);
+                canvas.DrawCircle(x, y, 23, solid);
+                solid.Color = new SKColor(0x3D, 0x3E, 0x3C);
+                canvas.DrawRect(x - 17, y - 17, 34, 34, solid);
+                canvas.DrawRect(x - 17, y - 17, 34, 34, dark);
+                detail.Color = new SKColor(0xA0, 0x86, 0x6A);
+                detail.StrokeWidth = 2.5f;
+                for (int offset = -10; offset <= 10; offset += 10)
+                {
+                    canvas.DrawLine(x - 13, y + offset, x + 13, y + offset, detail);
+                    canvas.DrawLine(x + offset, y - 13, x + offset, y + 13, detail);
+                }
+                break;
+
+            case DungeonThemeFeatureType.HideoutTripwire:
+                detail.Color = feature.IsTriggered
+                    ? new SKColor(0x6B, 0x65, 0x59)
+                    : new SKColor(0xC5, 0xB6, 0x8A);
+                detail.StrokeWidth = 2f;
+                canvas.DrawLine(x - 23, y + 9, x + 23, y + 9, detail);
+                solid.Color = new SKColor(0x75, 0x60, 0x43);
+                canvas.DrawCircle(x - 23, y + 9, 5, solid);
+                canvas.DrawCircle(x + 23, y + 9, 5, solid);
+                solid.Color = new SKColor(0x9A, 0x8C, 0x68);
+                canvas.DrawRect(x - 10, y - 10, 8, 14, solid);
+                canvas.DrawRect(x + 4, y - 7, 8, 14, solid);
+                canvas.DrawLine(x - 6, y + 4, x - 3, y + 9, detail);
+                canvas.DrawLine(x + 8, y + 7, x + 6, y + 9, detail);
+                break;
+        }
+    }
+
     private static void DrawDecoration(SKCanvas canvas, float x, float y, DungeonDecoration decoration)
     {
         using var outline = new SKPaint
@@ -773,8 +925,8 @@ public class MazeRenderer
             StrokeCap = SKStrokeCap.Round
         };
 
-        canvas.Save();
-        canvas.RotateDegrees(decoration.Variant * 90f, x, y);
+        // Orthographic contract: environmental art keeps its authored screen-facing orientation.
+        // Variant may select non-directional details later, but must never rotate the asset.
         switch (decoration.Type)
         {
             case DungeonDecorationType.Rubble:
@@ -879,7 +1031,6 @@ public class MazeRenderer
                 canvas.DrawLine(x + 7, y - 12, x + 2, y + 11, outline);
                 break;
         }
-        canvas.Restore();
     }
 
     private static SKPath BannerTail(float x, float y)
@@ -1062,19 +1213,16 @@ public class MazeRenderer
         canvas.DrawRect(chestBase, chestPaint);
         canvas.DrawRect(chestBase, chestStroke);
         
-        // Draw chest lid (top part) - rotates when opening
-        canvas.Save();
-        
-        // Rotate lid based on opening progress (0 to -90 degrees)
-        float lidAngle = -90f * openProgress;
-        canvas.RotateDegrees(lidAngle, x - chestWidth/2, y - chestHeight/2 + lidHeight/2);
-        
-        SKRect chestLid = new SKRect(x - chestWidth/2, y - chestHeight/2 - lidHeight/2,
-                                      x + chestWidth/2, y - chestHeight/2 + lidHeight/2);
+        // The lid lifts and foreshortens without rotating, preserving the fixed orthographic view.
+        float lidLift = openProgress * 5f;
+        float visibleLidHeight = MathF.Max(1.5f, lidHeight * (1f - openProgress * 0.65f));
+        SKRect chestLid = new SKRect(
+            x - chestWidth / 2,
+            y - chestHeight / 2 - visibleLidHeight / 2 - lidLift,
+            x + chestWidth / 2,
+            y - chestHeight / 2 + visibleLidHeight / 2 - lidLift);
         canvas.DrawRect(chestLid, chestPaint);
         canvas.DrawRect(chestLid, chestStroke);
-        
-        canvas.Restore();
         
         // Draw lock/clasp on front (fades as chest opens)
         if (openProgress < 0.5f)

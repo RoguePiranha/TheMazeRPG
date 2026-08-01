@@ -118,6 +118,28 @@ public static class DungeonGenerationValidator
         if (layout.Decorations.Count < layout.Rooms.Count)
             errors.Add("Not every room received environmental dressing");
 
+        var expectedThemeFeature = layout.Theme switch
+        {
+            DungeonTheme.Castle => DungeonThemeFeatureType.CastleAlarm,
+            DungeonTheme.Sewer => DungeonThemeFeatureType.SewerRunoff,
+            DungeonTheme.Cemetery => DungeonThemeFeatureType.RestlessGrave,
+            DungeonTheme.Library => DungeonThemeFeatureType.ArcaneWard,
+            DungeonTheme.Forge => DungeonThemeFeatureType.HeatVent,
+            _ => DungeonThemeFeatureType.HideoutTripwire
+        };
+        if (layout.Rooms.Any(room => room.Role == DungeonRoomRole.Standard) && layout.ThemeFeatures.Count != 1)
+            errors.Add($"Theme {layout.Theme} requires exactly one environmental feature");
+        foreach (var feature in layout.ThemeFeatures)
+        {
+            var room = layout.RoomAt(feature.X, feature.Y);
+            if (room?.Id != feature.RoomId)
+                errors.Add($"Theme feature at ({feature.X},{feature.Y}) is outside room {feature.RoomId}");
+            if (feature.Type != expectedThemeFeature)
+                errors.Add($"Theme {layout.Theme} has incompatible feature {feature.Type}");
+            if (decorationCells.Contains((feature.X, feature.Y)))
+                errors.Add($"Theme feature overlaps a decoration at ({feature.X},{feature.Y})");
+        }
+
         return errors;
     }
 }
