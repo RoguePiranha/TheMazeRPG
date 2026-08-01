@@ -646,7 +646,8 @@ public class MazeRenderer
 
                     canvas.DrawRect(px, py, CellSize, CellSize, visible ? floorPaint : floorPaintDim);
                     bool textured = maze.Dungeon != null && TerrainService.DrawFloor(
-                        canvas, maze.Dungeon.Theme, px, py, CellSize, visible ? (byte)170 : (byte)51);
+                        canvas, maze.Dungeon.Theme, x, y, px, py, CellSize,
+                        visible ? (byte)170 : (byte)51);
                     bool isRoomFloor = maze.Dungeon == null ||
                         maze.Dungeon.Tiles[x, y] == DungeonTileType.RoomFloor;
                     if (isRoomFloor && !textured)

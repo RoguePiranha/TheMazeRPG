@@ -1,45 +1,58 @@
 {
   "_comment": [
-    "Curated floor-material samples from the licensed Pixel Crawler atlases.",
-    "Coordinates are source pixels in 16px-aligned sheets copied under Assets/Sprites/tiles/.",
+    "Curated floor-material patterns from the licensed Pixel Crawler atlases.",
+    "Coordinates identify the top-left of an authored, 16px-aligned pattern. World cells walk",
+    "across its columns and rows in order so adjacent source tiles remain adjacent on the map.",
     "The renderer falls back to its procedural theme palette when a mapping cannot load."
   ],
   "themes": {
     "Castle": {
       "atlas": "tiles/castle.png",
-      "sourceX": 64,
+      "sourceX": 96,
       "sourceY": 288,
-      "tileSize": 16
+      "tileSize": 16,
+      "columns": 3,
+      "rows": 1
     },
     "Sewer": {
       "atlas": "tiles/sewer.png",
-      "sourceX": 32,
+      "sourceX": 48,
       "sourceY": 80,
-      "tileSize": 16
+      "tileSize": 16,
+      "columns": 2,
+      "rows": 2
     },
     "Cemetery": {
       "atlas": "tiles/cemetery.png",
       "sourceX": 16,
       "sourceY": 16,
-      "tileSize": 16
+      "tileSize": 16,
+      "columns": 3,
+      "rows": 3
     },
     "Library": {
       "atlas": "tiles/library.png",
       "sourceX": 336,
       "sourceY": 64,
-      "tileSize": 16
+      "tileSize": 16,
+      "columns": 3,
+      "rows": 2
     },
     "Forge": {
       "atlas": "tiles/forge.png",
       "sourceX": 0,
-      "sourceY": 192,
-      "tileSize": 32
+      "sourceY": 128,
+      "tileSize": 16,
+      "columns": 7,
+      "rows": 2
     },
     "Hideout": {
       "atlas": "tiles/hideout.png",
       "sourceX": 16,
       "sourceY": 80,
-      "tileSize": 16
+      "tileSize": 16,
+      "columns": 3,
+      "rows": 1
     }
   }
 }

@@ -430,6 +430,8 @@ sealed class Program
                 int sourceX = definition.GetProperty("sourceX").GetInt32();
                 int sourceY = definition.GetProperty("sourceY").GetInt32();
                 int tileSize = definition.GetProperty("tileSize").GetInt32();
+                int columns = definition.GetProperty("columns").GetInt32();
+                int rows = definition.GetProperty("rows").GetInt32();
                 if (!System.IO.File.Exists(fullPath))
                 {
                     Console.WriteLine($"  MISSING TERRAIN FILE {theme} -> {relativePath}");
@@ -438,10 +440,11 @@ sealed class Program
                 }
 
                 var (atlasWidth, atlasHeight) = PngSize(fullPath);
-                if (tileSize <= 0 || sourceX < 0 || sourceY < 0 ||
-                    sourceX + tileSize > atlasWidth || sourceY + tileSize > atlasHeight)
+                if (tileSize <= 0 || columns <= 0 || rows <= 0 || sourceX < 0 || sourceY < 0 ||
+                    sourceX + tileSize * columns > atlasWidth || sourceY + tileSize * rows > atlasHeight)
                 {
-                    Console.WriteLine($"  INVALID TERRAIN RECT {theme} -> ({sourceX},{sourceY},{tileSize}) " +
+                    Console.WriteLine($"  INVALID TERRAIN PATTERN {theme} -> " +
+                                      $"({sourceX},{sourceY},{tileSize},{columns}x{rows}) " +
                                       $"in {atlasWidth}x{atlasHeight}");
                     terrainFailures++;
                 }
@@ -504,7 +507,7 @@ sealed class Program
             foreach (var theme in Enum.GetValues<DungeonTheme>())
             {
                 if (terrainSurface == null || !TheMazeRPG.UI.Rendering.TerrainService.DrawFloor(
-                        terrainSurface.Canvas, theme, 0, 0, 64, 255))
+                        terrainSurface.Canvas, theme, 0, 0, 0, 0, 64, 255))
                 {
                     Console.WriteLine($"  terrain {theme} did NOT load");
                     failed++;
