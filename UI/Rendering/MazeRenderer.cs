@@ -39,6 +39,12 @@ public class MazeRenderer
     private static readonly SKColor WallDetailColor = new(0x88, 0x88, 0x88);
     private static readonly SKColor FloorColor = new(0x22, 0x22, 0x22);
     private static readonly SKColor FloorDotColor = new(0x33, 0x33, 0x33);
+    private static readonly SKColor CorridorFloorColor = new(0x1B, 0x1D, 0x20);
+    private static readonly SKColor StandardRoomFloorColor = new(0x25, 0x25, 0x25);
+    private static readonly SKColor EntranceRoomFloorColor = new(0x20, 0x28, 0x2D);
+    private static readonly SKColor TreasureRoomFloorColor = new(0x2E, 0x29, 0x1B);
+    private static readonly SKColor HazardRoomFloorColor = new(0x30, 0x20, 0x20);
+    private static readonly SKColor ExitRoomFloorColor = new(0x20, 0x2C, 0x23);
     private static readonly SKColor HeroColor = new(100, 180, 255);
     private static readonly SKColor EnemyColor = new(255, 80, 80);
     private static readonly SKColor ChestColor = new(255, 215, 0);
@@ -533,6 +539,23 @@ public class MazeRenderer
         return (visible, seen);
     }
 
+    private static SKColor DungeonFloorColor(Maze maze, int x, int y)
+    {
+        var layout = maze.Dungeon;
+        if (layout == null) return FloorColor;
+        if (layout.Tiles[x, y] is DungeonTileType.CorridorFloor or DungeonTileType.Doorway)
+            return CorridorFloorColor;
+
+        return layout.RoomAt(x, y)?.Role switch
+        {
+            DungeonRoomRole.Entrance => EntranceRoomFloorColor,
+            DungeonRoomRole.Treasure => TreasureRoomFloorColor,
+            DungeonRoomRole.Hazard => HazardRoomFloorColor,
+            DungeonRoomRole.Exit => ExitRoomFloorColor,
+            _ => StandardRoomFloorColor
+        };
+    }
+
     private void DrawMaze(SKCanvas canvas, Maze maze, FogView fog)
     {
         using var floorPaint = new SKPaint { Color = FloorColor, Style = SKPaintStyle.Fill, IsAntialias = false };
@@ -568,8 +591,18 @@ public class MazeRenderer
                     if (!fog.FloorSeen(x, y)) continue; // never seen: pure black void
                     bool visible = fog.FloorVisible(x, y);
 
+                    var tileFloorColor = DungeonFloorColor(maze, x, y);
+                    floorPaint.Color = tileFloorColor;
+                    floorPaintDim.Color = tileFloorColor.WithAlpha(DimAlpha);
+
                     canvas.DrawRect(px, py, CellSize, CellSize, visible ? floorPaint : floorPaintDim);
-                    canvas.DrawRect(px + dotOffset, py + dotOffset, dotSize, dotSize, visible ? floorDotPaint : floorDotPaintDim);
+                    bool isRoomFloor = maze.Dungeon == null ||
+                        maze.Dungeon.Tiles[x, y] == DungeonTileType.RoomFloor;
+                    if (isRoomFloor)
+                    {
+                        canvas.DrawRect(px + dotOffset, py + dotOffset, dotSize, dotSize,
+                            visible ? floorDotPaint : floorDotPaintDim);
+                    }
                 }
             }
         }

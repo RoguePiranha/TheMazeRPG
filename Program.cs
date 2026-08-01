@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using TheMazeRPG.Core.Models;
 using TheMazeRPG.Core.Services;
+using TheMazeRPG.Core.Systems;
 
 namespace TheMazeRPG;
 
@@ -56,6 +57,14 @@ sealed class Program
         if (Environment.GetEnvironmentVariable("TEST_DUNGEON") == "1")
         {
             RunDungeonRestructureDemo();
+            return;
+        }
+
+        // If TEST_MAPGEN is set, validate dungeon structure, determinism, and room-aware
+        // population across a broad range of seeds and floors.
+        if (Environment.GetEnvironmentVariable("TEST_MAPGEN") == "1")
+        {
+            RunMapGenerationDemo();
             return;
         }
 
@@ -751,6 +760,7 @@ sealed class Program
             var stairs = gsGuardian.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
             gsGuardian.Hero.X = stairs.X;
             gsGuardian.Hero.Y = stairs.Y;
+            gsGuardian.Enemies.Clear(); // this section validates pacing, not exit-room combat
             for (int t = 0; t < 30 && gsGuardian.CurrentFloor == floor; t++) gsGuardian.Tick();
         }
         Console.WriteLine($"Reached floor 4 stairs -> InSafeRoom={gsGuardian.IsInSafeRoom}, Floor={gsGuardian.CurrentFloor}");
@@ -804,6 +814,7 @@ sealed class Program
             var stairs = gsShrine.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
             gsShrine.Hero.X = stairs.X;
             gsShrine.Hero.Y = stairs.Y;
+            gsShrine.Enemies.Clear(); // this section validates the safe-room exit path
             for (int t = 0; t < 30 && gsShrine.CurrentFloor == floor; t++) gsShrine.Tick();
         }
         gsShrine.Hero.GainExperience(500); // give the hero real progress so "preserved" is a meaningful check
@@ -859,6 +870,141 @@ sealed class Program
         return distances.GetValueOrDefault((stairs.X, stairs.Y), -1);
     }
 
+    public static void RunMapGenerationDemo()
+    {
+        const int seedCount = 200;
+        const int floorCount = 8;
+        int generated = 0;
+        int minimumRooms = int.MaxValue;
+        int maximumRooms = 0;
+        int minimumExitDistance = int.MaxValue;
+        int maximumExitDistance = 0;
+        int totalLoops = 0;
+
+        Console.WriteLine("=== Dungeon map generation validation ===");
+        for (int seed = 1; seed <= seedCount; seed++)
+        {
+            for (int floor = 1; floor <= floorCount; floor++)
+            {
+                var maze = new MazeGenerator(seed).Generate(41, 31, floor);
+                var errors = DungeonGenerationValidator.Validate(maze);
+                if (errors.Count > 0)
+                    throw new InvalidOperationException($"Seed {seed}, floor {floor}: {string.Join("; ", errors)}");
+
+                var repeat = new MazeGenerator(seed).Generate(41, 31, floor);
+                if (!SameDungeon(maze, repeat))
+                    throw new InvalidOperationException($"Seed {seed}, floor {floor} was not deterministic.");
+
+                var layout = maze.Dungeon!;
+                int exitDistance = maze.BfsDistancesFrom(layout.EntranceX, layout.EntranceY)
+                    .GetValueOrDefault((layout.ExitX, layout.ExitY), -1);
+                int loopCount = layout.Connections.Count(connection => connection.IsLoop);
+
+                generated++;
+                minimumRooms = Math.Min(minimumRooms, layout.Rooms.Count);
+                maximumRooms = Math.Max(maximumRooms, layout.Rooms.Count);
+                minimumExitDistance = Math.Min(minimumExitDistance, exitDistance);
+                maximumExitDistance = Math.Max(maximumExitDistance, exitDistance);
+                totalLoops += loopCount;
+            }
+            // The compact simulation map uses the same generator contract and needs its own
+            // coverage because room packing behaves differently at this size.
+            var compact = new MazeGenerator(seed).Generate(21, 15, 1);
+            var compactErrors = DungeonGenerationValidator.Validate(compact);
+            if (compactErrors.Count > 0)
+                throw new InvalidOperationException($"Compact seed {seed}: {string.Join("; ", compactErrors)}");
+
+            var minimumSize = new MazeGenerator(seed).Generate(15, 11, 1);
+            var minimumSizeErrors = DungeonGenerationValidator.Validate(minimumSize);
+            if (minimumSizeErrors.Count > 0)
+                throw new InvalidOperationException(
+                    $"Minimum-size seed {seed}: {string.Join("; ", minimumSizeErrors)}");
+        }
+
+        // Exercise GameState's population pass separately; constructing every topology above as a
+        // full game would obscure generator failures with unrelated data/service work.
+        for (int seed = 1; seed <= 50; seed++)
+        {
+            var gameState = new GameState(seed, "Map Tester", "Warrior", "Human");
+            var layout = gameState.CurrentMaze.Dungeon
+                ?? throw new InvalidOperationException($"GameState seed {seed} has no dungeon metadata.");
+
+            AssertFeatureRoomRole(gameState, MazeFeatureType.Stairs, DungeonRoomRole.Exit, seed);
+            AssertFeatureRoomRole(gameState, MazeFeatureType.Chest, DungeonRoomRole.Treasure, seed);
+            var trap = gameState.CurrentMaze.Features.FirstOrDefault(feature => feature.Type == MazeFeatureType.Trap);
+            if (trap != null)
+                AssertFeatureRoomRole(gameState, MazeFeatureType.Trap, DungeonRoomRole.Hazard, seed);
+
+            foreach (var enemy in gameState.Enemies)
+            {
+                int enemyX = (int)MathF.Round(enemy.X);
+                int enemyY = (int)MathF.Round(enemy.Y);
+                var room = layout.RoomAt(enemyX, enemyY);
+                if (room == null || room.Role is DungeonRoomRole.Entrance or DungeonRoomRole.Treasure)
+                    throw new InvalidOperationException(
+                        $"Seed {seed}: enemy at ({enemyX},{enemyY}) is outside an encounter room.");
+            }
+        }
+
+        Console.WriteLine($"Validated {generated} floors ({seedCount} seeds x {floorCount} floors).");
+        Console.WriteLine($"Rooms: {minimumRooms}-{maximumRooms}; exit BFS distance: {minimumExitDistance}-{maximumExitDistance}; " +
+                          $"average loops: {(double)totalLoops / generated:0.00}.");
+        Console.WriteLine("Validated deterministic output and room-aware population for 50 GameState seeds.");
+    }
+
+    private static void AssertFeatureRoomRole(
+        GameState gameState,
+        MazeFeatureType featureType,
+        DungeonRoomRole expectedRole,
+        int seed)
+    {
+        var feature = gameState.CurrentMaze.Features.Single(item => item.Type == featureType);
+        var room = gameState.CurrentMaze.Dungeon!.RoomAt(feature.X, feature.Y);
+        if (room?.Role != expectedRole)
+        {
+            throw new InvalidOperationException(
+                $"Seed {seed}: {featureType} at ({feature.X},{feature.Y}) is in {room?.Role.ToString() ?? "no room"}, " +
+                $"expected {expectedRole}.");
+        }
+    }
+
+    private static bool SameDungeon(Maze first, Maze second)
+    {
+        if (first.Width != second.Width || first.Height != second.Height ||
+            first.Dungeon == null || second.Dungeon == null ||
+            first.Dungeon.Rooms.Count != second.Dungeon.Rooms.Count ||
+            first.Dungeon.Connections.Count != second.Dungeon.Connections.Count)
+        {
+            return false;
+        }
+
+        for (int x = 0; x < first.Width; x++)
+        {
+            for (int y = 0; y < first.Height; y++)
+            {
+                if (first.Walls[x, y] != second.Walls[x, y] ||
+                    first.Dungeon.Tiles[x, y] != second.Dungeon.Tiles[x, y] ||
+                    first.Dungeon.RegionIds[x, y] != second.Dungeon.RegionIds[x, y])
+                {
+                    return false;
+                }
+            }
+        }
+
+        for (int i = 0; i < first.Dungeon.Rooms.Count; i++)
+        {
+            var left = first.Dungeon.Rooms[i];
+            var right = second.Dungeon.Rooms[i];
+            if (left.X != right.X || left.Y != right.Y || left.Width != right.Width ||
+                left.Height != right.Height || left.Role != right.Role)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     // Debug/test entrypoint: if TEST_OVERWORLD=1 is set, exercise the Overworld vertical slice and exit
     public static void RunOverworldDemo()
     {
@@ -874,6 +1020,7 @@ sealed class Program
             var stairs = gs.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
             gs.Hero.X = stairs.X;
             gs.Hero.Y = stairs.Y;
+            gs.Enemies.Clear(); // this section validates Overworld wiring, not exit-room combat
             for (int t = 0; t < 30 && gs.CurrentFloor == floor; t++) gs.Tick();
         }
         Console.WriteLine($"Reached safe room -> InSafeRoom={gs.IsInSafeRoom}");
@@ -946,6 +1093,7 @@ sealed class Program
             var stairs = gs1.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
             gs1.Hero.X = stairs.X;
             gs1.Hero.Y = stairs.Y;
+            gs1.Enemies.Clear(); // this section validates persistence, not exit-room combat
             for (int t = 0; t < 30 && gs1.CurrentFloor == floor; t++) gs1.Tick();
         }
         var shrine = gs1.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Shrine);
@@ -996,6 +1144,7 @@ sealed class Program
             var stairs = gs3.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Stairs);
             gs3.Hero.X = stairs.X;
             gs3.Hero.Y = stairs.Y;
+            gs3.Enemies.Clear(); // this section validates checkpoint persistence
             for (int t = 0; t < 30 && gs3.CurrentFloor == floor && !gs3.IsInSafeRoom; t++) gs3.Tick();
         }
         Console.WriteLine($"In safe room: {gs3.IsInSafeRoom} (floor {gs3.CurrentFloor}); CanSave={gs3.CanSave} (expect True)");

@@ -2263,12 +2263,17 @@ public class GameState
         StairsLocation = null;
         int enemyCount = 3 + CurrentFloor;
 
-        // Place stairs genuinely far from the entrance (real maze-solving distance via BFS, not
-        // straight-line) so the floor is an actual maze-solving challenge rather than a coin flip.
+        // Place stairs in the generated exit room, then favor its most distant cells. The BFS
+        // fallback keeps this compatible with any older/non-semantic maze implementation.
         var distances = CurrentMaze.BfsDistancesFrom(1, 1);
         if (emptyCells.Count > 0)
         {
-            var reachable = emptyCells.Where(c => distances.ContainsKey(c)).ToList();
+            var exitRoom = CurrentMaze.Dungeon?.Rooms.FirstOrDefault(room => room.Role == DungeonRoomRole.Exit);
+            var exitRoomCells = exitRoom == null
+                ? new List<(int x, int y)>()
+                : emptyCells.Where(cell => exitRoom.Contains(cell.x, cell.y)).ToList();
+            var reachable = (exitRoomCells.Count > 0 ? exitRoomCells : emptyCells)
+                .Where(c => distances.ContainsKey(c)).ToList();
             var candidates = reachable.Count > 0 ? reachable : emptyCells;
             int farThreshold = candidates.Count > 0
                 ? candidates.Select(c => distances.GetValueOrDefault(c, 0)).OrderByDescending(d => d)
@@ -2280,30 +2285,32 @@ public class GameState
             emptyCells.Remove(stairsCell);
             CurrentMaze.Features.Add(new MazeFeature { X = stairsCell.x, Y = stairsCell.y, Type = MazeFeatureType.Stairs });
         }
-        // Place chest (loot + XP only — no key/gating)
+        // Place chest in the room reserved for treasure (loot + XP only — no key/gating).
         if (emptyCells.Count > 0)
         {
-            int chestIdx = _random.Next(emptyCells.Count);
-            var chestCell = emptyCells[chestIdx];
-            emptyCells.RemoveAt(chestIdx);
+            var chestCell = TakeRoomAwareCell(emptyCells, DungeonRoomRole.Treasure);
             CurrentMaze.Features.Add(new MazeFeature { X = chestCell.x, Y = chestCell.y, Type = MazeFeatureType.Chest });
         }
         // Occasionally place a trap (environmental hazard, not every floor)
         if (emptyCells.Count > 0 && _random.NextDouble() < 0.4)
         {
-            int trapIdx = _random.Next(emptyCells.Count);
-            var trapCell = emptyCells[trapIdx];
-            emptyCells.RemoveAt(trapIdx);
+            var trapCell = TakeRoomAwareCell(emptyCells, DungeonRoomRole.Hazard);
             // Hidden: nearly invisible until the hero notices it (a Wisdom spot roll) or examines it.
             CurrentMaze.Features.Add(new MazeFeature { X = trapCell.x, Y = trapCell.y, Type = MazeFeatureType.Trap, Hidden = true });
         }
         // No per-floor boss anymore — the significant fight is the Guardian at each safe-room gate.
-        // Spawn regular enemies (weighted class, random race, random level in the floor's range)
+        // Spawn regular enemies (weighted class, random race, random level in the floor's range).
+        var enemyRooms = CurrentMaze.Dungeon?.Rooms
+            .Where(room => room.Role is DungeonRoomRole.Standard or DungeonRoomRole.Hazard or DungeonRoomRole.Exit)
+            .OrderBy(_ => _random.Next())
+            .ToList() ?? new List<DungeonRoom>();
+
         for (int i = 0; i < enemyCount && emptyCells.Count > 0; i++)
         {
-            int idx = _random.Next(emptyCells.Count);
-            var (x, y) = emptyCells[idx];
-            emptyCells.RemoveAt(idx);
+            // Cycle through eligible rooms before reusing one. Encounters now belong to rooms
+            // instead of being scattered through arbitrary corridor cells.
+            var preferredRoom = enemyRooms.Count > 0 ? enemyRooms[i % enemyRooms.Count] : null;
+            var (x, y) = TakeRoomAwareCell(emptyCells, preferredRoom);
             var enemy = EnemyFactory.RandomRegular(CurrentFloor, _characterDataService, _random);
             enemy.X = x;
             enemy.Y = y;
@@ -2311,6 +2318,23 @@ public class GameState
             enemy.TargetY = y;
             Enemies.Add(enemy);
         }
+    }
+
+    private (int x, int y) TakeRoomAwareCell(List<(int x, int y)> available, DungeonRoomRole role)
+    {
+        var room = CurrentMaze.Dungeon?.Rooms.FirstOrDefault(candidate => candidate.Role == role);
+        return TakeRoomAwareCell(available, room);
+    }
+
+    private (int x, int y) TakeRoomAwareCell(List<(int x, int y)> available, DungeonRoom? room)
+    {
+        var preferred = room == null
+            ? available
+            : available.Where(cell => room.Contains(cell.x, cell.y)).ToList();
+        var pool = preferred.Count > 0 ? preferred : available;
+        var selected = pool[_random.Next(pool.Count)];
+        available.Remove(selected);
+        return selected;
     }
 
     /// <summary>

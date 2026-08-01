@@ -19,6 +19,10 @@ public class Maze
     
     // Special features in the maze
     public List<MazeFeature> Features { get; set; } = new();
+
+    // Present only on procedurally generated dungeon floors. The Overworld and safe rooms keep
+    // using the shared wall grid without inheriting dungeon-specific semantics.
+    public DungeonLayout? Dungeon { get; set; }
     
     public Maze(int width, int height)
     {
