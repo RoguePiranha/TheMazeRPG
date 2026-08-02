@@ -106,6 +106,10 @@ public class Hero
 
     public Dictionary<EquipmentSlot, Combinable> Equipment { get; set; } = new();
 
+    // Granted by the future skill system. Class affinities and learned training are checked
+    // independently so either one is enough to use a weapon without unfamiliarity penalties.
+    public HashSet<WeaponType> WeaponTraining { get; set; } = new();
+
     public int EquipmentDefenseBonus => Equipment.Values.Sum(item => item switch
     {
         Armor armor => armor.DefenseBonus,

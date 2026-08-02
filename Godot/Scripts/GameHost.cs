@@ -36,6 +36,7 @@ public partial class GameHost : Node
     private bool _startSettings;
     private bool _startChest;
     private bool _startChestPrompt;
+    private bool _startDeath;
     private bool _inGame;
     private bool _deathShown;
     private bool _dungeonExitShown;
@@ -77,7 +78,7 @@ public partial class GameHost : Node
             _ui.ShowCharacterCreation(new CharacterDataService());
         }
         else if (_startTurnBased || _startEnemyPhase || _startIntentPreview || _startPathPreview || _startAttackPreview || _startFogPreview || _startInventory ||
-                 _startCharacterSheet || _startLoot || _startCombination || _startChest || _startChestPrompt)
+                 _startCharacterSheet || _startLoot || _startCombination || _startChest || _startChestPrompt || _startDeath)
         {
             string characterClass = _startCombination || _startAttackPreview ? "Mage Apprentice"
                 : _startInventory ? "Warrior" : "Wanderer";
@@ -115,6 +116,8 @@ public partial class GameHost : Node
                 _ui.ShowCombination(_gameState);
             if (_startChest || _startChestPrompt)
                 StartDiagnosticChest(openMenu: _startChest);
+            if (_startDeath)
+                _gameState.Hero.CurrentHp = 0;
         }
         else
         {
@@ -187,6 +190,7 @@ public partial class GameHost : Node
 
         FollowHero();
         UpdateTacticalPathPreview();
+        UpdateHoveredInteraction();
         _ui.RefreshGame(_gameState);
         _dungeonView.QueueRedraw();
 
@@ -376,6 +380,15 @@ public partial class GameHost : Node
             _inGame = false;
             GetTree().Quit();
         };
+        _ui.RestartRequested += () =>
+        {
+            _ui.CloseModal(false);
+            _gameState.RestartGame();
+            _gameState.SetControlMode(ControlMode.Manual);
+            _gameState.Hero.Inventory.Add(CombinableCatalog.HealthPotion());
+            SaveService.Save(_gameState);
+            EnterGame(_gameState);
+        };
         _ui.DiveAgainRequested += () =>
         {
             _ui.CloseModal(false);
@@ -387,6 +400,7 @@ public partial class GameHost : Node
         _ui.ModalOpened += () =>
         {
             if (!_inGame) return;
+            ClearHoveredInteraction();
             _wasRunningBeforeModal = _gameState.IsRunning;
             _gameState.IsRunning = false;
             _gameState.SetManualMoveIntent(0, 0);
@@ -445,7 +459,8 @@ public partial class GameHost : Node
 
     private void EnterGame(GameState state)
     {
-        if (_gameState != null) _gameState.IsRunning = false;
+        if (_gameState != null && !ReferenceEquals(_gameState, state))
+            _gameState.IsRunning = false;
         _gameState = state;
         _secondsPerTick = 1.0 / Math.Max(1, GameSettings.Current.TickRate);
         _simulationAccumulator = 0;
@@ -455,9 +470,10 @@ public partial class GameHost : Node
         _dungeonView.State = state;
         _dungeonView.TacticalPathPreview = Array.Empty<(int x, int y)>();
         _dungeonView.TacticalAttackPreview = null;
+        ClearHoveredInteraction();
         CancelQueuedTacticalPath();
-        SnapCameraToHero();
         _ui.ShowGame(state);
+        SnapCameraToHero();
         _dungeonView.QueueRedraw();
         GD.Print($"GODOT_DUNGEON_READY hero={state.Hero.Name} floor={state.CurrentFloor} theme={state.CurrentMaze.Dungeon?.Theme}");
     }
@@ -482,41 +498,61 @@ public partial class GameHost : Node
 
     private void TryOpenInteraction()
     {
+        var (feature, corpse) = FindMouseInteraction();
+        if (corpse != null) _ui.ShowCorpseActions(_gameState, corpse);
+        else if (feature is { Type: MazeFeatureType.Trap }) _ui.ShowTrapActions(_gameState, feature);
+    }
+
+    private void UpdateHoveredInteraction()
+    {
+        if (_startChestPrompt) return;
+        var (feature, corpse) = FindMouseInteraction();
+        _dungeonView.HoveredFeature = feature;
+        _dungeonView.HoveredCorpse = corpse;
+    }
+
+    private (MazeFeature? feature, Enemy? corpse) FindMouseInteraction()
+    {
         Vector2 tile = MouseTile();
-        const float pickRadius = 0.8f;
+        const float pickRadius = 0.65f;
         float best = pickRadius;
-        MazeFeature? selectedTrap = null;
+        MazeFeature? selectedFeature = null;
         Enemy? selectedCorpse = null;
 
         foreach (MazeFeature feature in _gameState.CurrentMaze.Features)
         {
-            if (feature.IsUsed || feature.Type != MazeFeatureType.Trap) continue;
-            if (!_dungeonView.IsCellVisible((int)MathF.Round(feature.X), (int)MathF.Round(feature.Y)))
-                continue;
+            bool eligibleTrap = feature.Type == MazeFeatureType.Trap &&
+                (!feature.Hidden || feature.Perceived);
+            bool eligibleChest = feature.Type == MazeFeatureType.Chest &&
+                ReferenceEquals(feature, _gameState.NearbyInteractable);
+            if (feature.IsUsed || (!eligibleTrap && !eligibleChest)) continue;
+            if (!_dungeonView.IsCellVisible(feature.X, feature.Y)) continue;
             float distance = tile.DistanceTo(new Vector2(feature.X, feature.Y));
-            if (distance <= best)
-            {
-                best = distance;
-                selectedTrap = feature;
-                selectedCorpse = null;
-            }
-        }
-        foreach (Enemy enemy in _gameState.Enemies)
-        {
-            if (enemy.IsAlive) continue;
-            if (!_dungeonView.IsCellVisible((int)MathF.Round(enemy.X), (int)MathF.Round(enemy.Y)))
-                continue;
-            float distance = tile.DistanceTo(new Vector2(enemy.X, enemy.Y));
-            if (distance <= best)
-            {
-                best = distance;
-                selectedTrap = null;
-                selectedCorpse = enemy;
-            }
+            if (distance > best) continue;
+            best = distance;
+            selectedFeature = feature;
+            selectedCorpse = null;
         }
 
-        if (selectedCorpse != null) _ui.ShowCorpseActions(_gameState, selectedCorpse);
-        else if (selectedTrap != null) _ui.ShowTrapActions(_gameState, selectedTrap);
+        foreach (Enemy enemy in _gameState.Enemies)
+        {
+            if (enemy.IsAlive || !_dungeonView.IsCellVisible(
+                    (int)MathF.Round(enemy.X), (int)MathF.Round(enemy.Y))) continue;
+            float distance = tile.DistanceTo(new Vector2(enemy.X, enemy.Y));
+            if (distance > best) continue;
+            best = distance;
+            selectedFeature = null;
+            selectedCorpse = enemy;
+        }
+        return (selectedFeature, selectedCorpse);
+    }
+
+    private void ClearHoveredInteraction()
+    {
+        if (_dungeonView == null) return;
+        _dungeonView.HoveredFeature = null;
+        _dungeonView.HoveredCorpse = null;
+        _dungeonView.QueueRedraw();
     }
 
     private Vector2 MouseTile() =>
@@ -670,6 +706,7 @@ public partial class GameHost : Node
         _startSettings = arguments.Any(value => value.Equals("--start-settings", StringComparison.OrdinalIgnoreCase));
         _startChest = arguments.Any(value => value.Equals("--start-chest", StringComparison.OrdinalIgnoreCase));
         _startChestPrompt = arguments.Any(value => value.Equals("--start-chest-prompt", StringComparison.OrdinalIgnoreCase));
+        _startDeath = arguments.Any(value => value.Equals("--start-death", StringComparison.OrdinalIgnoreCase));
         string? argument = arguments.FirstOrDefault(value => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
         if (argument == null) return;
         _capturePath = Path.GetFullPath(argument[prefix.Length..]);
@@ -694,6 +731,7 @@ public partial class GameHost : Node
         chest.RequiredKeyId = "diagnostic-chest-key";
         _gameState.Hero.Inventory.Add(CombinableCatalog.ChestKey(chest.RequiredKeyId));
         _gameState.UpdateNearbyInteractable();
+        if (!openMenu) _dungeonView.HoveredFeature = chest;
         SnapCameraToHero();
         _ui.RefreshGame(_gameState);
         _dungeonView.QueueRedraw();
@@ -908,7 +946,7 @@ public partial class GameHost : Node
 
     private void SnapCameraToHero()
     {
-        _camera.Position = DungeonView.WorldToPixel(_gameState.Hero.X, _gameState.Hero.Y);
+        _camera.Position = CameraTarget();
         _camera.Offset = Vector2.Zero;
         UpdateCameraLimits();
         _camera.ResetSmoothing();
@@ -916,7 +954,7 @@ public partial class GameHost : Node
 
     private void FollowHero()
     {
-        _camera.Position = DungeonView.WorldToPixel(_gameState.Hero.X, _gameState.Hero.Y);
+        _camera.Position = CameraTarget();
         if (_clientSettings.ScreenShake && _gameState.ScreenShake > 0f)
         {
             float strength = _gameState.ScreenShake;
@@ -929,6 +967,14 @@ public partial class GameHost : Node
             _camera.Offset = Vector2.Zero;
         }
         UpdateCameraLimits();
+    }
+
+    private Vector2 CameraTarget()
+    {
+        Vector2 insets = _ui.PlayAreaInsets;
+        float verticalBias = (insets.Y - insets.X) / 2f;
+        return DungeonView.WorldToPixel(_gameState.Hero.X, _gameState.Hero.Y) +
+            new Vector2(0f, verticalBias);
     }
 
     private void ApplyClientSettings()
@@ -949,10 +995,12 @@ public partial class GameHost : Node
 
     private void UpdateCameraLimits()
     {
+        Vector2 insets = _ui.PlayAreaInsets;
         _camera.LimitLeft = 0;
-        _camera.LimitTop = 0;
+        _camera.LimitTop = -Mathf.CeilToInt(insets.X);
         _camera.LimitRight = _gameState.CurrentMaze.Width * DungeonView.CellSize;
-        _camera.LimitBottom = _gameState.CurrentMaze.Height * DungeonView.CellSize;
+        _camera.LimitBottom = _gameState.CurrentMaze.Height * DungeonView.CellSize +
+            Mathf.CeilToInt(insets.Y);
     }
 
     private static void ConfigureInput()

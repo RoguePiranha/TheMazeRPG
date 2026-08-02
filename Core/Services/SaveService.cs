@@ -111,7 +111,8 @@ public static class SaveService
             Resources = new Dictionary<string, int>(hero.Resources),
             Loadout = new List<Combinable>(hero.Loadout),
             Inventory = new List<Combinable>(hero.Inventory),
-            Equipment = new Dictionary<EquipmentSlot, Combinable>(hero.Equipment)
+            Equipment = new Dictionary<EquipmentSlot, Combinable>(hero.Equipment),
+            WeaponTraining = new HashSet<WeaponType>(hero.WeaponTraining)
         };
 
         try

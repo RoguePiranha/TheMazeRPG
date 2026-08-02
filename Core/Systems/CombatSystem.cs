@@ -242,6 +242,7 @@ public class CombatSystem
     /// a crit roll. Shared by target-locked and directional attacks.</summary>
     private int ComputeHeroStatDamage(Hero hero, Attack attack)
     {
+        WeaponUseProfile weaponUse = WeaponProficiencyService.Evaluate(hero, attack);
         int statDamage = attack.Damage + hero.Attack;
         if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0)
             statDamage += (int)(hero.EffectiveIntelligence * 1.2f) + (int)(hero.EffectiveWisdom * 0.5f);
@@ -252,6 +253,8 @@ public class CombatSystem
             statDamage += hero.EquippedWeaponDamage;
             statDamage += (int)(hero.EffectiveStrength * 1.2f) + (int)(hero.EffectiveDexterity * 0.5f);
         }
+
+        statDamage = Math.Max(1, (int)MathF.Floor(statDamage * weaponUse.DamageMultiplier));
 
         float critChance = attack.CritChance + hero.EffectiveDexterity * 0.005f;
         if ((float)_random.NextDouble() < critChance)
@@ -277,6 +280,7 @@ public class CombatSystem
     {
         var visual = AttackVisuals.For(attack);
         var element = MagicElements.For(attack);
+        WeaponUseProfile weaponUse = WeaponProficiencyService.Evaluate(hero, attack);
 
         void Spawn(float speed, AttackAnimation type, int maxLife, float radius, float dmgMul, bool multi)
         {
@@ -294,7 +298,7 @@ public class CombatSystem
                 AttackName = attack.Name,
                 Visual = visual,
                 Element = element,
-                Accuracy = hero.EffectiveDexterity,
+                Accuracy = hero.EffectiveDexterity * weaponUse.AccuracyMultiplier,
                 MaxLifeTime = maxLife,
                 Team = ProjectileTeam.Hero,
                 Damage = isStatDamage ? 0 : d,

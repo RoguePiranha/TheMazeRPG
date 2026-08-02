@@ -1,4 +1,19 @@
+using System.Text.Json.Serialization;
+
 namespace TheMazeRPG.Core.Models;
+
+[JsonConverter(typeof(JsonStringEnumConverter<WeaponType>))]
+public enum WeaponType
+{
+    Unknown,
+    Sword,
+    Dagger,
+    Bow,
+    Axe,
+    Mace,
+    Spear,
+    Staff
+}
 
 /// <summary>
 /// A held weapon. Produces an <see cref="Attack"/> when used, which is how the combat
@@ -8,6 +23,7 @@ public class Weapon : Combinable
 {
     public override CombinableKind Kind => CombinableKind.Weapon;
 
+    public WeaponType WeaponType { get; set; }
     public int BaseDamage { get; set; } = 5;
     public float Range { get; set; } = 1.0f;
     public int Cooldown { get; set; } = 20;

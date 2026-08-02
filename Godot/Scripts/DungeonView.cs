@@ -26,6 +26,8 @@ public partial class DungeonView : Node2D
     public IReadOnlyList<(int x, int y)> TacticalPathPreview { get; set; } =
         Array.Empty<(int x, int y)>();
     public TacticalAttackPreview? TacticalAttackPreview { get; set; }
+    public MazeFeature? HoveredFeature { get; set; }
+    public Enemy? HoveredCorpse { get; set; }
 
     public override void _Draw()
     {
@@ -455,6 +457,13 @@ public partial class DungeonView : Node2D
                     }
                     break;
                 case MazeFeatureType.Chest:
+                    if (ReferenceEquals(feature, HoveredFeature))
+                    {
+                        Rect2 glowBounds = feature.IsOpened
+                            ? new Rect2(center + new Vector2(-14, -19), new Vector2(28, 30))
+                            : new Rect2(center + new Vector2(-14, -12), new Vector2(28, 24));
+                        DrawInteractionGlow(glowBounds);
+                    }
                     DrawRect(new Rect2(center + new Vector2(-11, -8), new Vector2(22, 16)),
                         FogColor(palette.Chest, dimmed));
                     float lidY = feature.IsOpened ? -13f : -1f;
@@ -469,6 +478,8 @@ public partial class DungeonView : Node2D
                     }
                     break;
                 case MazeFeatureType.Trap:
+                    if (ReferenceEquals(feature, HoveredFeature))
+                        DrawInteractionGlow(center, 10f);
                     DrawCircle(center, 8f, FogColor(palette.Hazard, dimmed), false, 2f);
                     break;
                 default:
@@ -487,6 +498,8 @@ public partial class DungeonView : Node2D
             Vector2 center = WorldToPixel(enemy.X + enemy.AnimationOffsetX, enemy.Y + enemy.AnimationOffsetY);
             Color body = enemy.IsAlive ? palette.Enemy : palette.Corpse;
             float radius = enemy.IsBoss ? 17f : enemy.IsElite ? 14f : 12f;
+            if (!enemy.IsAlive && ReferenceEquals(enemy, HoveredCorpse))
+                DrawInteractionGlow(center, radius + 2f);
             DrawCircle(center, radius, body);
             DrawCircle(center, radius, enemy.InCombat ? palette.Hazard : palette.EnemyEdge, false, 2f);
 
@@ -519,6 +532,29 @@ public partial class DungeonView : Node2D
         DrawCircle(center, 14f, palette.Hero);
         DrawCircle(center, 14f, state.Hero.InCombat ? palette.Hazard : palette.HeroEdge, false, 3f);
         DrawRect(new Rect2(center + new Vector2(-4, -5), new Vector2(8, 10)), palette.HeroMark);
+    }
+
+    private void DrawInteractionGlow(Rect2 bounds)
+    {
+        Color glow = InteractionGlowColor();
+        DrawRect(bounds.Grow(8f), glow with { A = glow.A * 0.12f }, false, 4f);
+        DrawRect(bounds.Grow(5f), glow with { A = glow.A * 0.28f }, false, 3f);
+        DrawRect(bounds.Grow(2f), glow, false, 2.5f);
+    }
+
+    private void DrawInteractionGlow(Vector2 center, float radius)
+    {
+        Color glow = InteractionGlowColor();
+        DrawCircle(center, radius + 8f, glow with { A = glow.A * 0.12f }, false, 4f);
+        DrawCircle(center, radius + 5f, glow with { A = glow.A * 0.28f }, false, 3f);
+        DrawCircle(center, radius + 2f, glow, false, 2.5f);
+    }
+
+    private static Color InteractionGlowColor()
+    {
+        float phase = (float)Time.GetTicksMsec() / 180f;
+        float alpha = 0.72f + MathF.Sin(phase) * 0.16f;
+        return new Color(0.58f, 0.91f, 1f, alpha);
     }
 
     private static bool IsWalkable(Maze maze, int x, int y) =>

@@ -1396,8 +1396,49 @@ sealed class Program
         Console.WriteLine("=== Equipment, migration, and chest interaction ===");
         var gs = new GameState(314, "GearTester", "Warrior", "Human");
         Require(gs.Hero.Loadout.All(item => item is Spell), "Physical weapons leaked into the action loadout.");
+        Require(gs.Hero.Attacks[0] is { Id: "basic-attack", Name: "Attack", Animation: AttackAnimation.Melee },
+            "Held sword did not produce the universal weapon command.");
         Require(gs.Hero.Attacks.Any(attack => attack.Id == "quick-slash"), "Class technique missing.");
         Require(gs.Hero.Equipment[EquipmentSlot.MainHand] is Weapon { Id: "sword" }, "Starting sword not held.");
+        WeaponUseProfile warriorSword = WeaponProficiencyService.Evaluate(gs.Hero, gs.Hero.CurrentAttack!);
+        Require(warriorSword.IsTrained && warriorSword.DamageMultiplier == 1f &&
+            warriorSword.AccuracyMultiplier == 1f, "Warrior sword affinity was not applied.");
+
+        var wanderer = new GameState(313, "Learner", "Wanderer", "Human");
+        Weapon unfamiliarSword = CombinableCatalog.Sword();
+        wanderer.Hero.Inventory.Add(unfamiliarSword);
+        Require(wanderer.EquipFromInventory(unfamiliarSword, out _), "Wanderer could not equip a sword.");
+        Require(wanderer.Hero.Attacks[0].Description.Contains("Sword"),
+            "Equipping a sword did not rebuild the universal attack command.");
+        WeaponUseProfile unfamiliar = WeaponProficiencyService.Evaluate(
+            wanderer.Hero, wanderer.Hero.CurrentAttack!);
+        Require(!unfamiliar.IsTrained &&
+            unfamiliar.DamageMultiplier == WeaponProficiencyService.UntrainedDamageMultiplier &&
+            unfamiliar.AccuracyMultiplier == WeaponProficiencyService.UntrainedAccuracyMultiplier,
+            "Untrained sword penalties were not applied.");
+
+        var testAttack = new Attack
+        {
+            Id = "training-test", Name = "Training Test", Damage = 8,
+            Range = 1f, Cooldown = 20, Animation = AttackAnimation.Melee
+        };
+        wanderer.Hero.CurrentAttack = testAttack;
+        var untrainedProjectiles = new List<Projectile>();
+        new CombatSystem(901).PerformHeroDirectionalAttack(wanderer.Hero, 1f, 0f, untrainedProjectiles);
+        wanderer.Hero.WeaponTraining.Add(WeaponType.Sword);
+        Require(WeaponProficiencyService.Evaluate(wanderer.Hero, wanderer.Hero.CurrentAttack!).IsTrained,
+            "Learned sword training did not remove the penalty.");
+        var trainedProjectiles = new List<Projectile>();
+        new CombatSystem(901).PerformHeroDirectionalAttack(wanderer.Hero, 1f, 0f, trainedProjectiles);
+        Require(untrainedProjectiles[0].StatDamage < trainedProjectiles[0].StatDamage &&
+            untrainedProjectiles[0].Accuracy < trainedProjectiles[0].Accuracy,
+            "Weapon proficiency did not affect spawned attack damage and accuracy.");
+
+        wanderer.Hero.Level = 7;
+        wanderer.RestartGame();
+        Require(wanderer.Hero.Name == "Learner" && wanderer.Hero.Race == "Human" &&
+            wanderer.Hero.Class == "Wanderer" && wanderer.Hero.Level == 1 && wanderer.IsRunning,
+            "Restart did not preserve identity while resetting the run.");
 
         gs.UnequipToInventory(gs.Hero.Equipment[EquipmentSlot.MainHand]);
         Weapon bow = CombinableCatalog.Bow();

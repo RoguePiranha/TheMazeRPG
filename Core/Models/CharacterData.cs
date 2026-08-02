@@ -9,6 +9,7 @@ public class CharacterClass
     public Dictionary<string, int> StatModifiers { get; set; } = new();
     public Dictionary<string, int> StartingStats { get; set; } = new();
     public Dictionary<string, int> StatGrowth { get; set; } = new();
+    public HashSet<WeaponType> WeaponAffinities { get; set; } = new();
 
     /// <summary>Optional starting elemental affinity leanings, keyed by MagicElement name
     /// ("Fire", "Arcane", ...). Added over the neutral baseline when a character of this class is

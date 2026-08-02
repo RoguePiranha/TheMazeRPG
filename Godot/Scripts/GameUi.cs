@@ -32,6 +32,7 @@ public partial class GameUi : Control
     private Label _themeLabel = null!;
     private Label _modeLabel = null!;
     private Label _turnLabel = null!;
+    private VBoxContainer _topHud = null!;
     private PanelContainer _intentBand = null!;
     private Label _intentLabel = null!;
     private Label _healthLabel = null!;
@@ -41,6 +42,8 @@ public partial class GameUi : Control
     private PanelContainer _interactionToast = null!;
     private Label _interactionLabel = null!;
     private HBoxContainer _hotbar = null!;
+    private VBoxContainer _bottomHud = null!;
+    private PanelContainer _messagePanel = null!;
     private string _hotbarSignature = "";
 
     private readonly List<string> _raceNames = new();
@@ -50,6 +53,7 @@ public partial class GameUi : Control
 
     public bool IsModalOpen => _modal.Visible;
     public bool IsFrontEndOpen => _frontEnd.Visible;
+    public Vector2 PlayAreaInsets => new(GetTopHudInset(), GetBottomHudInset());
 
     public event Action? NewGameRequested;
     public event Action? ContinueRequested;
@@ -60,6 +64,7 @@ public partial class GameUi : Control
     public event Action? SaveRequested;
     public event Action? QuitToTitleRequested;
     public event Action? QuitToDesktopRequested;
+    public event Action? RestartRequested;
     public event Action? DiveAgainRequested;
     public event Action<ClientSettings>? SettingsChanged;
     public event Action? ModalOpened;
@@ -707,9 +712,10 @@ public partial class GameUi : Control
         {
             int selected = (int)index;
             Combinable? item = selected < equippedEntries.Count ? equippedEntries[selected] : null;
-            details.Text = item == null ? "This slot is empty." : ItemDetails(item);
+            details.Text = item == null ? "This slot is empty." : ItemDetails(item, state.Hero);
         };
-        backpackList.ItemSelected += index => details.Text = ItemDetails(backpackEntries[(int)index]);
+        backpackList.ItemSelected += index =>
+            details.Text = ItemDetails(backpackEntries[(int)index], state.Hero);
 
         var unequip = CommandButton("UNEQUIP", Muted, 150);
         unequip.Pressed += () =>
@@ -991,14 +997,20 @@ public partial class GameUi : Control
     public void ShowDeath(GameState state)
     {
         var body = ModalBody("YOU HAVE FALLEN", Red, new Vector2(390, 0));
-        body.AddChild(LabelOf($"{state.Hero.Name}\nFloor {state.CurrentFloor}\nThe character save has been erased.", 16, Text, HorizontalAlignment.Center));
-        var newHero = CommandButton("NEW CHARACTER", Gold, 290);
+        body.AddChild(LabelOf(
+            $"{state.Hero.Name.ToUpperInvariant()}\n{state.Hero.Race.ToUpperInvariant()} {state.Hero.Class.ToUpperInvariant()}\n" +
+            $"FLOOR {state.CurrentFloor}\nThe fallen character save has been erased.",
+            16, Text, HorizontalAlignment.Center));
+        var restart = CommandButton("RESTART SAME CHARACTER", Gold, 290);
+        restart.Pressed += () => RestartRequested?.Invoke();
+        body.AddChild(restart);
+        var newHero = CommandButton("NEW CHARACTER", Blue, 290);
         newHero.Pressed += () => NewGameRequested?.Invoke();
         body.AddChild(newHero);
         var title = CommandButton("TITLE", Muted, 290);
         title.Pressed += () => BackToTitleRequested?.Invoke();
         body.AddChild(title);
-        ShowModal(body, new Vector2(450, 360), false);
+        ShowModal(body, new Vector2(470, 430), false);
     }
 
     public void ShowDungeonExit(GameState state)
@@ -1060,10 +1072,18 @@ public partial class GameUi : Control
 
     private void BuildHud()
     {
-        var top = new PanelContainer
+        _topHud = new VBoxContainer
         {
             AnchorRight = 1,
-            OffsetBottom = 78,
+            AnchorBottom = 1,
+            Alignment = BoxContainer.AlignmentMode.Begin,
+            MouseFilter = MouseFilterEnum.Ignore
+        };
+        _topHud.AddThemeConstantOverride("separation", 0);
+
+        var top = new PanelContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
             MouseFilter = MouseFilterEnum.Pass
         };
         top.AddThemeStyleboxOverride("panel", Box(Ink with { A = 0.95f }, Border, 0, bottom: 1));
@@ -1105,13 +1125,11 @@ public partial class GameUi : Control
         stack.AddChild(secondary);
         margin.AddChild(stack);
         top.AddChild(margin);
-        _hud.AddChild(top);
+        _topHud.AddChild(top);
 
         _intentBand = new PanelContainer
         {
-            AnchorRight = 1,
-            OffsetTop = 78,
-            OffsetBottom = 106,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
             MouseFilter = MouseFilterEnum.Ignore,
             Visible = false
         };
@@ -1121,7 +1139,8 @@ public partial class GameUi : Control
         _intentLabel.ClipText = true;
         intentMargin.AddChild(_intentLabel);
         _intentBand.AddChild(intentMargin);
-        _hud.AddChild(_intentBand);
+        _topHud.AddChild(_intentBand);
+        _hud.AddChild(_topHud);
 
         _interactionToast = new PanelContainer
         {
@@ -1143,7 +1162,7 @@ public partial class GameUi : Control
         _interactionToast.AddChild(interactionMargin);
         _hud.AddChild(_interactionToast);
 
-        var bottom = new VBoxContainer
+        _bottomHud = new VBoxContainer
         {
             AnchorLeft = 0.5f,
             AnchorRight = 0.5f,
@@ -1155,16 +1174,16 @@ public partial class GameUi : Control
             OffsetBottom = -14,
             Alignment = BoxContainer.AlignmentMode.End
         };
-        bottom.AddThemeConstantOverride("separation", 5);
+        _bottomHud.AddThemeConstantOverride("separation", 5);
         _activityLabel = LabelOf("", 13, Blue, HorizontalAlignment.Center);
         _activityLabel.Visible = false;
         _hotbar = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
         _hotbar.AddThemeConstantOverride("separation", 6);
-        bottom.AddChild(_activityLabel);
-        bottom.AddChild(_hotbar);
-        _hud.AddChild(bottom);
+        _bottomHud.AddChild(_activityLabel);
+        _bottomHud.AddChild(_hotbar);
+        _hud.AddChild(_bottomHud);
 
-        var messagePanel = new PanelContainer
+        _messagePanel = new PanelContainer
         {
             AnchorTop = 1,
             AnchorBottom = 1,
@@ -1174,15 +1193,27 @@ public partial class GameUi : Control
             OffsetBottom = -14,
             MouseFilter = MouseFilterEnum.Ignore
         };
-        messagePanel.AddThemeStyleboxOverride("panel", Box(new Color(0.02f, 0.025f, 0.03f, 0.82f), Border, 3));
+        _messagePanel.AddThemeStyleboxOverride("panel", Box(new Color(0.02f, 0.025f, 0.03f, 0.82f), Border, 3));
         var messageMargin = Margin(12, 8, 12, 8);
         _messageLabel = LabelOf("", 13, Text);
         _messageLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         _messageLabel.VerticalAlignment = VerticalAlignment.Bottom;
         messageMargin.AddChild(_messageLabel);
-        messagePanel.AddChild(messageMargin);
-        _hud.AddChild(messagePanel);
+        _messagePanel.AddChild(messageMargin);
+        _hud.AddChild(_messagePanel);
         _hud.Visible = false;
+    }
+
+    private float GetTopHudInset() => _hud.Visible
+        ? _topHud.GetCombinedMinimumSize().Y
+        : 0f;
+
+    private float GetBottomHudInset()
+    {
+        if (!_hud.Visible) return 0f;
+
+        float occupiedTop = Mathf.Min(_bottomHud.Position.Y, _messagePanel.Position.Y);
+        return Mathf.Max(0f, _hud.Size.Y - occupiedTop);
     }
 
     private GameState? GetGameState() => GetParent()?.GetParent() is GameHost host ? host.State : null;
@@ -1200,7 +1231,11 @@ public partial class GameUi : Control
 
     private void RefreshHotbar(GameState state)
     {
-        string signature = string.Join('|', state.Hero.Attacks.Select(attack => attack.Id)) + ":" + state.Hero.CurrentAttack?.Id;
+        string equipment = string.Join('|', state.Hero.Equipment.Values.OfType<Weapon>()
+            .Select(weapon => $"{weapon.Id}:{weapon.WeaponType}"));
+        string training = string.Join('|', state.Hero.WeaponTraining.OrderBy(type => type));
+        string signature = string.Join('|', state.Hero.Attacks.Select(attack => attack.Id)) + ":" +
+            state.Hero.CurrentAttack?.Id + ":" + equipment + ":" + training;
         if (signature == _hotbarSignature) return;
         _hotbarSignature = signature;
         ClearChildren(_hotbar);
@@ -1211,7 +1246,12 @@ public partial class GameUi : Control
             bool selected = ReferenceEquals(attack, state.Hero.CurrentAttack) || attack.Id == state.Hero.CurrentAttack?.Id;
             var button = SmallButton($"{index + 1}  {attack.Name.ToUpperInvariant()}", selected ? Gold : Muted);
             button.CustomMinimumSize = new Vector2(150, 38);
-            button.TooltipText = attack.Description;
+            WeaponUseProfile weaponUse = WeaponProficiencyService.Evaluate(state.Hero, attack);
+            button.TooltipText = attack.Description + (weaponUse.UsesWeapon && !weaponUse.IsTrained
+                ? $"\nUntrained {weaponUse.WeaponNames}: " +
+                  $"{(1f - weaponUse.DamageMultiplier):P0} damage, " +
+                  $"{(1f - weaponUse.AccuracyMultiplier):P0} accuracy penalty."
+                : "");
             button.Pressed += () => { state.SelectAttack(slot); _hotbarSignature = ""; RefreshGame(state); };
             _hotbar.AddChild(button);
         }
@@ -1429,14 +1469,17 @@ public partial class GameUi : Control
 
     private static string ItemLabel(Combinable item) => $"{item.Name}   {item.Rarity} {item.Kind}";
 
-    private static string ItemDetails(Combinable item)
+    private static string ItemDetails(Combinable item, Hero? hero = null)
     {
         string details = $"{item.Name}   {item.Rarity} {item.Kind}";
         if (!string.IsNullOrWhiteSpace(item.Description)) details += $"\n{item.Description}";
         if (item.Attributes.Count > 0) details += $"\n{string.Join(" / ", item.Attributes)}";
         return item switch
         {
-            Weapon weapon => details + $"\nDamage +{weapon.BaseDamage}   {weapon.HandsRequired}-hand   Range {weapon.Range:0.#}",
+            Weapon weapon => details +
+                $"\n{WeaponProficiencyService.ResolveType(weapon)}   Damage +{weapon.BaseDamage}   " +
+                $"{weapon.HandsRequired}-hand   Range {weapon.Range:0.#}" +
+                (hero == null ? "" : $"\n{WeaponProficiencyService.TrainingLabel(hero, weapon)}"),
             Armor armor => details + $"\n{EquipmentSlots.Label(armor.Slot)}   Defense +{armor.DefenseBonus}",
             Spell spell => details + $"\nDamage {spell.BaseDamage}   Range {spell.Range:0.#}   Crit {spell.CritChance:P0}   Mana {spell.ManaCost}",
             Item consumable when consumable.UseEffect == ItemUseEffect.RestoreHealth => details + $"\nRestores {consumable.EffectPower} health",

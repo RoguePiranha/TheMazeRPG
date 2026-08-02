@@ -27,6 +27,7 @@ public static class CombinableCatalog
     public static Weapon Bow() => new()
     {
         Id = "bow", Name = "Bow", Rarity = Rarity.Common,
+        WeaponType = WeaponType.Bow,
         BaseDamage = 6, Range = 4.0f, Cooldown = 15, Animation = AttackAnimation.Ranged,
         HandsRequired = 2,
         Description = "Shoots arrows."
@@ -35,6 +36,7 @@ public static class CombinableCatalog
     public static Weapon Sword() => new()
     {
         Id = "sword", Name = "Sword", Rarity = Rarity.Common,
+        WeaponType = WeaponType.Sword,
         BaseDamage = 8, Range = 1.2f, Cooldown = 18, Animation = AttackAnimation.Melee,
         Attributes = { GameAttribute.Sharp },
         Description = "A strength-based melee weapon."
@@ -43,6 +45,7 @@ public static class CombinableCatalog
     public static Weapon Dagger() => new()
     {
         Id = "dagger", Name = "Dagger", Rarity = Rarity.Common,
+        WeaponType = WeaponType.Dagger,
         BaseDamage = 6, Range = 1.0f, Cooldown = 12, Animation = AttackAnimation.Quick,
         Attributes = { GameAttribute.Sharp },
         Description = "A dexterity-based melee weapon."

@@ -13,6 +13,7 @@ public static class CraftedItemCatalog
         "iron-sword" => new Weapon
         {
             Id = "iron-sword", Name = "Iron Sword", Rarity = Rarity.Common,
+            WeaponType = WeaponType.Sword,
             BaseDamage = 7, Range = 1.2f, Cooldown = 16, Animation = AttackAnimation.Melee,
             CritChance = 0.08f, Attributes = { GameAttribute.Sharp },
             Description = "A sword forged from smelted iron ingots."

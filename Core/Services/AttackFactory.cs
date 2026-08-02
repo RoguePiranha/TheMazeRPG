@@ -8,6 +8,31 @@ public static class AttackFactory
 {
     public static List<Attack> GetStartingAttacks(string className) => GetClassAttacks(className);
 
+    /// <summary>The universal weapon command. This is equipment-derived, not a learned skill.</summary>
+    public static Attack GetBasicAttack(Hero hero)
+    {
+        Weapon? weapon = hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) as Weapon ??
+            hero.Equipment.GetValueOrDefault(EquipmentSlot.OffHand) as Weapon;
+        if (weapon == null)
+        {
+            return new Attack
+            {
+                Id = "basic-attack", Name = "Attack", Damage = 4, Range = 1f, Cooldown = 15,
+                Animation = AttackAnimation.Melee, CritChance = 0.05f,
+                Description = "Make an unarmed attack."
+            };
+        }
+
+        return new Attack
+        {
+            Id = "basic-attack", Name = "Attack", Damage = 0,
+            Range = weapon.Range, Cooldown = weapon.Cooldown, Animation = weapon.Animation,
+            CritChance = weapon.CritChance, KnockbackDistance = weapon.KnockbackDistance,
+            StaminaCost = weapon.StaminaCost,
+            Description = $"Attack with {weapon.Name}."
+        };
+    }
+
     public static List<Attack> GetClassAttacks(string className, int level = 1)
     {
         List<Attack> attacks = className switch
@@ -59,8 +84,8 @@ public static class AttackFactory
         return equipment;
     }
 
-    // Class actions describe what the hero does. Equipped weapons modify physical damage but are
-    // never converted into hotbar entries.
+    // Class actions are learned techniques. The separate universal Attack command is rebuilt from
+    // held equipment and weapons themselves are never inserted into this list.
     private static Attack QuickSlash() => new() { Id = "quick-slash", Name = "Quick Slash", Damage = 6, Range = 1.2f, Cooldown = 15, Animation = AttackAnimation.Melee, CritChance = 0.1f, KnockbackDistance = 0.2f, Description = "A quick cutting technique." };
     private static Attack HeavyCleave() => new() { Id = "heavy-cleave", Name = "Heavy Cleave", Damage = 15, Range = 1.2f, Cooldown = 40, Animation = AttackAnimation.Heavy, CritChance = 0.15f, KnockbackDistance = 0.5f, StaminaCost = 25, Description = "A committed sweeping technique." };
     private static Attack MagicDart() => new() { Id = "magic-dart", Name = "Mana Dart", Damage = 5, Range = 3.0f, Cooldown = 18, Animation = AttackAnimation.Magic, CritChance = 0.1f, Description = "A small bolt of ordered mana." };

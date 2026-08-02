@@ -75,4 +75,5 @@ public class SaveData
     public List<Combinable> Loadout { get; set; } = new();
     public List<Combinable> Inventory { get; set; } = new();
     public Dictionary<EquipmentSlot, Combinable> Equipment { get; set; } = new();
+    public HashSet<WeaponType> WeaponTraining { get; set; } = new();
 }

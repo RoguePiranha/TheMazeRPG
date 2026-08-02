@@ -103,6 +103,7 @@ public static class CombinationEngine
         {
             CombinableKind.Weapon => new Weapon
             {
+                WeaponType = WeaponTypeOf(a, b),
                 BaseDamage = Math.Max(DamageOf(a), DamageOf(b)) + 2,
                 Range = Math.Max(RangeOf(a), RangeOf(b)),
                 Cooldown = Math.Max(6, Math.Min(CooldownOf(a), CooldownOf(b))),
@@ -200,6 +201,9 @@ public static class CombinationEngine
     private static int CooldownOf(Combinable c) => c switch { Weapon w => w.Cooldown, Spell s => s.Cooldown, _ => 20 };
     private static int ManaCostOf(Combinable c) => c switch { Spell s => s.ManaCost, _ => 0 };
     private static int HandsRequiredOf(Combinable c) => c is Weapon weapon ? weapon.HandsRequired : 1;
+    private static WeaponType WeaponTypeOf(Combinable a, Combinable b) =>
+        a is Weapon first && first.WeaponType != WeaponType.Unknown ? first.WeaponType
+        : b is Weapon second ? second.WeaponType : WeaponType.Unknown;
     private static int DefenseOf(Combinable c) => c switch
     {
         Armor armor => armor.DefenseBonus,

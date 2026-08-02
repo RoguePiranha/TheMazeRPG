@@ -1148,7 +1148,15 @@ public class GameState
 
         Hero.Inventory.Remove(item);
         Hero.Equipment[slot.Value] = item;
+        if (item is Weapon) RefreshAttacks();
         LogMessage($"Equipped {item.Name} in {EquipmentSlots.Label(slot.Value)}.", MessageKind.System);
+        if (item is Weapon equippedWeapon && !WeaponProficiencyService.IsTrained(Hero, equippedWeapon))
+        {
+            LogMessage($"{equippedWeapon.Name} is unfamiliar: " +
+                $"{(1f - WeaponProficiencyService.UntrainedDamageMultiplier):P0} damage and " +
+                $"{(1f - WeaponProficiencyService.UntrainedAccuracyMultiplier):P0} accuracy penalty.",
+                MessageKind.Warning);
+        }
         return true;
     }
 
@@ -1178,6 +1186,7 @@ public class GameState
         var equipped = Hero.Equipment.FirstOrDefault(pair => ReferenceEquals(pair.Value, item));
         if (equipped.Value == null || !Hero.Equipment.Remove(equipped.Key)) return false;
         Hero.Inventory.Add(item);
+        if (item is Weapon) RefreshAttacks();
         LogMessage($"Unequipped {item.Name}.", MessageKind.System);
         return true;
     }
@@ -1328,8 +1337,7 @@ public class GameState
         // Class actions and physical equipment are separate systems.
         Hero.Loadout = new List<Combinable>();
         Hero.Equipment = AttackFactory.GetStartingEquipment(className);
-        Hero.Attacks = AttackFactory.GetClassAttacks(className, Hero.Level);
-        Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
+        RefreshAttacks();
         GameLog.Debug($"Attacks assigned: {Hero.Attacks.Count}, Current: {Hero.CurrentAttack?.Name ?? "None"}");
 
         StartNewFloor();
@@ -2159,11 +2167,12 @@ public class GameState
         LogMessage($"Found {loot.Name} ({loot.Rarity})", MessageKind.Loot);
     }
 
-    /// <summary>Rebuild class actions plus optional slotted spells, preserving selection by id.</summary>
+    /// <summary>Rebuild the equipment-derived basic attack, class techniques, and slotted spells.</summary>
     private void RefreshAttacks()
     {
         var currentId = Hero.CurrentAttack?.Id;
-        Hero.Attacks = AttackFactory.GetClassAttacks(Hero.Class, Hero.Level);
+        Hero.Attacks = new List<Attack> { AttackFactory.GetBasicAttack(Hero) };
+        Hero.Attacks.AddRange(AttackFactory.GetClassAttacks(Hero.Class, Hero.Level));
         Hero.Attacks.AddRange(AttackFactory.GetSlottedSpellAttacks(Hero.Loadout));
         Hero.CurrentAttack = Hero.Attacks.FirstOrDefault(a => a.Id == currentId) ?? Hero.Attacks.FirstOrDefault();
     }
@@ -2971,6 +2980,7 @@ public class GameState
             .Where(item => item is Spell && !LegacyClassActionIds.Contains(item.Id)));
         Hero.Inventory = new List<Combinable>(data.Inventory);
         Hero.Equipment = new Dictionary<EquipmentSlot, Combinable>(data.Equipment ?? new());
+        Hero.WeaponTraining = new HashSet<WeaponType>(data.WeaponTraining ?? new());
         MigrateLegacyLoadout(data);
         RefreshAttacks();
 
@@ -3456,6 +3466,20 @@ public class GameState
         IsHeroDead = false;
         DeathTimer = 0;
         Messages.Clear(); // a fresh run starts a fresh feed (StartNewFloor logs the opener)
+        IsInOverworld = false;
+        NearbyInteractable = null;
+        CurrentActivity = null;
+        ScreenShake = 0f;
+        SimulationMode = SimulationMode.RealTime;
+        ResetTacticalResolution();
+        TacticalTurn.IsPlayerTurn = false;
+        TacticalTurn.MovementRemaining = 0;
+        TacticalTurn.ActionAvailable = false;
+        TacticalTurn.BonusActionAvailable = false;
+        _manualMoveX = 0f;
+        _manualMoveY = 0f;
+        _dashTicksRemaining = 0;
+        _dashCooldownRemaining = 0;
         
         // Reset game state (StartNewFloor increments CurrentFloor to 1 for the first floor)
         TickCount = 0;
@@ -3495,8 +3519,7 @@ public class GameState
         // Equip the class starting loadout and project it into executable attacks
         Hero.Loadout = new List<Combinable>();
         Hero.Equipment = AttackFactory.GetStartingEquipment(_className);
-        Hero.Attacks = AttackFactory.GetClassAttacks(_className, Hero.Level);
-        Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
+        RefreshAttacks();
 
         // Start new floor
         StartNewFloor();

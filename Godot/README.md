@@ -21,6 +21,7 @@ Dungeon interface controls:
 - `Tab` opens the same Character modal on its Stats tab.
 - `E` interacts with a nearby chest. Locked chests support trap inspection, lockpicking, and matching keys.
 - Right-click a corpse or perceived trap for its interaction menu.
+- Hovering an available chest, perceived trap, or corpse gives it a pulsing cyan outline.
 - `Escape` opens the pause menu or closes the active overlay.
 
 Weapons and armor use humanoid equipment slots; one- and two-handed weapons obey hand occupancy,

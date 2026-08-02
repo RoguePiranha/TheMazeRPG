@@ -33,6 +33,7 @@
   "Warrior": {
     "description": "A mighty fighter with high strength and constitution",
     "color": "#B22222",
+    "weaponAffinities": ["Sword"],
     "statModifiers": {
       "Strength": 2,
       "Constitution": 1,
@@ -100,6 +101,7 @@
   "Rogue": {
     "description": "A cunning thief with high agility and dexterity",
     "color": "#2F4F2F",
+    "weaponAffinities": ["Dagger"],
     "statModifiers": {
       "Strength": 0,
       "Constitution": -1,
@@ -166,6 +168,7 @@
   "Archer": {
     "description": "A wilderness expert with balanced physical stats",
     "color": "#228B22",
+    "weaponAffinities": ["Bow"],
     "statModifiers": {
       "Strength": 1,
       "Constitution": 1,
