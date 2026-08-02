@@ -16,6 +16,9 @@ public class Weapon : Combinable
     public float KnockbackDistance { get; set; } = 0f;
     public int StaminaCost { get; set; } = 0;
 
+    /// <summary>Number of held-item slots occupied. Bows and large weapons require both hands.</summary>
+    public int HandsRequired { get; set; } = 1;
+
     /// <summary>Project this weapon into an Attack the combat system can execute.</summary>
     public Attack ToAttack() => new()
     {

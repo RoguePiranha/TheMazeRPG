@@ -4,7 +4,7 @@ using TheMazeRPG.Core.Services;
 namespace TheMazeRPG.Core.Systems;
 
 /// <summary>
-/// Mining a resource at the Overworld's MineEntrance. Unlike ChestOpenActivity, this holds no
+/// Mining a resource at the Overworld's MineEntrance. This holds no
 /// feature reference — the mine is a reusable location, not a one-shot pickup — so it only
 /// knows the material/amount/duration it was configured with. Like CraftActivity, "what happens
 /// next" is a caller-supplied continuation, not baked in — this activity shouldn't know about

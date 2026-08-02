@@ -80,6 +80,7 @@ public static class SaveService
         var hero = gameState.Hero;
         var data = new SaveData
         {
+            Version = 2,
             SaveId = gameState.SaveId,
             PlaytimeSeconds = gameState.TotalPlaytimeSeconds,
             SavedAtUtc = DateTime.UtcNow,
@@ -109,7 +110,8 @@ public static class SaveService
             Gold = hero.Gold,
             Resources = new Dictionary<string, int>(hero.Resources),
             Loadout = new List<Combinable>(hero.Loadout),
-            Inventory = new List<Combinable>(hero.Inventory)
+            Inventory = new List<Combinable>(hero.Inventory),
+            Equipment = new Dictionary<EquipmentSlot, Combinable>(hero.Equipment)
         };
 
         try

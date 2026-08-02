@@ -17,12 +17,15 @@ button fires the selected attack toward the cursor. Number keys or the mouse whe
 
 Dungeon interface controls:
 
-- `I` opens inventory and hotbar assignment.
-- `Tab` opens the character sheet and manual stat allocation.
+- `I` opens the Character modal on its Inventory tab.
+- `Tab` opens the same Character modal on its Stats tab.
+- `E` interacts with a nearby chest. Locked chests support trap inspection, lockpicking, and matching keys.
 - Right-click a corpse or perceived trap for its interaction menu.
 - `Escape` opens the pause menu or closes the active overlay.
 
-The Codex is available from both the title and dungeon HUD. Inventory provides portable synthesis
+Weapons and armor use humanoid equipment slots; one- and two-handed weapons obey hand occupancy,
+while learned class actions remain separate from physical gear. The Codex is available from both
+the title and dungeon HUD. Inventory provides portable synthesis
 for combinations allowed by `CombineLocation.Anywhere`; forge- and shrine-gated pairs remain
 unavailable until their locations are ported. Godot display, camera, screen-shake, V-sync, and
 master-volume settings are stored in `user://client-settings.json`.

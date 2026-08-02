@@ -122,8 +122,8 @@ public static class EnemyFactory
         int wis = Stat("Wisdom");
         int cha = Stat("Charisma");
 
-        // Primary attack from the class's starting loadout (light attack).
-        var attacks = AttackFactory.ToAttacks(AttackFactory.GetStartingLoadout(className));
+        // Enemies use class techniques directly; their attacks are not inventory weapons.
+        var attacks = AttackFactory.GetClassAttacks(className, level);
         var primary = attacks.Count > 0 ? attacks[0] : null;
 
         // Derived combat values (Constitution → health/defense; a small flat attack scales with level).

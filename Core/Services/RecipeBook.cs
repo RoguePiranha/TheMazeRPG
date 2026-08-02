@@ -25,6 +25,7 @@ public static class RecipeBook
         {
             Id = "fire-bow", Name = "Fire Bow", Rarity = Rarity.Uncommon,
             BaseDamage = 10, Range = 4.0f, Cooldown = 16, Animation = AttackAnimation.Ranged,
+            HandsRequired = 2,
             Attributes = { GameAttribute.Fire },
             Description = "Shoots fire arrows."
         },
@@ -32,6 +33,7 @@ public static class RecipeBook
         {
             Id = "bubble-bow", Name = "Bubble Bow", Rarity = Rarity.Rare,
             BaseDamage = 8, Range = 4.0f, Cooldown = 18, Animation = AttackAnimation.Ranged,
+            HandsRequired = 2,
             Attributes = { GameAttribute.Arcane },
             Description = "Arrows trap enemies in a shield bubble on hit."
         },

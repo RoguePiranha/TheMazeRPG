@@ -1233,37 +1233,7 @@ public class MazeRenderer
     
     private void DrawChest(SKCanvas canvas, float x, float y, MazeFeature feature)
     {
-        // Draw light glow if chest is opening
-        if (feature.IsOpening && feature.LightRadius > 0)
-        {
-            using var glowPaint = new SKPaint
-            {
-                IsAntialias = true,
-                Style = SKPaintStyle.Fill
-            };
-            
-            // Draw expanding golden light
-            var colors = new SKColor[]
-            {
-                new SKColor(255, 215, 0, 180), // Gold center
-                new SKColor(255, 215, 0, 100), // Mid
-                new SKColor(255, 215, 0, 0)    // Fade out
-            };
-            var positions = new float[] { 0, 0.5f, 1.0f };
-            
-            glowPaint.Shader = SKShader.CreateRadialGradient(
-                new SKPoint(x, y),
-                feature.LightRadius * CellSize,
-                colors,
-                positions,
-                SKShaderTileMode.Clamp
-            );
-            
-            canvas.DrawCircle(x, y, feature.LightRadius * CellSize, glowPaint);
-        }
-        
-        // Opening progress (0 = closed, 1 = fully open), computed by GameState from the tick rate
-        float openProgress = feature.OpenProgress;
+        float openProgress = feature.IsOpened ? 1f : 0f;
         
         // Brown chest colors
         SKColor chestBrown = new SKColor(139, 90, 43);      // Saddle brown

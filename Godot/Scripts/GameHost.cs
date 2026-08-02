@@ -34,6 +34,8 @@ public partial class GameHost : Node
     private bool _startCodex;
     private bool _startCombination;
     private bool _startSettings;
+    private bool _startChest;
+    private bool _startChestPrompt;
     private bool _inGame;
     private bool _deathShown;
     private bool _dungeonExitShown;
@@ -75,9 +77,10 @@ public partial class GameHost : Node
             _ui.ShowCharacterCreation(new CharacterDataService());
         }
         else if (_startTurnBased || _startEnemyPhase || _startIntentPreview || _startPathPreview || _startAttackPreview || _startFogPreview || _startInventory ||
-                 _startCharacterSheet || _startLoot || _startCombination)
+                 _startCharacterSheet || _startLoot || _startCombination || _startChest || _startChestPrompt)
         {
-            string characterClass = _startCombination || _startAttackPreview ? "Mage Apprentice" : "Wanderer";
+            string characterClass = _startCombination || _startAttackPreview ? "Mage Apprentice"
+                : _startInventory ? "Warrior" : "Wanderer";
             StartNewGame("Wayfarer", characterClass, "Human", persist: false);
             if (_startTurnBased || _startEnemyPhase || _startIntentPreview || _startPathPreview || _startAttackPreview)
                 _gameState.SetSimulationMode(SimulationMode.TurnBased);
@@ -92,7 +95,13 @@ public partial class GameHost : Node
             else if (_startFogPreview)
                 StartDiagnosticFogPreview();
             if (_startInventory)
+            {
+                _gameState.Hero.Inventory.Add(CombinableCatalog.Bow());
+                _gameState.Hero.Inventory.Add(CombinableCatalog.LeatherCoat());
+                _gameState.Hero.Inventory.Add(CombinableCatalog.LeatherGloves());
+                _gameState.Hero.Inventory.Add(CombinableCatalog.WardRing());
                 _ui.ShowInventory(_gameState);
+            }
             if (_startCharacterSheet)
                 _ui.ShowCharacterSheet(_gameState);
             if (_startLoot && _gameState.Enemies.FirstOrDefault() is { } corpse)
@@ -104,6 +113,8 @@ public partial class GameHost : Node
             }
             if (_startCombination)
                 _ui.ShowCombination(_gameState);
+            if (_startChest || _startChestPrompt)
+                StartDiagnosticChest(openMenu: _startChest);
         }
         else
         {
@@ -122,7 +133,16 @@ public partial class GameHost : Node
         if (!string.IsNullOrWhiteSpace(directory))
             Directory.CreateDirectory(directory);
 
-        Error result = GetViewport().GetTexture().GetImage().SavePng(_capturePath);
+        Texture2D? viewportTexture = GetViewport().GetTexture();
+        Image? frame = viewportTexture?.GetImage();
+        if (frame == null)
+        {
+            GD.PushError("GODOT_FRAME_CAPTURE failed: the active display driver has no viewport texture.");
+            _capturePath = null;
+            GetTree().Quit(1);
+            return;
+        }
+        Error result = frame.SavePng(_capturePath);
         GD.Print($"GODOT_FRAME_CAPTURE result={result} path={_capturePath}");
         _capturePath = null;
         GetTree().Quit(result == Error.Ok ? 0 : 1);
@@ -209,6 +229,16 @@ public partial class GameHost : Node
         }
 
         if (!_inGame) return;
+
+        if (@event.IsActionPressed("interact"))
+        {
+            CancelQueuedTacticalPath();
+            _gameState.UpdateNearbyInteractable();
+            if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Chest } chest)
+                _ui.ShowChestActions(_gameState, chest);
+            GetViewport().SetInputAsHandled();
+            return;
+        }
 
         if (@event is InputEventKey { Pressed: true, Echo: false } pressedKey)
         {
@@ -638,10 +668,36 @@ public partial class GameHost : Node
         _startCodex = arguments.Any(value => value.Equals("--start-codex", StringComparison.OrdinalIgnoreCase));
         _startCombination = arguments.Any(value => value.Equals("--start-combination", StringComparison.OrdinalIgnoreCase));
         _startSettings = arguments.Any(value => value.Equals("--start-settings", StringComparison.OrdinalIgnoreCase));
+        _startChest = arguments.Any(value => value.Equals("--start-chest", StringComparison.OrdinalIgnoreCase));
+        _startChestPrompt = arguments.Any(value => value.Equals("--start-chest-prompt", StringComparison.OrdinalIgnoreCase));
         string? argument = arguments.FirstOrDefault(value => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
         if (argument == null) return;
         _capturePath = Path.GetFullPath(argument[prefix.Length..]);
         _captureCountdown = _startEnemyPhase ? 5 : 8;
+    }
+
+    private void StartDiagnosticChest(bool openMenu)
+    {
+        MazeFeature? chest = _gameState.CurrentMaze.Features
+            .FirstOrDefault(feature => feature.Type == MazeFeatureType.Chest);
+        if (chest == null) return;
+
+        var neighbors = new[] { Vector2I.Left, Vector2I.Right, Vector2I.Up, Vector2I.Down };
+        Vector2I position = neighbors
+            .Select(offset => new Vector2I(chest.X + offset.X, chest.Y + offset.Y))
+            .FirstOrDefault(cell => _gameState.CurrentMaze.IsWalkable(cell.X, cell.Y));
+        if (position == default) position = new Vector2I(chest.X, chest.Y);
+        _gameState.Hero.X = position.X;
+        _gameState.Hero.Y = position.Y;
+        chest.IsLocked = true;
+        chest.IsTrapped = true;
+        chest.RequiredKeyId = "diagnostic-chest-key";
+        _gameState.Hero.Inventory.Add(CombinableCatalog.ChestKey(chest.RequiredKeyId));
+        _gameState.UpdateNearbyInteractable();
+        SnapCameraToHero();
+        _ui.RefreshGame(_gameState);
+        _dungeonView.QueueRedraw();
+        if (openMenu) _ui.ShowChestActions(_gameState, chest);
     }
 
     private void StartDiagnosticEnemyPhase()
@@ -910,6 +966,7 @@ public partial class GameHost : Node
         BindKey("move_right", Key.D);
         BindKey("move_right", Key.Right);
         BindKey("dash", Key.Space);
+        BindKey("interact", Key.E);
         BindKey("toggle_turn_mode", Key.Equal);
         BindKey("end_turn", Key.Enter);
         BindKey("bonus_item", Key.Q);

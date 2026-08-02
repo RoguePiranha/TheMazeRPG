@@ -3,15 +3,14 @@ using TheMazeRPG.Core.Services;
 namespace TheMazeRPG.Core.Systems;
 
 /// <summary>
-/// A multi-tick task the hero is committed to (opening a chest, mining ore, crafting, etc.).
-/// Generalizes what used to be one-off hardcoded fields (see the old Hero.IsOpeningChest /
-/// ChestOpeningTicks). Lives in Core/Systems (not Core/Models) because it's behavior that
+/// A multi-tick task the hero is committed to, such as mining ore or crafting.
+/// Lives in Core/Systems (not Core/Models) because it is behavior that
 /// mutates GameState, not plain data — Models in this codebase stay pure data.
 ///
 /// The base class deliberately has no reference to a MazeFeature or location — most activities
 /// (mining/crafting/selling) are reusable at a location, unlike a one-shot chest, so the trigger
 /// site decides *when* to start one, not the activity itself. A concrete activity MAY hold its
-/// own feature reference if it genuinely needs one (see ChestOpenActivity) — the point is the
+/// own feature reference if it genuinely needs one. The point is that the
 /// base class doesn't force that dependency on everyone.
 ///
 /// Only one activity can be active at a time (see GameState.CurrentActivity/StartActivity).

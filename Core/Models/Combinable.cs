@@ -66,8 +66,7 @@ public enum GameAttribute
 /// <summary>
 /// Base type for everything the player can hold, equip, cast, or merge: items,
 /// weapons, armor, spells, and abilities. The unified shape is what makes the
-/// merge/combine system (see CombinationEngine) possible across kinds, and lets
-/// AttackFactory project a hero's equipped Weapon/Spell into an executable Attack.
+/// merge/combine system (see CombinationEngine) possible across kinds.
 ///
 /// [JsonPolymorphic]/[JsonDerivedType] preserve the concrete type (Weapon vs. Spell vs. ...)
 /// when a List&lt;Combinable&gt; (Hero.Loadout/Inventory) round-trips through JSON — needed
@@ -76,6 +75,7 @@ public enum GameAttribute
 /// </summary>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "$kind")]
 [JsonDerivedType(typeof(Weapon), "weapon")]
+[JsonDerivedType(typeof(Armor), "armor")]
 [JsonDerivedType(typeof(Spell), "spell")]
 [JsonDerivedType(typeof(Ability), "ability")]
 [JsonDerivedType(typeof(Item), "item")]

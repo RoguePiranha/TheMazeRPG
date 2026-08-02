@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace TheMazeRPG.Core.Models;
 
 /// <summary>
@@ -31,9 +33,15 @@ public class MazeFeature
     public bool Hidden { get; set; }
     public bool Perceived { get; set; }
 
-    // Chest opening animation state
-    public bool IsOpening { get; set; }
-    public int OpeningTicks { get; set; }
-    public float LightRadius { get; set; }
-    public float OpenProgress { get; set; } // 0..1, set by GameState from the tick-rate-derived duration
+    // Chest state. Dungeon maps are transient, so this is not part of character saves.
+    public bool IsOpened { get; set; }
+    public bool IsLocked { get; set; }
+    public string RequiredKeyId { get; set; } = "";
+    public bool TrapChecked { get; set; }
+    public bool IsTrapped { get; set; }
+    public bool ChestTrapDetected { get; set; }
+    public bool TrapDisarmed { get; set; }
+    public bool OpenRewardGranted { get; set; }
+    public List<Combinable> Inventory { get; set; } = new();
+    public int Gold { get; set; }
 }

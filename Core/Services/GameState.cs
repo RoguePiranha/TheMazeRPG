@@ -74,8 +74,7 @@ public class GameState
     private const int TacticalActionDelayTicks = 3;
     private const int TacticalEffectSafetyLimit = 90;
 
-    /// <summary>While in the Overworld, the town structure the hero is standing close enough to
-    /// interact with (Press-E), or null. Recomputed each tick by UpdateOverworldInteractable.</summary>
+    /// <summary>The nearby chest or town structure available through the Press-E interaction.</summary>
     public MazeFeature? NearbyInteractable { get; private set; }
 
     // Player movement intent for Manual mode, set by the UI from held keys (each component in
@@ -221,6 +220,7 @@ public class GameState
         CurrentMaze.Explored[targetX, targetY] = true;
         TacticalTurn.MovementRemaining--;
         RefreshTacticalIntentPreview(rememberObserved: true);
+        UpdateNearbyInteractable();
         EndTacticalTurnIfSpent();
         return true;
     }
@@ -290,6 +290,7 @@ public class GameState
             RefreshTacticalIntentPreview(rememberObserved: true);
         }
 
+        UpdateNearbyInteractable();
         EndTacticalTurnIfSpent();
         return true;
     }
@@ -445,6 +446,7 @@ public class GameState
         TacticalTurn.ActionAvailable = false;
         LogMessage("Dashed.", MessageKind.System);
         RefreshTacticalIntentPreview(rememberObserved: true);
+        UpdateNearbyInteractable();
         EndTacticalTurnIfSpent();
         return true;
     }
@@ -1025,6 +1027,7 @@ public class GameState
         TacticalTurn.EnemyActionsRemaining = 0;
         Hero.AttackCooldown = 0;
         RefreshTacticalIntentPreview(rememberObserved: true);
+        UpdateNearbyInteractable();
     }
 
     private void EndTacticalTurnIfSpent()
@@ -1070,31 +1073,112 @@ public class GameState
         Hero.CurrentAttack = Hero.Attacks[next];
     }
 
-    /// <summary>Move an attack-bearing item from Inventory into the equipped Loadout (hotbar), if
-    /// there's a free hotbar slot. Refreshes projected attacks. Returns true on success.</summary>
-    public bool EquipFromInventory(Combinable item)
+    public bool EquipFromInventory(Combinable item) => EquipFromInventory(item, out _);
+
+    /// <summary>Equip physical gear into its body slot, or place a spell on the action bar.</summary>
+    public bool EquipFromInventory(Combinable item, out string reason)
     {
-        if (!Hero.Inventory.Contains(item)) return false;
-        bool isAttackGear = item is Weapon || item is Spell;
-        if (!isAttackGear) return false;
-        int equipped = Hero.Loadout.Count(c => c is Weapon || c is Spell);
-        if (equipped >= Hero.HotbarCapacity) return false;
+        reason = "";
+        if (!Hero.Inventory.Contains(item))
+        {
+            reason = "That item is not in your backpack.";
+            return false;
+        }
+
+        if (item is Spell)
+        {
+            if (Hero.Attacks.Count >= Hero.HotbarCapacity)
+            {
+                reason = "The action bar is full.";
+                return false;
+            }
+            Hero.Inventory.Remove(item);
+            Hero.Loadout.Add(item);
+            RefreshAttacks();
+            LogMessage($"Slotted {item.Name} on the action bar.", MessageKind.System);
+            return true;
+        }
+
+        EquipmentSlot? slot = item switch
+        {
+            Armor armor => armor.Slot,
+            Item accessory when accessory.EquipSlot.HasValue => accessory.EquipSlot,
+            Weapon => FirstFreeHand(item as Weapon),
+            _ => null
+        };
+        if (!slot.HasValue)
+        {
+            reason = item is Weapon ? "Both hands are occupied." : "That item cannot be equipped.";
+            return false;
+        }
+
+        if (item is Item ring && ring.EquipSlot is EquipmentSlot.RingLeft or EquipmentSlot.RingRight)
+        {
+            slot = !Hero.Equipment.ContainsKey(EquipmentSlot.RingLeft) ? EquipmentSlot.RingLeft
+                : !Hero.Equipment.ContainsKey(EquipmentSlot.RingRight) ? EquipmentSlot.RingRight
+                : null;
+            if (!slot.HasValue)
+            {
+                reason = "Both ring slots are occupied.";
+                return false;
+            }
+        }
+
+        if (slot == EquipmentSlot.OffHand && IsOffHandBlocked)
+        {
+            reason = "The off hand is reserved by a two-handed weapon.";
+            return false;
+        }
+
+        if (item is Weapon weapon && weapon.HandsRequired >= 2)
+        {
+            if (Hero.Equipment.ContainsKey(EquipmentSlot.MainHand) ||
+                Hero.Equipment.ContainsKey(EquipmentSlot.OffHand))
+            {
+                reason = "A two-handed weapon requires both hands to be free.";
+                return false;
+            }
+            slot = EquipmentSlot.MainHand;
+        }
+        else if (Hero.Equipment.ContainsKey(slot.Value))
+        {
+            reason = $"{EquipmentSlots.Label(slot.Value)} is already occupied.";
+            return false;
+        }
 
         Hero.Inventory.Remove(item);
-        Hero.Loadout.Add(item);
-        RefreshAttacks();
-        LogMessage($"Equipped {item.Name} to the hotbar", MessageKind.System);
+        Hero.Equipment[slot.Value] = item;
+        LogMessage($"Equipped {item.Name} in {EquipmentSlots.Label(slot.Value)}.", MessageKind.System);
         return true;
     }
 
-    /// <summary>Move an item from the equipped Loadout (hotbar) back into Inventory. Refreshes
-    /// projected attacks. Returns true on success.</summary>
+    private EquipmentSlot? FirstFreeHand(Weapon? weapon)
+    {
+        if (weapon == null) return null;
+        if (Hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) is Weapon main && main.HandsRequired >= 2)
+            return null;
+        if (!Hero.Equipment.ContainsKey(EquipmentSlot.MainHand)) return EquipmentSlot.MainHand;
+        return !Hero.Equipment.ContainsKey(EquipmentSlot.OffHand) ? EquipmentSlot.OffHand : null;
+    }
+
+    public bool IsOffHandBlocked =>
+        Hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) is Weapon { HandsRequired: >= 2 };
+
+    /// <summary>Return an equipped item or slotted spell to the backpack.</summary>
     public bool UnequipToInventory(Combinable item)
     {
-        if (!Hero.Loadout.Remove(item)) return false;
+        if (Hero.Loadout.Remove(item))
+        {
+            Hero.Inventory.Add(item);
+            RefreshAttacks();
+            LogMessage($"Removed {item.Name} from the action bar.", MessageKind.System);
+            return true;
+        }
+
+        var equipped = Hero.Equipment.FirstOrDefault(pair => ReferenceEquals(pair.Value, item));
+        if (equipped.Value == null || !Hero.Equipment.Remove(equipped.Key)) return false;
         Hero.Inventory.Add(item);
-        RefreshAttacks();
-        LogMessage($"Unequipped {item.Name}", MessageKind.System);
+        LogMessage($"Unequipped {item.Name}.", MessageKind.System);
         return true;
     }
 
@@ -1107,7 +1191,7 @@ public class GameState
     // reaches a point where Enemies/Projectiles are safe to clear.
     private bool _pendingGuardianVictory;
 
-    /// <summary>The hero's current multi-tick task (opening a chest, mining, crafting, ...).
+    /// <summary>The hero's current multi-tick task (mining, crafting, ...).
     /// Only one at a time — see StartActivity. Advanced once per Tick().</summary>
     public Activity? CurrentActivity { get; private set; }
 
@@ -1132,7 +1216,6 @@ public class GameState
     private readonly int _ticksPerSecond;
     private readonly int _pursuitTimeoutTicks;   // ~3s pursuit persistence
     private readonly int _autoRestartTicks;      // ~5s until auto-restart after death
-    private readonly int _chestOpeningTicks;     // ~3s to open a chest
     private readonly int _combatStartWindupTicks; // ~0.3s wind-up before first attack on engage
     private readonly int _attackSwitchTicks;     // ~2s between smart attack-rotation switches
     private readonly int _tacticalResolutionTicksPerTurn;
@@ -1202,7 +1285,6 @@ public class GameState
         _ticksPerSecond = Math.Max(1, GameSettings.Current.TickRate);
         _pursuitTimeoutTicks = GameSettings.Current.SecondsToTicks(3f);
         _autoRestartTicks = GameSettings.Current.SecondsToTicks(5f);
-        _chestOpeningTicks = GameSettings.Current.SecondsToTicks(3f);
         _combatStartWindupTicks = GameSettings.Current.SecondsToTicks(0.3f);
         _attackSwitchTicks = GameSettings.Current.SecondsToTicks(2f);
         _tacticalResolutionTicksPerTurn = GameSettings.Current.SecondsToTicks(0.5f);
@@ -1243,9 +1325,10 @@ public class GameState
         GameLog.Debug($"Colors - Race: {Hero.RaceColor}, Class: {Hero.ClassColor}");
         GameLog.Debug($"Base Str {Hero.Strength} -> Effective {Hero.EffectiveStrength:0.0}; Con {Hero.Constitution} -> {Hero.EffectiveConstitution:0.0} (MaxStamina {Hero.MaxStamina}); Int {Hero.Intelligence} -> {Hero.EffectiveIntelligence:0.0} (MaxMana {Hero.MaxMana})");
 
-        // Equip the class starting loadout and project it into executable attacks
-        Hero.Loadout = AttackFactory.GetStartingLoadout(className);
-        Hero.Attacks = AttackFactory.ToAttacks(Hero.Loadout);
+        // Class actions and physical equipment are separate systems.
+        Hero.Loadout = new List<Combinable>();
+        Hero.Equipment = AttackFactory.GetStartingEquipment(className);
+        Hero.Attacks = AttackFactory.GetClassAttacks(className, Hero.Level);
         Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
         GameLog.Debug($"Attacks assigned: {Hero.Attacks.Count}, Current: {Hero.CurrentAttack?.Name ?? "None"}");
 
@@ -1468,7 +1551,7 @@ public class GameState
             StartNewFloor();
         }
 
-        // Advance the hero's current activity (chest-opening, mining, crafting, ...), if any
+        // Advance the hero's current long-running activity (mining, crafting, ...), if any
         UpdateCurrentActivity();
 
         // Check for features (stairs, chests, shrine, guardian door, traps) - only if not in combat
@@ -1477,11 +1560,8 @@ public class GameState
             CheckFeatures();
         }
 
-        // Overworld: track which town structure (if any) is in Press-E range, for the prompt/menu.
-        if (IsInOverworld)
-        {
-            UpdateOverworldInteractable();
-        }
+        // Track a chest or town structure in Press-E range for the contextual prompt.
+        UpdateNearbyInteractable();
 
         // Auto mode auto-collects loot off nearby corpses (the manual player loots deliberately via
         // right-click instead), preserving auto-play's loot collection now that drops stay on bodies.
@@ -2070,8 +2150,8 @@ public class GameState
     }
     
     /// <summary>
-    /// Give the hero found loot. Everything goes to the inventory — the player equips weapons/spells
-    /// to the hotbar themselves (see the inventory screen); nothing is auto-equipped.
+    /// Give the hero found loot. Everything goes to the backpack until the player equips physical
+    /// gear or slots a spell from the Character screen.
     /// </summary>
     public void AcquireLoot(Combinable loot)
     {
@@ -2079,11 +2159,12 @@ public class GameState
         LogMessage($"Found {loot.Name} ({loot.Rarity})", MessageKind.Loot);
     }
 
-    /// <summary>Re-project attacks from the current loadout, keeping the current attack if it survives.</summary>
+    /// <summary>Rebuild class actions plus optional slotted spells, preserving selection by id.</summary>
     private void RefreshAttacks()
     {
         var currentId = Hero.CurrentAttack?.Id;
-        Hero.Attacks = AttackFactory.ToAttacks(Hero.Loadout);
+        Hero.Attacks = AttackFactory.GetClassAttacks(Hero.Class, Hero.Level);
+        Hero.Attacks.AddRange(AttackFactory.GetSlottedSpellAttacks(Hero.Loadout));
         Hero.CurrentAttack = Hero.Attacks.FirstOrDefault(a => a.Id == currentId) ?? Hero.Attacks.FirstOrDefault();
     }
 
@@ -2111,20 +2192,6 @@ public class GameState
         }
     }
 
-    /// <summary>XP + loot for a fully-opened chest. Kept on GameState (not ChestOpenActivity)
-    /// so the shared RNG (_random) stays private to this class.</summary>
-    internal void GrantChestRewards()
-    {
-        int levelBefore = Hero.Level;
-        Hero.GainExperience(25);
-        LogMessage("Opened a chest (+25 XP)", MessageKind.Loot);
-        if (Hero.Level > levelBefore)
-        {
-            LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
-        }
-        AcquireLoot(LootService.Roll(CurrentFloor, _random));
-    }
-
     /// <summary>The single validated write path for Hero.Resources — checks the material id
     /// against MaterialDataService before adding, so a typo'd id in recipes.json is caught here
     /// rather than silently growing a phantom inventory entry that never matches any recipe.</summary>
@@ -2145,18 +2212,19 @@ public class GameState
     /// <summary>How close (tiles) the hero must be to a town structure to interact with it.</summary>
     private const float InteractRadius = 1.3f;
 
-    /// <summary>Refresh NearbyInteractable: the nearest in-range town structure, or null. Skipped
-    /// while mid-Activity (mining/crafting) so the prompt doesn't invite a second overlapping
-    /// action. Called each tick from Tick() while in the Overworld.</summary>
-    private void UpdateOverworldInteractable()
+    /// <summary>Refresh the nearest in-range chest or town structure for the contextual prompt.</summary>
+    public void UpdateNearbyInteractable()
     {
-        if (CurrentActivity != null) { NearbyInteractable = null; return; }
+        if (CurrentActivity != null || Hero.InCombat) { NearbyInteractable = null; return; }
 
         MazeFeature? nearest = null;
         float nearestSq = InteractRadius * InteractRadius;
         foreach (var f in CurrentMaze.Features)
         {
-            if (!IsOverworldInteractable(f.Type)) continue;
+            bool interactable = IsInOverworld
+                ? IsOverworldInteractable(f.Type)
+                : !IsInSafeRoom && f.Type == MazeFeatureType.Chest && !f.IsUsed;
+            if (!interactable) continue;
             float dx = f.X - Hero.X, dy = f.Y - Hero.Y;
             float d2 = dx * dx + dy * dy;
             if (d2 <= nearestSq) { nearestSq = d2; nearest = f; }
@@ -2213,7 +2281,7 @@ public class GameState
 
     /// <summary>Combine two distinct things the hero owns, consuming both only after every
     /// location and ownership check passes. The result is placed in Inventory; callers may equip
-    /// an attack-bearing result through the normal hotbar flow.</summary>
+    /// a result through the normal inventory flow.</summary>
     public Combinable? CombineOwned(Combinable a, Combinable b, CombineLocation location, out string reason)
     {
         if (!CombinationEngine.CanCombine(a, b, location, out reason)) return null;
@@ -2287,18 +2355,14 @@ public class GameState
         var heroVisibleCells = GetDirectionalSightCone(Hero.X, Hero.Y, heroFacing, heroSightRange, heroConeRad);
 
         // Automatically pick up nearby items (larger pickup radius than interaction)
-        foreach (var feature in CurrentMaze.Features.Where(f => !f.IsUsed && !f.IsOpening).ToList())
+        foreach (var feature in CurrentMaze.Features.Where(f => !f.IsUsed).ToList())
         {
             float dx = Hero.X - feature.X;
             float dy = Hero.Y - feature.Y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
 
-            // Auto-pickup radius of 0.7 tiles
-            if (distance < 0.7f && feature.Type == MazeFeatureType.Chest)
-            {
-                StartActivity(new ChestOpenActivity(feature, _chestOpeningTicks));
-                continue; // Skip to next feature
-            }
+            // Chests never auto-open. Proximity is handled by UpdateNearbyInteractable and E.
+            if (feature.Type == MazeFeatureType.Chest) continue;
 
             if (feature.Type == MazeFeatureType.Trap && distance < 0.5f)
             {
@@ -2310,7 +2374,7 @@ public class GameState
             // Overworld structures (DungeonEntrance / MineEntrance / Smithy / Stall) are no longer
             // triggered by walking onto them — they're used via the player's Press-E interaction
             // (see MineOre/Craft/EnterDungeon and GameView's structure menus). Proximity detection
-            // for the E prompt is UpdateOverworldInteractable, not this feature-trigger loop.
+            // for the E prompt is UpdateNearbyInteractable, not this feature-trigger loop.
 
             if (feature.Type == MazeFeatureType.Shrine)
             {
@@ -2572,6 +2636,150 @@ public class GameState
     }
 
     /// <summary>Right-click "Examine" on a corpse: flavor/identify.</summary>
+    private bool CanReachChest(MazeFeature chest)
+    {
+        if (chest == null || chest.Type != MazeFeatureType.Chest || chest.IsUsed ||
+            Hero.InCombat || CurrentActivity != null || !CurrentMaze.Features.Contains(chest)) return false;
+        float dx = chest.X - Hero.X;
+        float dy = chest.Y - Hero.Y;
+        return dx * dx + dy * dy <= InteractRadius * InteractRadius;
+    }
+
+    public bool HasChestKey(MazeFeature chest) => Hero.Inventory.OfType<Item>()
+        .Any(item => item.KeyId.Length > 0 && item.KeyId == chest.RequiredKeyId);
+
+    public bool LookForChestTraps(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || chest.IsOpened) return false;
+        chest.TrapChecked = true;
+        if (!chest.IsTrapped)
+        {
+            LogMessage("You find no sign of a trap.", MessageKind.System);
+            return true;
+        }
+
+        double chance = Math.Clamp(0.45 + Hero.EffectiveWisdom * 0.04 - CurrentFloor * 0.025, 0.2, 0.95);
+        if (_random.NextDouble() < chance)
+        {
+            chest.ChestTrapDetected = true;
+            LogMessage("You find a trap wired into the chest latch.", MessageKind.Warning);
+        }
+        else
+        {
+            LogMessage("You cannot make out anything suspicious.", MessageKind.System);
+        }
+        return true;
+    }
+
+    public bool TryDisarmChestTrap(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || !chest.ChestTrapDetected || chest.TrapDisarmed) return false;
+        double chance = Math.Clamp(0.4 + Hero.EffectiveDexterity * 0.045 - CurrentFloor * 0.025, 0.15, 0.95);
+        if (_random.NextDouble() < chance)
+        {
+            chest.TrapDisarmed = true;
+            LogMessage("You disarm the chest trap.", MessageKind.System);
+        }
+        else
+        {
+            LogMessage("The mechanism slips and the trap springs!", MessageKind.Warning);
+            TriggerChestTrap(chest);
+        }
+        return true;
+    }
+
+    public bool TryLockpickChest(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || !chest.IsLocked) return false;
+        double chance = Math.Clamp(0.35 + Hero.EffectiveDexterity * 0.045 - CurrentFloor * 0.02, 0.12, 0.9);
+        if (_random.NextDouble() < chance)
+        {
+            chest.IsLocked = false;
+            LogMessage("The lock clicks open.", MessageKind.System);
+        }
+        else
+        {
+            LogMessage("The lockpick slips.", MessageKind.System);
+            if (chest.IsTrapped && !chest.TrapDisarmed && _random.NextDouble() < 0.3)
+                TriggerChestTrap(chest);
+        }
+        return true;
+    }
+
+    public bool UseChestKey(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || !chest.IsLocked) return false;
+        Item? key = Hero.Inventory.OfType<Item>()
+            .FirstOrDefault(item => item.KeyId.Length > 0 && item.KeyId == chest.RequiredKeyId);
+        if (key == null) return false;
+        Hero.Inventory.Remove(key);
+        chest.IsLocked = false;
+        LogMessage("The key fits. The chest unlocks.", MessageKind.System);
+        return true;
+    }
+
+    public bool OpenChest(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || chest.IsLocked) return false;
+        if (chest.IsTrapped && !chest.TrapDisarmed) TriggerChestTrap(chest);
+        chest.IsOpened = true;
+        if (!chest.OpenRewardGranted)
+        {
+            chest.OpenRewardGranted = true;
+            int levelBefore = Hero.Level;
+            Hero.GainExperience(25);
+            LogMessage("Opened a chest (+25 XP).", MessageKind.Loot);
+            if (Hero.Level > levelBefore)
+                LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
+        }
+        return true;
+    }
+
+    private void TriggerChestTrap(MazeFeature chest)
+    {
+        if (chest.TrapDisarmed) return;
+        chest.TrapDisarmed = true;
+        chest.ChestTrapDetected = true;
+        int damage = 8 + CurrentFloor * 2;
+        Hero.CurrentHp = Math.Max(0, Hero.CurrentHp - damage);
+        ScreenShake = MathF.Max(ScreenShake, 4f);
+        LogMessage($"The chest trap hits you for {damage} damage!", MessageKind.Warning);
+    }
+
+    public bool LootChestItem(MazeFeature chest, Combinable item)
+    {
+        if (!CanReachChest(chest) || !chest.IsOpened || !chest.Inventory.Remove(item)) return false;
+        AcquireLoot(item);
+        FinishEmptyChest(chest);
+        return true;
+    }
+
+    public bool LootChestGold(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || !chest.IsOpened || chest.Gold <= 0) return false;
+        int amount = chest.Gold;
+        chest.Gold = 0;
+        Hero.Gold += amount;
+        LogMessage($"Looted {amount} gold.", MessageKind.Loot);
+        FinishEmptyChest(chest);
+        return true;
+    }
+
+    public void LootAll(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || !chest.IsOpened) return;
+        foreach (Combinable item in chest.Inventory.ToList()) LootChestItem(chest, item);
+        LootChestGold(chest);
+        FinishEmptyChest(chest);
+    }
+
+    private void FinishEmptyChest(MazeFeature chest)
+    {
+        if (chest.Inventory.Count > 0 || chest.Gold > 0) return;
+        chest.IsUsed = true;
+        if (ReferenceEquals(NearbyInteractable, chest)) NearbyInteractable = null;
+    }
+
     public void ExamineCorpse(Enemy enemy)
     {
         if (enemy == null || enemy.IsAlive) return;
@@ -2586,6 +2794,17 @@ public class GameState
     {
         if (corpse == null || item == null || !corpse.Inventory.Remove(item)) return false;
         AcquireLoot(item);
+        return true;
+    }
+
+    /// <summary>Take the body's gold as an individual loot entry.</summary>
+    public bool LootGold(Enemy corpse)
+    {
+        if (corpse == null || corpse.IsAlive || corpse.Gold <= 0) return false;
+        int amount = corpse.Gold;
+        corpse.Gold = 0;
+        Hero.Gold += amount;
+        LogMessage($"Looted {amount} gold.", MessageKind.Loot);
         return true;
     }
 
@@ -2620,12 +2839,7 @@ public class GameState
             corpse.Inventory.Remove(item);
             AcquireLoot(item);
         }
-        if (corpse.Gold > 0)
-        {
-            Hero.Gold += corpse.Gold;
-            LogMessage($"Looted {corpse.Gold} gold.", MessageKind.Loot);
-            corpse.Gold = 0;
-        }
+        LootGold(corpse);
     }
 
     /// <summary>Spawns the gate Guardian once the hero approaches the safe room's door.
@@ -2753,8 +2967,11 @@ public class GameState
         Hero.UnspentStatPoints = data.UnspentStatPoints;
         Hero.Gold = data.Gold;
         Hero.Resources = new Dictionary<string, int>(data.Resources);
-        Hero.Loadout = new List<Combinable>(data.Loadout);
+        Hero.Loadout = new List<Combinable>(data.Loadout
+            .Where(item => item is Spell && !LegacyClassActionIds.Contains(item.Id)));
         Hero.Inventory = new List<Combinable>(data.Inventory);
+        Hero.Equipment = new Dictionary<EquipmentSlot, Combinable>(data.Equipment ?? new());
+        MigrateLegacyLoadout(data);
         RefreshAttacks();
 
         if (data.ResumePoint == ResumePoint.SafeRoom && data.SafeRoomFloor.HasValue)
@@ -2784,7 +3001,7 @@ public class GameState
     }
 
     /// <summary>The town structures the hero can interact with via Press-E (proximity-detected in
-    /// UpdateOverworldInteractable).</summary>
+    /// UpdateNearbyInteractable).</summary>
     private static bool IsOverworldInteractable(MazeFeatureType t) => t switch
     {
         MazeFeatureType.MineEntrance or MazeFeatureType.Smithy or
@@ -3276,8 +3493,9 @@ public class GameState
         Hero.CurrentFaith = Hero.MaxFaith;
 
         // Equip the class starting loadout and project it into executable attacks
-        Hero.Loadout = AttackFactory.GetStartingLoadout(_className);
-        Hero.Attacks = AttackFactory.ToAttacks(Hero.Loadout);
+        Hero.Loadout = new List<Combinable>();
+        Hero.Equipment = AttackFactory.GetStartingEquipment(_className);
+        Hero.Attacks = AttackFactory.GetClassAttacks(_className, Hero.Level);
         Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
 
         // Start new floor
@@ -3358,10 +3576,25 @@ public class GameState
             CurrentMaze.Features.Add(new MazeFeature { X = stairsCell.x, Y = stairsCell.y, Type = MazeFeatureType.Stairs });
         }
         // Place chest in the room reserved for treasure (loot + XP only — no key/gating).
+        MazeFeature? floorChest = null;
         if (emptyCells.Count > 0)
         {
             var chestCell = TakeRoomAwareCell(emptyCells, DungeonRoomRole.Treasure);
-            CurrentMaze.Features.Add(new MazeFeature { X = chestCell.x, Y = chestCell.y, Type = MazeFeatureType.Chest });
+            bool locked = _random.NextDouble() < Math.Min(0.65, 0.3 + CurrentFloor * 0.025);
+            floorChest = new MazeFeature
+            {
+                X = chestCell.x,
+                Y = chestCell.y,
+                Type = MazeFeatureType.Chest,
+                IsLocked = locked,
+                IsTrapped = _random.NextDouble() < 0.3,
+                RequiredKeyId = locked ? $"chest-key-{CurrentFloor}-{chestCell.x}-{chestCell.y}" : "",
+                Gold = _random.Next(3, 8 + CurrentFloor * 2)
+            };
+            floorChest.Inventory.Add(LootService.Roll(CurrentFloor, _random));
+            if (_random.NextDouble() < 0.25)
+                floorChest.Inventory.Add(LootService.Roll(CurrentFloor, _random));
+            CurrentMaze.Features.Add(floorChest);
         }
         // Occasionally place a trap (environmental hazard, not every floor)
         if (emptyCells.Count > 0 && _random.NextDouble() < 0.4)
@@ -3372,6 +3605,32 @@ public class GameState
         }
         // No per-floor boss anymore — the significant fight is the Guardian at each safe-room gate.
         PopulateDungeonEncounters(emptyCells, enemyCount);
+        if (floorChest is { IsLocked: true } && Enemies.Count > 0)
+        {
+            Enemy keyBearer = Enemies[_random.Next(Enemies.Count)];
+            keyBearer.Inventory.Add(CombinableCatalog.ChestKey(floorChest.RequiredKeyId));
+        }
+    }
+
+    private static readonly HashSet<string> LegacyClassActionIds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "quick-slash", "heavy-cleave", "magic-dart", "arcane-blast", "quick-stab",
+        "devastating-backstab", "holy-touch", "divine-wrath", "quick-shot", "power-shot",
+        "sound-wave", "sonic-boom", "light-punch", "heavy-strike"
+    };
+
+    /// <summary>Version-one saves stored class actions and found weapons in the same Loadout.</summary>
+    private void MigrateLegacyLoadout(SaveData data)
+    {
+        foreach (Weapon weapon in data.Loadout.OfType<Weapon>())
+        {
+            if (LegacyClassActionIds.Contains(weapon.Id)) continue;
+            Hero.Inventory.Add(weapon);
+            EquipFromInventory(weapon, out _);
+        }
+
+        if (Hero.Equipment.Count == 0)
+            Hero.Equipment = AttackFactory.GetStartingEquipment(Hero.Class);
     }
 
     private (int x, int y) TakeRoomAwareCell(List<(int x, int y)> available, DungeonRoomRole role)

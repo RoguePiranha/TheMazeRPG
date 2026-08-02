@@ -28,6 +28,7 @@ public static class CombinableCatalog
     {
         Id = "bow", Name = "Bow", Rarity = Rarity.Common,
         BaseDamage = 6, Range = 4.0f, Cooldown = 15, Animation = AttackAnimation.Ranged,
+        HandsRequired = 2,
         Description = "Shoots arrows."
     };
 
@@ -50,8 +51,56 @@ public static class CombinableCatalog
     public static Item ShieldGenerator() => new()
     {
         Id = "shield-generator", Name = "Shield Generator", Rarity = Rarity.Uncommon,
-        Attributes = { GameAttribute.Arcane },
-        Description = "Creates a shield that absorbs damage."
+        Attributes = { GameAttribute.Arcane }, EquipSlot = EquipmentSlot.Amulet, DefenseBonus = 4,
+        Description = "An amulet-sized projector that reinforces the wearer's defenses."
+    };
+
+    public static Armor IronHelm() => new()
+    {
+        Id = "iron-helm", Name = "Iron Helm", Rarity = Rarity.Common,
+        Slot = EquipmentSlot.Head, DefenseBonus = 2, Attributes = { GameAttribute.Heavy },
+        Description = "A plain iron helmet."
+    };
+
+    public static Armor LeatherCoat() => new()
+    {
+        Id = "leather-coat", Name = "Leather Coat", Rarity = Rarity.Common,
+        Slot = EquipmentSlot.Chest, DefenseBonus = 3, Attributes = { GameAttribute.Light },
+        Description = "Flexible chest armor made for travel."
+    };
+
+    public static Armor LeatherGloves() => new()
+    {
+        Id = "leather-gloves", Name = "Leather Gloves", Rarity = Rarity.Common,
+        Slot = EquipmentSlot.Hands, DefenseBonus = 1, Attributes = { GameAttribute.Light },
+        Description = "Protective gloves that leave the fingers mobile."
+    };
+
+    public static Armor GuardLeggings() => new()
+    {
+        Id = "guard-leggings", Name = "Guard Leggings", Rarity = Rarity.Common,
+        Slot = EquipmentSlot.Legs, DefenseBonus = 2, Attributes = { GameAttribute.Medium },
+        Description = "Layered protection for the legs."
+    };
+
+    public static Armor TrailBoots() => new()
+    {
+        Id = "trail-boots", Name = "Trail Boots", Rarity = Rarity.Common,
+        Slot = EquipmentSlot.Feet, DefenseBonus = 1, Attributes = { GameAttribute.Light },
+        Description = "Sturdy boots for broken dungeon floors."
+    };
+
+    public static Item WardRing() => new()
+    {
+        Id = "ward-ring", Name = "Ward Ring", Rarity = Rarity.Uncommon,
+        EquipSlot = EquipmentSlot.RingLeft, DefenseBonus = 2,
+        Attributes = { GameAttribute.Blessed }, Description = "A ring etched with a small protective ward."
+    };
+
+    public static Item ChestKey(string keyId) => new()
+    {
+        Id = keyId, KeyId = keyId, Name = "Chest Key", Rarity = Rarity.Common,
+        Description = "A key made for one particular dungeon chest."
     };
 
     public static Item HealthPotion() => new()

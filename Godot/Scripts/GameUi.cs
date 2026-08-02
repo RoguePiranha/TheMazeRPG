@@ -38,6 +38,8 @@ public partial class GameUi : Control
     private Label _resourceLabel = null!;
     private Label _messageLabel = null!;
     private Label _activityLabel = null!;
+    private PanelContainer _interactionToast = null!;
+    private Label _interactionLabel = null!;
     private HBoxContainer _hotbar = null!;
     private string _hotbarSignature = "";
 
@@ -329,6 +331,15 @@ public partial class GameUi : Control
         _activityLabel.Text = state.CurrentActivity == null
             ? ""
             : $"{state.CurrentActivity.Name.ToUpperInvariant()}   {state.CurrentActivity.TicksRemaining}";
+        MazeFeature? nearby = state.NearbyInteractable;
+        _interactionToast.Visible = nearby != null;
+        if (nearby != null)
+        {
+            string action = nearby.Type == MazeFeatureType.Chest
+                ? nearby.IsOpened ? "LOOT CHEST" : "CHEST"
+                : nearby.Type.ToString().ToUpperInvariant();
+            _interactionLabel.Text = $"PRESS E   {action}";
+        }
         RefreshHotbar(state);
     }
 
@@ -361,47 +372,7 @@ public partial class GameUi : Control
 
     public void ShowCharacterSheet(GameState state)
     {
-        Hero hero = state.Hero;
-        var body = ModalBody("CHARACTER", Gold, new Vector2(630, 520));
-        body.AddChild(LabelOf($"{hero.Name.ToUpperInvariant()}     LEVEL {hero.Level}     {hero.Race.ToUpperInvariant()} {hero.Class.ToUpperInvariant()}",
-            15, Text, HorizontalAlignment.Center));
-        body.AddChild(LabelOf($"XP {hero.Experience}/{hero.ExperienceToNext}     POINTS {hero.UnspentStatPoints}",
-            13, hero.UnspentStatPoints > 0 ? Gold : Muted, HorizontalAlignment.Center));
-        body.AddChild(Spacer(4));
-
-        var statGrid = new GridContainer { Columns = 4, SizeFlagsVertical = SizeFlags.ExpandFill };
-        statGrid.AddThemeConstantOverride("h_separation", 18);
-        statGrid.AddThemeConstantOverride("v_separation", 5);
-        statGrid.AddChild(LabelOf("ATTRIBUTE", 12, Muted));
-        statGrid.AddChild(LabelOf("BASE", 12, Muted, HorizontalAlignment.Right));
-        statGrid.AddChild(LabelOf("EFFECTIVE", 12, Muted, HorizontalAlignment.Right));
-        statGrid.AddChild(LabelOf("", 12, Muted));
-        foreach (string stat in GameState.CoreStatNames)
-        {
-            statGrid.AddChild(LabelOf(stat.ToUpperInvariant(), 14, Text));
-            statGrid.AddChild(LabelOf(BaseStat(hero, stat).ToString(), 14, Text, HorizontalAlignment.Right));
-            statGrid.AddChild(LabelOf(EffectiveStat(hero, stat).ToString("0.##"), 14, Blue, HorizontalAlignment.Right));
-            var add = SmallButton("+", Gold);
-            add.CustomMinimumSize = new Vector2(38, 32);
-            add.Disabled = hero.UnspentStatPoints <= 0;
-            add.TooltipText = $"Spend one point on {stat}";
-            string selectedStat = stat;
-            add.Pressed += () =>
-            {
-                if (state.SpendStatPoint(selectedStat)) ShowCharacterSheet(state);
-            };
-            statGrid.AddChild(add);
-        }
-        body.AddChild(statGrid);
-        body.AddChild(LabelOf(
-            $"HP {hero.CurrentHp}/{hero.MaxHp}     STAMINA {hero.CurrentStamina}/{hero.MaxStamina}     MANA {hero.CurrentMana}/{hero.MaxMana}     FAITH {hero.CurrentFaith}/{hero.MaxFaith}",
-            13, Muted, HorizontalAlignment.Center));
-        body.AddChild(LabelOf($"TACTICAL MOVE {state.CalculateTacticalMovementAllowance()}     GOLD {hero.Gold}",
-            13, Green, HorizontalAlignment.Center));
-        var close = CommandButton("CLOSE", Green, 160);
-        close.Pressed += () => CloseModal();
-        body.AddChild(Centered(close));
-        ShowModal(body, new Vector2(700, 650));
+        ShowCharacterPanel(state, statsTab: true);
     }
 
     public void ShowCodex(bool playStats = false)
@@ -618,52 +589,148 @@ public partial class GameUi : Control
 
     public void ShowInventory(GameState state)
     {
-        var body = ModalBody("INVENTORY & LOADOUT", Gold, new Vector2(810, 510));
+        ShowCharacterPanel(state, statsTab: false);
+    }
+
+    private void ShowCharacterPanel(GameState state, bool statsTab)
+    {
+        Hero hero = state.Hero;
+        var body = ModalBody("CHARACTER", Gold, new Vector2(850, 520));
+        body.AddThemeConstantOverride("separation", 6);
+        body.AddChild(LabelOf(
+            $"{hero.Name.ToUpperInvariant()}     LEVEL {hero.Level}     {hero.Race.ToUpperInvariant()} {hero.Class.ToUpperInvariant()}",
+            14, Text, HorizontalAlignment.Center));
+
+        var tabs = ActionsRow();
+        var inventoryTab = CommandButton("INVENTORY", statsTab ? Muted : Gold, 190);
+        inventoryTab.Pressed += () => ShowCharacterPanel(state, statsTab: false);
+        var stats = CommandButton("STATS", statsTab ? Gold : Muted, 190);
+        stats.Pressed += () => ShowCharacterPanel(state, statsTab: true);
+        tabs.AddChild(inventoryTab);
+        tabs.AddChild(stats);
+        body.AddChild(tabs);
+
+        if (statsTab)
+        {
+            BuildStatsTab(state, body);
+            var close = CommandButton("CLOSE", Green, 160);
+            close.Pressed += () => CloseModal();
+            body.AddChild(Centered(close));
+        }
+        else BuildInventoryTab(state, body);
+        ShowModal(body, new Vector2(920, 650));
+    }
+
+    private void BuildStatsTab(GameState state, VBoxContainer body)
+    {
+        Hero hero = state.Hero;
+        body.AddChild(LabelOf($"XP {hero.Experience}/{hero.ExperienceToNext}     POINTS {hero.UnspentStatPoints}",
+            13, hero.UnspentStatPoints > 0 ? Gold : Muted, HorizontalAlignment.Center));
+        var statGrid = new GridContainer { Columns = 4, SizeFlagsVertical = SizeFlags.ExpandFill };
+        statGrid.AddThemeConstantOverride("h_separation", 18);
+        statGrid.AddThemeConstantOverride("v_separation", 5);
+        statGrid.AddChild(LabelOf("ATTRIBUTE", 12, Muted));
+        statGrid.AddChild(LabelOf("BASE", 12, Muted, HorizontalAlignment.Right));
+        statGrid.AddChild(LabelOf("EFFECTIVE", 12, Muted, HorizontalAlignment.Right));
+        statGrid.AddChild(LabelOf("", 12, Muted));
+        foreach (string stat in GameState.CoreStatNames)
+        {
+            statGrid.AddChild(LabelOf(stat.ToUpperInvariant(), 14, Text));
+            statGrid.AddChild(LabelOf(BaseStat(hero, stat).ToString(), 14, Text, HorizontalAlignment.Right));
+            statGrid.AddChild(LabelOf(EffectiveStat(hero, stat).ToString("0.##"), 14, Blue, HorizontalAlignment.Right));
+            var add = SmallButton("+", Gold);
+            add.CustomMinimumSize = new Vector2(38, 32);
+            add.Disabled = hero.UnspentStatPoints <= 0;
+            add.TooltipText = $"Spend one point on {stat}";
+            string selectedStat = stat;
+            add.Pressed += () =>
+            {
+                if (state.SpendStatPoint(selectedStat)) ShowCharacterPanel(state, statsTab: true);
+            };
+            statGrid.AddChild(add);
+        }
+        body.AddChild(statGrid);
+        body.AddChild(LabelOf(
+            $"HP {hero.CurrentHp}/{hero.MaxHp}     STAMINA {hero.CurrentStamina}/{hero.MaxStamina}     MANA {hero.CurrentMana}/{hero.MaxMana}     FAITH {hero.CurrentFaith}/{hero.MaxFaith}",
+            13, Muted, HorizontalAlignment.Center));
+        body.AddChild(LabelOf(
+            $"DEFENSE {hero.Defense} + {hero.EquipmentDefenseBonus} GEAR     WEAPON DAMAGE +{hero.EquippedWeaponDamage}     TACTICAL MOVE {state.CalculateTacticalMovementAllowance()}     GOLD {hero.Gold}",
+            13, Green, HorizontalAlignment.Center));
+    }
+
+    private void BuildInventoryTab(GameState state, VBoxContainer body)
+    {
         var columns = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
         columns.AddThemeConstantOverride("separation", 18);
-
-        VBoxContainer loadoutColumn = ListColumn("EQUIPPED", out ItemList equipped);
-        VBoxContainer inventoryColumn = ListColumn("BACKPACK", out ItemList inventory);
-        var details = DetailLabel(86);
+        VBoxContainer equippedColumn = ListColumn("EQUIPPED", out ItemList equippedList);
+        VBoxContainer backpackColumn = ListColumn("BACKPACK", out ItemList backpackList);
+        equippedList.CustomMinimumSize = new Vector2(360, 205);
+        backpackList.CustomMinimumSize = new Vector2(360, 205);
+        var details = DetailLabel(62);
         var status = LabelOf("", 12, Muted, HorizontalAlignment.Center);
+        var equippedEntries = new List<Combinable?>();
+        var backpackEntries = new List<Combinable>();
 
         void Populate()
         {
-            equipped.Clear();
-            inventory.Clear();
-            foreach (Combinable item in state.Hero.Loadout)
-                equipped.AddItem(ItemLabel(item));
-            foreach (Combinable item in state.Hero.Inventory)
-                inventory.AddItem(ItemLabel(item));
+            equippedList.Clear();
+            backpackList.Clear();
+            equippedEntries.Clear();
+            backpackEntries.Clear();
+            foreach (EquipmentSlot slot in EquipmentSlots.DisplayOrder)
+            {
+                Combinable? item = state.Hero.Equipment.GetValueOrDefault(slot);
+                string value = item?.Name ?? "Empty";
+                if (slot == EquipmentSlot.OffHand && state.IsOffHandBlocked)
+                    value = "Reserved by two-handed weapon";
+                equippedList.AddItem($"{EquipmentSlots.Label(slot).ToUpperInvariant(),-11}  {value}");
+                equippedEntries.Add(item);
+            }
+            foreach (Combinable spell in state.Hero.Loadout)
+            {
+                equippedList.AddItem($"ACTION SPELL  {spell.Name}");
+                equippedEntries.Add(spell);
+            }
+            backpackEntries.AddRange(state.Hero.Inventory
+                .OrderBy(item => item.Kind)
+                .ThenByDescending(item => item.Rarity)
+                .ThenBy(item => item.Name));
+            foreach (Combinable item in backpackEntries)
+                backpackList.AddItem(ItemLabel(item));
             details.Text = "Select an item to inspect it.";
-            status.Text = $"HOTBAR {state.Hero.Loadout.Count}/{state.Hero.HotbarCapacity}     GOLD {state.Hero.Gold}";
+            status.Text = $"GEAR DEFENSE +{state.Hero.EquipmentDefenseBonus}     WEAPON DAMAGE +{state.Hero.EquippedWeaponDamage}     SPELLS {state.Hero.Loadout.Count}     GOLD {state.Hero.Gold}";
             _hotbarSignature = "";
             RefreshGame(state);
         }
 
-        equipped.ItemSelected += index => details.Text = ItemDetails(state.Hero.Loadout[(int)index]);
-        inventory.ItemSelected += index => details.Text = ItemDetails(state.Hero.Inventory[(int)index]);
+        equippedList.ItemSelected += index =>
+        {
+            int selected = (int)index;
+            Combinable? item = selected < equippedEntries.Count ? equippedEntries[selected] : null;
+            details.Text = item == null ? "This slot is empty." : ItemDetails(item);
+        };
+        backpackList.ItemSelected += index => details.Text = ItemDetails(backpackEntries[(int)index]);
 
-        var unequip = CommandButton("UNEQUIP", Muted, 140);
+        var unequip = CommandButton("UNEQUIP", Muted, 150);
         unequip.Pressed += () =>
         {
-            int index = SelectedIndex(equipped, -1);
-            if (index >= 0 && state.UnequipToInventory(state.Hero.Loadout[index])) Populate();
+            int index = SelectedIndex(equippedList, -1);
+            if (index >= 0 && index < equippedEntries.Count && equippedEntries[index] is { } item &&
+                state.UnequipToInventory(item)) Populate();
         };
-        var equip = CommandButton("EQUIP", Blue, 140);
+        var equip = CommandButton("EQUIP", Blue, 150);
         equip.Pressed += () =>
         {
-            int index = SelectedIndex(inventory, -1);
+            int index = SelectedIndex(backpackList, -1);
             if (index < 0) return;
-            Combinable item = state.Hero.Inventory[index];
-            if (!state.EquipFromInventory(item))
-                details.Text = item is Weapon or Spell ? "The hotbar is full." : "This item is not an attack.";
+            Combinable item = backpackEntries[index];
+            if (!state.EquipFromInventory(item, out string reason)) details.Text = reason;
             else Populate();
         };
-        loadoutColumn.AddChild(unequip);
-        inventoryColumn.AddChild(equip);
-        columns.AddChild(loadoutColumn);
-        columns.AddChild(inventoryColumn);
+        equippedColumn.AddChild(unequip);
+        backpackColumn.AddChild(equip);
+        columns.AddChild(equippedColumn);
+        columns.AddChild(backpackColumn);
         body.AddChild(columns);
         body.AddChild(status);
         body.AddChild(details);
@@ -676,7 +743,6 @@ public partial class GameUi : Control
         actions.AddChild(close);
         body.AddChild(actions);
         Populate();
-        ShowModal(body, new Vector2(880, 650));
     }
 
     public void ShowLoot(GameState state, Enemy corpse)
@@ -688,24 +754,42 @@ public partial class GameUi : Control
         VBoxContainer heroColumn = ListColumn("YOUR BACKPACK", out ItemList heroItems);
         var details = DetailLabel(80);
         var status = LabelOf("", 12, Muted, HorizontalAlignment.Center);
+        var bodyEntries = new List<Combinable?>();
 
         void Populate()
         {
             corpseItems.Clear();
             heroItems.Clear();
-            foreach (Combinable item in corpse.Inventory) corpseItems.AddItem(ItemLabel(item));
+            bodyEntries.Clear();
+            if (corpse.Gold > 0)
+            {
+                corpseItems.AddItem($"Gold ({corpse.Gold})   Currency");
+                bodyEntries.Add(null);
+            }
+            foreach (Combinable item in corpse.Inventory)
+            {
+                corpseItems.AddItem(ItemLabel(item));
+                bodyEntries.Add(item);
+            }
             foreach (Combinable item in state.Hero.Inventory) heroItems.AddItem(ItemLabel(item));
-            status.Text = $"BODY GOLD {corpse.Gold}     YOUR GOLD {state.Hero.Gold}";
+            status.Text = $"YOUR GOLD {state.Hero.Gold}";
             details.Text = "Select an item to inspect it.";
         }
 
-        corpseItems.ItemSelected += index => details.Text = ItemDetails(corpse.Inventory[(int)index]);
+        corpseItems.ItemSelected += index =>
+        {
+            Combinable? item = bodyEntries[(int)index];
+            details.Text = item == null ? $"Gold\n{corpse.Gold} coins." : ItemDetails(item);
+        };
         heroItems.ItemSelected += index => details.Text = ItemDetails(state.Hero.Inventory[(int)index]);
         var take = CommandButton("TAKE", Blue, 130);
         take.Pressed += () =>
         {
             int index = SelectedIndex(corpseItems, -1);
-            if (index >= 0 && state.LootItem(corpse, corpse.Inventory[index])) Populate();
+            if (index < 0 || index >= bodyEntries.Count) return;
+            Combinable? item = bodyEntries[index];
+            bool taken = item == null ? state.LootGold(corpse) : state.LootItem(corpse, item);
+            if (taken) Populate();
         };
         var returnItem = CommandButton("RETURN", Muted, 130);
         returnItem.Pressed += () =>
@@ -724,6 +808,144 @@ public partial class GameUi : Control
         var actions = ActionsRow();
         var all = CommandButton("LOOT ALL", Gold, 170);
         all.Pressed += () => { state.LootAll(corpse); Populate(); RefreshGame(state); };
+        var close = CommandButton("CLOSE", Green, 150);
+        close.Pressed += () => CloseModal();
+        actions.AddChild(all);
+        actions.AddChild(close);
+        body.AddChild(actions);
+        Populate();
+        ShowModal(body, new Vector2(880, 650));
+    }
+
+    public void ShowChestActions(GameState state, MazeFeature chest, string feedback = "")
+    {
+        if (chest.IsOpened)
+        {
+            ShowChestLoot(state, chest);
+            return;
+        }
+
+        var body = ModalBody("CHEST", Gold, new Vector2(340, 0));
+        var open = CommandButton(chest.IsLocked ? "OPEN (LOCKED)" : "OPEN", chest.IsLocked ? Muted : Blue, 270);
+        open.Disabled = chest.IsLocked;
+        open.Pressed += () =>
+        {
+            if (state.OpenChest(chest)) ShowChestLoot(state, chest);
+        };
+        body.AddChild(open);
+
+        var inspect = CommandButton(chest.TrapChecked ? "TRAP CHECKED" : "LOOK FOR TRAPS", Muted, 270);
+        inspect.Disabled = chest.TrapChecked;
+        inspect.Pressed += () =>
+        {
+            state.LookForChestTraps(chest);
+            ShowChestActions(state, chest, state.Messages.Messages.LastOrDefault()?.Text ?? "");
+            RefreshGame(state);
+        };
+        body.AddChild(inspect);
+
+        if (feedback.Length > 0)
+            body.AddChild(LabelOf(feedback, 12,
+                chest.ChestTrapDetected && !chest.TrapDisarmed ? Red : Muted,
+                HorizontalAlignment.Center));
+
+        if (chest.ChestTrapDetected && !chest.TrapDisarmed)
+        {
+            var disarm = CommandButton("DISARM TRAP", Red, 270);
+            disarm.Pressed += () =>
+            {
+                state.TryDisarmChestTrap(chest);
+                ShowChestActions(state, chest, state.Messages.Messages.LastOrDefault()?.Text ?? "");
+                RefreshGame(state);
+            };
+            body.AddChild(disarm);
+        }
+
+        if (chest.IsLocked)
+        {
+            var lockpick = CommandButton("LOCKPICK", Blue, 270);
+            lockpick.Pressed += () =>
+            {
+                state.TryLockpickChest(chest);
+                ShowChestActions(state, chest, state.Messages.Messages.LastOrDefault()?.Text ?? "");
+                RefreshGame(state);
+            };
+            body.AddChild(lockpick);
+            if (state.HasChestKey(chest))
+            {
+                var key = CommandButton("USE KEY", Gold, 270);
+                key.Pressed += () =>
+                {
+                    state.UseChestKey(chest);
+                    ShowChestActions(state, chest, state.Messages.Messages.LastOrDefault()?.Text ?? "");
+                    RefreshGame(state);
+                };
+                body.AddChild(key);
+            }
+        }
+
+        var close = CommandButton("CLOSE", Green, 270);
+        close.Pressed += () => CloseModal();
+        body.AddChild(close);
+        ShowModal(body, new Vector2(400, 0));
+    }
+
+    public void ShowChestLoot(GameState state, MazeFeature chest)
+    {
+        var body = ModalBody("OPEN CHEST", Gold, new Vector2(810, 500));
+        var columns = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+        columns.AddThemeConstantOverride("separation", 18);
+        VBoxContainer chestColumn = ListColumn("CHEST", out ItemList chestItems);
+        VBoxContainer heroColumn = ListColumn("YOUR BACKPACK", out ItemList heroItems);
+        var details = DetailLabel(80);
+        var status = LabelOf("", 12, Muted, HorizontalAlignment.Center);
+        var entries = new List<Combinable?>();
+
+        void Populate()
+        {
+            chestItems.Clear();
+            heroItems.Clear();
+            entries.Clear();
+            if (chest.Gold > 0)
+            {
+                chestItems.AddItem($"Gold ({chest.Gold})   Currency");
+                entries.Add(null);
+            }
+            foreach (Combinable item in chest.Inventory)
+            {
+                chestItems.AddItem(ItemLabel(item));
+                entries.Add(item);
+            }
+            foreach (Combinable item in state.Hero.Inventory) heroItems.AddItem(ItemLabel(item));
+            details.Text = entries.Count == 0 ? "The chest is empty." : "Select an item to inspect it.";
+            status.Text = $"YOUR GOLD {state.Hero.Gold}";
+        }
+
+        chestItems.ItemSelected += index =>
+        {
+            Combinable? item = entries[(int)index];
+            details.Text = item == null ? $"Gold\n{chest.Gold} coins." : ItemDetails(item);
+        };
+        heroItems.ItemSelected += index => details.Text = ItemDetails(state.Hero.Inventory[(int)index]);
+        var take = CommandButton("TAKE", Blue, 130);
+        take.Pressed += () =>
+        {
+            int index = SelectedIndex(chestItems, -1);
+            if (index < 0 || index >= entries.Count) return;
+            Combinable? item = entries[index];
+            bool taken = item == null ? state.LootChestGold(chest) : state.LootChestItem(chest, item);
+            if (taken) Populate();
+            RefreshGame(state);
+        };
+        chestColumn.AddChild(take);
+        columns.AddChild(chestColumn);
+        columns.AddChild(heroColumn);
+        body.AddChild(columns);
+        body.AddChild(status);
+        body.AddChild(details);
+        var actions = ActionsRow();
+        var all = CommandButton("LOOT ALL", Gold, 170);
+        all.Pressed += () => { state.LootAll(chest); Populate(); RefreshGame(state); };
         var close = CommandButton("CLOSE", Green, 150);
         close.Pressed += () => CloseModal();
         actions.AddChild(all);
@@ -901,6 +1123,26 @@ public partial class GameUi : Control
         _intentBand.AddChild(intentMargin);
         _hud.AddChild(_intentBand);
 
+        _interactionToast = new PanelContainer
+        {
+            AnchorLeft = 0.5f,
+            AnchorRight = 0.5f,
+            AnchorTop = 1,
+            AnchorBottom = 1,
+            OffsetLeft = -150,
+            OffsetRight = 150,
+            OffsetTop = -190,
+            OffsetBottom = -144,
+            MouseFilter = MouseFilterEnum.Ignore,
+            Visible = false
+        };
+        _interactionToast.AddThemeStyleboxOverride("panel", Box(Ink with { A = 0.94f }, Gold, 3, 1));
+        var interactionMargin = Margin(14, 8, 14, 8);
+        _interactionLabel = LabelOf("PRESS E   CHEST", 15, Gold, HorizontalAlignment.Center);
+        interactionMargin.AddChild(_interactionLabel);
+        _interactionToast.AddChild(interactionMargin);
+        _hud.AddChild(_interactionToast);
+
         var bottom = new VBoxContainer
         {
             AnchorLeft = 0.5f,
@@ -999,6 +1241,7 @@ public partial class GameUi : Control
         panel.AddChild(margin);
         _modalCenter.AddChild(panel);
         _modal.Visible = true;
+        _interactionToast.Visible = false;
         if (notify && !wasOpen) ModalOpened?.Invoke();
     }
 
@@ -1193,9 +1436,12 @@ public partial class GameUi : Control
         if (item.Attributes.Count > 0) details += $"\n{string.Join(" / ", item.Attributes)}";
         return item switch
         {
-            Weapon weapon => details + $"\nDamage {weapon.BaseDamage}   Range {weapon.Range:0.#}   Crit {weapon.CritChance:P0}   Stamina {weapon.StaminaCost}",
+            Weapon weapon => details + $"\nDamage +{weapon.BaseDamage}   {weapon.HandsRequired}-hand   Range {weapon.Range:0.#}",
+            Armor armor => details + $"\n{EquipmentSlots.Label(armor.Slot)}   Defense +{armor.DefenseBonus}",
             Spell spell => details + $"\nDamage {spell.BaseDamage}   Range {spell.Range:0.#}   Crit {spell.CritChance:P0}   Mana {spell.ManaCost}",
             Item consumable when consumable.UseEffect == ItemUseEffect.RestoreHealth => details + $"\nRestores {consumable.EffectPower} health",
+            Item key when key.KeyId.Length > 0 => details + "\nKey item",
+            Item accessory when accessory.EquipSlot.HasValue => details + $"\n{EquipmentSlots.Label(accessory.EquipSlot.Value)}   Defense +{accessory.DefenseBonus}",
             _ => details
         };
     }

@@ -38,6 +38,12 @@ sealed class Program
             return;
         }
 
+        if (Environment.GetEnvironmentVariable("TEST_EQUIPMENT") == "1")
+        {
+            RunEquipmentDemo();
+            return;
+        }
+
         // If TEST_BALANCE is set, dump enemy damage per floor and exit
         if (Environment.GetEnvironmentVariable("TEST_BALANCE") == "1")
         {
@@ -1086,10 +1092,12 @@ sealed class Program
         Show("generic  ", CombinableCatalog.ShieldGenerator(), CombinableCatalog.IceShard());
 
         var mage = new GameState(71, "Synthesist", "Mage Apprentice", "Human");
-        Combinable first = mage.Hero.Loadout[0];
-        Combinable second = mage.Hero.Loadout[1];
+        Combinable first = CombinableCatalog.Fireball();
+        Combinable second = CombinableCatalog.IceShard();
+        mage.Hero.Inventory.Add(first);
+        mage.Hero.Inventory.Add(second);
         Combinable? ownedResult = mage.CombineOwned(first, second, CombineLocation.Anywhere, out string ownedReason);
-        if (ownedResult == null || mage.Hero.Loadout.Contains(first) || mage.Hero.Loadout.Contains(second) ||
+        if (ownedResult == null || mage.Hero.Inventory.Contains(first) || mage.Hero.Inventory.Contains(second) ||
             !mage.Hero.Inventory.Contains(ownedResult))
             throw new InvalidOperationException($"Owned combination transaction failed: {ownedReason}");
         Console.WriteLine($"[owned    ] consumed 2 equipped spells -> {ownedResult.Name} in inventory");
@@ -1105,7 +1113,7 @@ sealed class Program
     public static void RunLootDemo()
     {
         var gs = new GameState(1, "Looter", "Warrior", "Human");
-        Console.WriteLine($"=== Loot / equip demo (Warrior, hotbar capacity {gs.Hero.HotbarCapacity}) ===");
+        Console.WriteLine($"=== Loot / equip demo (Warrior, action capacity {gs.Hero.HotbarCapacity}) ===");
         Console.WriteLine($"Start attacks: [{string.Join(", ", gs.Hero.Attacks.Select(a => a.Name))}]");
         for (int floor = 1; floor <= 4; floor++)
         {
@@ -1116,8 +1124,14 @@ sealed class Program
         Console.WriteLine($"After pickups — equipped attacks: [{string.Join(", ", gs.Hero.Attacks.Select(a => a.Name))}]");
         Console.WriteLine($"                inventory:        [{string.Join(", ", gs.Hero.Inventory.Select(c => c.Name))}]");
 
-        // Manual equip: player moves an attack item from inventory to the hotbar.
-        var toEquip = gs.Hero.Inventory.OfType<Weapon>().FirstOrDefault() ?? gs.Hero.Inventory.OfType<Spell>().FirstOrDefault() as Combinable;
+        // Manual equip: weapons use hands while spells use open action-bar positions.
+        var toEquip = gs.Hero.Inventory.OfType<Spell>().FirstOrDefault() as Combinable;
+        if (toEquip == null && gs.Hero.Inventory.OfType<Weapon>().FirstOrDefault() is { } foundWeapon)
+        {
+            if (gs.Hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) is { } held)
+                gs.UnequipToInventory(held);
+            toEquip = foundWeapon;
+        }
         if (toEquip != null)
         {
             bool equipped = gs.EquipFromInventory(toEquip);
@@ -1344,20 +1358,24 @@ sealed class Program
             break;
         }
 
-        // Verify chest-opening via the new Activity system (walk to a real chest and let the
-        // full multi-tick Activity run to completion — not a shortcut call to AcquireLoot).
-        Console.WriteLine("\n=== Verify chest-opening Activity ===");
+        // Verify explicit chest interaction: proximity alone does not open it, then E-equivalent
+        // actions unlock, open, and transfer its contents.
+        Console.WriteLine("\n=== Verify chest interaction ===");
         var gsChest = new GameState(1, "Looter2", "Warrior", "Human");
         gsChest.IsRunning = true;
         var chest = gsChest.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Chest);
         int xpBefore = gsChest.Hero.Experience;
-        int invBefore = gsChest.Hero.Inventory.Count + gsChest.Hero.Loadout.Count;
+        int invBefore = gsChest.Hero.Inventory.Count;
         gsChest.Hero.X = chest.X;
         gsChest.Hero.Y = chest.Y;
-        int ticksToOpen = 0;
-        for (int t = 0; t < 200 && !chest.IsUsed; t++) { gsChest.Tick(); ticksToOpen++; }
-        Console.WriteLine($"Chest opened in {ticksToOpen} ticks (CurrentActivity null after: {gsChest.CurrentActivity == null}); IsUsed={chest.IsUsed}");
-        Console.WriteLine($"XP {xpBefore}->{gsChest.Hero.Experience}, inventory+loadout count {invBefore}->{gsChest.Hero.Inventory.Count + gsChest.Hero.Loadout.Count}");
+        chest.IsLocked = false;
+        chest.IsTrapped = false;
+        gsChest.Tick();
+        Console.WriteLine($"Proximity prompt={ReferenceEquals(gsChest.NearbyInteractable, chest)}, auto-opened={chest.IsOpened} (expect True, False)");
+        bool opened = gsChest.OpenChest(chest);
+        gsChest.LootAll(chest);
+        Console.WriteLine($"Opened={opened}, emptied={chest.IsUsed}, no timer={gsChest.CurrentActivity == null}");
+        Console.WriteLine($"XP {xpBefore}->{gsChest.Hero.Experience}, inventory count {invBefore}->{gsChest.Hero.Inventory.Count}");
     }
 
     private static int StairsDistance(GameState gs)
@@ -1366,6 +1384,115 @@ sealed class Program
         if (stairs == null) return -1;
         var distances = gs.CurrentMaze.BfsDistancesFrom(1, 1);
         return distances.GetValueOrDefault((stairs.X, stairs.Y), -1);
+    }
+
+    public static void RunEquipmentDemo()
+    {
+        static void Require(bool condition, string message)
+        {
+            if (!condition) throw new InvalidOperationException(message);
+        }
+
+        Console.WriteLine("=== Equipment, migration, and chest interaction ===");
+        var gs = new GameState(314, "GearTester", "Warrior", "Human");
+        Require(gs.Hero.Loadout.All(item => item is Spell), "Physical weapons leaked into the action loadout.");
+        Require(gs.Hero.Attacks.Any(attack => attack.Id == "quick-slash"), "Class technique missing.");
+        Require(gs.Hero.Equipment[EquipmentSlot.MainHand] is Weapon { Id: "sword" }, "Starting sword not held.");
+
+        gs.UnequipToInventory(gs.Hero.Equipment[EquipmentSlot.MainHand]);
+        Weapon bow = CombinableCatalog.Bow();
+        gs.Hero.Inventory.Add(bow);
+        Require(gs.EquipFromInventory(bow, out _), "Bow did not equip.");
+        Require(gs.IsOffHandBlocked, "Bow did not reserve the off hand.");
+        var blockedHeldItem = new Item
+        {
+            Id = "test-held-item", Name = "Held Item", EquipSlot = EquipmentSlot.OffHand
+        };
+        gs.Hero.Inventory.Add(blockedHeldItem);
+        Require(!gs.EquipFromInventory(blockedHeldItem, out _),
+            "A held item equipped into the bow's reserved off hand.");
+        Weapon blockedDagger = CombinableCatalog.Dagger();
+        gs.Hero.Inventory.Add(blockedDagger);
+        Require(!gs.EquipFromInventory(blockedDagger, out _), "One-handed weapon equipped beside a bow.");
+        gs.UnequipToInventory(bow);
+        Require(gs.EquipFromInventory(blockedDagger, out _), "First dagger did not equip.");
+        Weapon secondDagger = CombinableCatalog.Dagger();
+        gs.Hero.Inventory.Add(secondDagger);
+        Require(gs.EquipFromInventory(secondDagger, out _), "Second dagger did not equip off-hand.");
+
+        foreach (Combinable gear in new Combinable[]
+        {
+            CombinableCatalog.IronHelm(), CombinableCatalog.LeatherCoat(),
+            CombinableCatalog.LeatherGloves(), CombinableCatalog.GuardLeggings(),
+            CombinableCatalog.TrailBoots(), CombinableCatalog.ShieldGenerator(),
+            CombinableCatalog.WardRing(), CombinableCatalog.WardRing()
+        })
+        {
+            gs.Hero.Inventory.Add(gear);
+            Require(gs.EquipFromInventory(gear, out string reason), $"Could not equip {gear.Name}: {reason}");
+        }
+        Require(EquipmentSlots.DisplayOrder.All(slot => gs.Hero.Equipment.ContainsKey(slot)),
+            "One or more humanoid equipment slots remained empty.");
+
+        Spell fireball = CombinableCatalog.Fireball();
+        gs.Hero.Inventory.Add(fireball);
+        Require(gs.EquipFromInventory(fireball, out _), "Spell did not slot on action bar.");
+        Require(gs.Hero.Attacks.Any(attack => attack.Id == fireball.Id), "Slotted spell did not become an action.");
+        Require(gs.Hero.EquipmentDefenseBonus > 0 && gs.Hero.EquippedWeaponDamage > 0,
+            "Equipped gear did not affect derived combat bonuses.");
+
+        var oldSave = new SaveData
+        {
+            Version = 1, ResumePoint = ResumePoint.DungeonStart, SaveId = "legacy-test",
+            HeroName = "Legacy", ClassName = "Warrior", RaceName = "Human", Level = 1,
+            MaxHp = 100, CurrentHp = 100, ExperienceToNext = 100,
+            Strength = 5, Constitution = 5, Agility = 5, Dexterity = 5,
+            Intelligence = 5, Wisdom = 5, Charisma = 5,
+            Loadout = new List<Combinable>
+            {
+                new Weapon { Id = "quick-slash", Name = "Quick Slash" },
+                CombinableCatalog.Bow()
+            }
+        };
+        var migrated = new GameState(315, "Legacy", "Warrior", "Human");
+        migrated.LoadFrom(oldSave);
+        Require(migrated.Hero.Loadout.All(item => item is Spell), "Legacy weapon remained an action item.");
+        Require(migrated.Hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) is Weapon { Id: "bow" },
+            "Legacy physical weapon was not migrated into equipment.");
+
+        oldSave.ClassName = "Mage Apprentice";
+        oldSave.Loadout = new List<Combinable>
+        {
+            new Spell { Id = "magic-dart", Name = "Mana Dart" },
+            new Spell { Id = "arcane-blast", Name = "Arcane Blast" },
+            CombinableCatalog.Fireball()
+        };
+        var migratedMage = new GameState(317, "LegacyMage", "Mage Apprentice", "Human");
+        migratedMage.LoadFrom(oldSave);
+        Require(migratedMage.Hero.Attacks.Count(attack => attack.Id == "magic-dart") == 1 &&
+            migratedMage.Hero.Attacks.Count(attack => attack.Id == "arcane-blast") == 1,
+            "Legacy class spells were duplicated during migration.");
+        Require(migratedMage.Hero.Loadout.Count == 1 && migratedMage.Hero.Loadout[0].Id == "fireball",
+            "A legacy learned spell was not preserved as a slotted spell.");
+
+        var chestGame = new GameState(316, "ChestTester", "Rogue", "Human") { IsRunning = true };
+        MazeFeature chest = chestGame.CurrentMaze.Features.First(feature => feature.Type == MazeFeatureType.Chest);
+        chestGame.Hero.X = chest.X;
+        chestGame.Hero.Y = chest.Y;
+        chest.IsLocked = true;
+        chest.IsTrapped = false;
+        chest.RequiredKeyId = "test-chest-key";
+        chestGame.Hero.Inventory.Add(CombinableCatalog.ChestKey(chest.RequiredKeyId));
+        chestGame.UpdateNearbyInteractable();
+        Require(ReferenceEquals(chestGame.NearbyInteractable, chest), "Chest proximity prompt did not activate.");
+        Require(chestGame.UseChestKey(chest) && chestGame.OpenChest(chest), "Key/open chest flow failed.");
+        int goldBefore = chestGame.Hero.Gold;
+        Require(chestGame.LootChestGold(chest) && chestGame.Hero.Gold > goldBefore,
+            "Chest gold could not be looted independently.");
+
+        var corpse = new Enemy { Hp = 0, Gold = 19 };
+        Require(chestGame.LootGold(corpse) && corpse.Gold == 0, "Corpse gold could not be looted independently.");
+        Console.WriteLine($"PASS: {gs.Hero.Equipment.Count} slots, {gs.Hero.Attacks.Count} actions, gear defense +{gs.Hero.EquipmentDefenseBonus}.");
     }
 
     public static void RunMapRenderDemo()
@@ -1820,7 +1947,8 @@ sealed class Program
 
         bool match = gs1.Hero.Level == gs2.Hero.Level && gs1.Hero.Gold == gs2.Hero.Gold
             && gs1.Hero.Resources.GetValueOrDefault("iron-ore", 0) == gs2.Hero.Resources.GetValueOrDefault("iron-ore", 0)
-            && gs1.Hero.Inventory.Count == gs2.Hero.Inventory.Count;
+            && gs1.Hero.Inventory.Count == gs2.Hero.Inventory.Count
+            && gs2.Hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) is Weapon { Id: "sword" };
         Console.WriteLine($"Round-trip exact match: {match}");
 
         // Exercise the exact code path the Continue button drives: MainWindowViewModel(SaveData).

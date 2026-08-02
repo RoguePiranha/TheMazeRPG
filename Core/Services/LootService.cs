@@ -9,7 +9,7 @@ namespace TheMazeRPG.Core.Services;
 /// </summary>
 public static class LootService
 {
-    // Base gear that can drop. Weapons/spells are equippable to the hotbar; items go to inventory.
+    // Base gear that can drop. Physical gear uses body slots; spells use the action bar.
     private static readonly Func<Combinable>[] Pool =
     {
         CombinableCatalog.Sword,
@@ -18,6 +18,12 @@ public static class LootService
         CombinableCatalog.Fireball,
         CombinableCatalog.IceShard,
         CombinableCatalog.ShieldGenerator,
+        CombinableCatalog.IronHelm,
+        CombinableCatalog.LeatherCoat,
+        CombinableCatalog.LeatherGloves,
+        CombinableCatalog.GuardLeggings,
+        CombinableCatalog.TrailBoots,
+        CombinableCatalog.WardRing,
         CombinableCatalog.HealthPotion
     };
 

@@ -248,7 +248,10 @@ public class CombatSystem
         else if (attack.FaithCost > 0)
             statDamage += (int)(hero.EffectiveWisdom * 1.2f) + (int)(hero.EffectiveCharisma * 0.5f);
         else
+        {
+            statDamage += hero.EquippedWeaponDamage;
             statDamage += (int)(hero.EffectiveStrength * 1.2f) + (int)(hero.EffectiveDexterity * 0.5f);
+        }
 
         float critChance = attack.CritChance + hero.EffectiveDexterity * 0.005f;
         if ((float)_random.NextDouble() < critChance)
@@ -370,7 +373,8 @@ public class CombatSystem
         var element = atk != null ? MagicElements.For(atk) : MagicElement.None;
         statDamage = (int)(statDamage * AffinityService.PowerMultiplier(enemy.Affinities.Get(element)));
 
-        int finalDamage = CalculateDamage(statDamage, hero.Defense + (int)(hero.EffectiveConstitution * 0.7f));
+        int finalDamage = CalculateDamage(statDamage,
+            hero.Defense + hero.EquipmentDefenseBonus + (int)(hero.EffectiveConstitution * 0.7f));
         if (enemy.IsBoss)
         {
             // Bosses hit above regulars AND never fall below a level-scaled floor, so even a

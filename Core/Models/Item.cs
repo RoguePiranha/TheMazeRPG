@@ -17,4 +17,11 @@ public class Item : Combinable
     public ItemUseEffect UseEffect { get; set; }
     public int EffectPower { get; set; }
     public bool Consumable { get; set; }
+
+    /// <summary>Optional wearable slot. Ring items may use either ring slot.</summary>
+    public EquipmentSlot? EquipSlot { get; set; }
+    public int DefenseBonus { get; set; }
+
+    /// <summary>Non-empty only for a key tied to a specific lock.</summary>
+    public string KeyId { get; set; } = "";
 }

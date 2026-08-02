@@ -457,8 +457,16 @@ public partial class DungeonView : Node2D
                 case MazeFeatureType.Chest:
                     DrawRect(new Rect2(center + new Vector2(-11, -8), new Vector2(22, 16)),
                         FogColor(palette.Chest, dimmed));
-                    DrawLine(center + new Vector2(-11, -1), center + new Vector2(11, -1),
-                        FogColor(palette.ChestEdge, dimmed), 2f);
+                    float lidY = feature.IsOpened ? -13f : -1f;
+                    DrawRect(new Rect2(center + new Vector2(-11, lidY - 3), new Vector2(22, 6)),
+                        FogColor(palette.ChestEdge, dimmed), false, 2f);
+                    if (feature.IsLocked && !feature.IsOpened)
+                    {
+                        DrawCircle(center + new Vector2(0, 2), 3f,
+                            FogColor(palette.Exit, dimmed), false, 2f);
+                        DrawRect(new Rect2(center + new Vector2(-2, 3), new Vector2(4, 5)),
+                            FogColor(palette.Exit, dimmed));
+                    }
                     break;
                 case MazeFeatureType.Trap:
                     DrawCircle(center, 8f, FogColor(palette.Hazard, dimmed), false, 2f);

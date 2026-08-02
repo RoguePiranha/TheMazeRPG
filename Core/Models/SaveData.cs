@@ -29,7 +29,7 @@ public enum ResumePoint
 /// </summary>
 public class SaveData
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
 
     /// <summary>Identifies this save slot on disk (Saves/{SaveId}.json) — stable across repeated
     /// saves of the same character so re-saving overwrites rather than multiplying files.</summary>
@@ -74,4 +74,5 @@ public class SaveData
     public Dictionary<string, int> Resources { get; set; } = new();
     public List<Combinable> Loadout { get; set; } = new();
     public List<Combinable> Inventory { get; set; } = new();
+    public Dictionary<EquipmentSlot, Combinable> Equipment { get; set; } = new();
 }
