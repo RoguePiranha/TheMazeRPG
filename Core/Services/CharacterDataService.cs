@@ -24,7 +24,7 @@ public class CharacterDataService
     {
         try
         {
-            var classesPath = Path.Combine("Data", "Classes", "classes.json");
+            var classesPath = GamePaths.Content("Data", "Classes", "classes.json");
             GameLog.Debug($"Attempting to load classes from: {classesPath} (exists: {File.Exists(classesPath)})");
 
             if (File.Exists(classesPath))
@@ -54,7 +54,7 @@ public class CharacterDataService
     {
         try
         {
-            var racesPath = Path.Combine("Data", "Races", "races.json");
+            var racesPath = GamePaths.Content("Data", "Races", "races.json");
             GameLog.Debug($"Attempting to load races from: {racesPath} (exists: {File.Exists(racesPath)})");
 
             if (File.Exists(racesPath))

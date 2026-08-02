@@ -17,7 +17,7 @@ public static class SaveService
 {
     // A subdirectory of Saves/, not Saves/ itself — CodexService also writes Saves/codex.json,
     // and a naive glob over Saves/*.json would misparse that as a phantom (empty) save slot.
-    private static readonly string SavesDirectory = Path.Combine("Saves", "Characters");
+    private static string SavesDirectory => GamePaths.Save("Saves", "Characters");
     private static readonly JsonSerializerOptions ReadOptions = new() { PropertyNameCaseInsensitive = true };
 
     private static string PathFor(string saveId) => Path.Combine(SavesDirectory, $"{saveId}.json");

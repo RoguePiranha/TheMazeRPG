@@ -21,6 +21,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="Core\**\*.cs" />
+    <Compile Remove="Godot\**\*.cs" />
+    <ProjectReference Include="Core\TheMazeRPG.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="Data\**\*.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

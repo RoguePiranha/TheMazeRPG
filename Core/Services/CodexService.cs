@@ -16,7 +16,7 @@ namespace TheMazeRPG.Core.Services;
 /// </summary>
 public class CodexService
 {
-    private static readonly string SavePath = Path.Combine("Saves", "codex.json");
+    private static string SavePath => GamePaths.Save("Saves", "codex.json");
     private static CodexService? _instance;
     public static CodexService Instance => _instance ??= Load();
 

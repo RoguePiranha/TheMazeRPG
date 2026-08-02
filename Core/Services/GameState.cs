@@ -56,6 +56,24 @@ public class GameState
     /// preference, not saved. Forced to Manual while in the Overworld (the town is player-driven).</summary>
     public ControlMode ControlMode { get; private set; } = ControlMode.Auto;
 
+    /// <summary>The optional tactical clock is player-controlled and never activates implicitly.</summary>
+    public SimulationMode SimulationMode { get; private set; } = SimulationMode.RealTime;
+    public TacticalTurnState TacticalTurn { get; } = new();
+    public const int TacticalMovementCap = 8;
+    private ControlMode _controlModeBeforeTactical = ControlMode.Manual;
+    private readonly Queue<Enemy> _tacticalEnemyQueue = new();
+    private Enemy? _tacticalMovingEnemy;
+    private float _tacticalMoveStartX;
+    private float _tacticalMoveStartY;
+    private float _tacticalMoveTargetX;
+    private float _tacticalMoveTargetY;
+    private int _tacticalMoveTicksRemaining;
+    private int _tacticalActionDelayTicks;
+    private int _tacticalEffectSafetyTicks;
+    private const int TacticalMoveAnimationTicks = 5;
+    private const int TacticalActionDelayTicks = 3;
+    private const int TacticalEffectSafetyLimit = 90;
+
     /// <summary>While in the Overworld, the town structure the hero is standing close enough to
     /// interact with (Press-E), or null. Recomputed each tick by UpdateOverworldInteractable.</summary>
     public MazeFeature? NearbyInteractable { get; private set; }
@@ -134,6 +152,888 @@ public class GameState
     public void ToggleControlMode() =>
         SetControlMode(ControlMode == ControlMode.Auto ? ControlMode.Manual : ControlMode.Auto);
 
+    public void SetSimulationMode(SimulationMode mode)
+    {
+        if (SimulationMode == mode) return;
+
+        _manualMoveX = 0f;
+        _manualMoveY = 0f;
+        _dashTicksRemaining = 0;
+
+        if (mode == SimulationMode.TurnBased)
+        {
+            _controlModeBeforeTactical = ControlMode;
+            SimulationMode = mode;
+            SetControlMode(ControlMode.Manual);
+            Hero.X = Hero.GridX;
+            Hero.Y = Hero.GridY;
+            foreach (Enemy enemy in Enemies.Where(enemy => enemy.IsAlive))
+            {
+                enemy.X = MathF.Round(enemy.X);
+                enemy.Y = MathF.Round(enemy.Y);
+            }
+            ResetTacticalResolution();
+            TacticalTurn.TurnNumber = 0;
+            BeginTacticalPlayerTurn();
+            LogMessage("Turn-based mode engaged.", MessageKind.System);
+            return;
+        }
+
+        SimulationMode = mode;
+        TacticalTurn.IsPlayerTurn = false;
+        TacticalTurn.ResolutionTicksRemaining = 0;
+        TacticalTurn.MovementRemaining = 0;
+        TacticalTurn.ActionAvailable = false;
+        TacticalTurn.BonusActionAvailable = false;
+        ResetTacticalResolution();
+        SetControlMode(IsInOverworld ? ControlMode.Manual : _controlModeBeforeTactical);
+        LogMessage("Real-time mode resumed.", MessageKind.System);
+    }
+
+    public void ToggleSimulationMode() =>
+        SetSimulationMode(SimulationMode == SimulationMode.RealTime
+            ? SimulationMode.TurnBased
+            : SimulationMode.RealTime);
+
+    /// <summary>Agility grants a modest tactical movement increase without allowing extreme
+    /// stat values to dominate the whole map.</summary>
+    public int CalculateTacticalMovementAllowance()
+    {
+        int agilityBonus = (int)MathF.Floor(MathF.Max(0f, Hero.EffectiveAgility - 1f) / 3f);
+        return Math.Clamp(3 + agilityBonus, 3, TacticalMovementCap);
+    }
+
+    /// <summary>Spend one movement point to enter an adjacent cardinal tile.</summary>
+    public bool TryTacticalMove(int dx, int dy)
+    {
+        if (!CanTakeTacticalPlayerAction() || TacticalTurn.MovementRemaining <= 0) return false;
+        if (Math.Abs(dx) + Math.Abs(dy) != 1) return false;
+
+        int targetX = Hero.GridX + dx;
+        int targetY = Hero.GridY + dy;
+        if (!CurrentMaze.IsWalkable(targetX, targetY) || IsEnemyOccupyingCell(targetX, targetY))
+            return false;
+
+        Hero.X = targetX;
+        Hero.Y = targetY;
+        _lastMoveDirX = dx;
+        _lastMoveDirY = dy;
+        CurrentMaze.Explored[targetX, targetY] = true;
+        TacticalTurn.MovementRemaining--;
+        RefreshTacticalIntentPreview(rememberObserved: true);
+        EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    /// <summary>Return the shortest currently legal tactical path to an empty destination. The
+    /// hero's starting cell is omitted, so the result count is also the movement cost.</summary>
+    public IReadOnlyList<(int x, int y)> GetTacticalPathTo(int targetX, int targetY)
+    {
+        if (!CanTakeTacticalPlayerAction() || TacticalTurn.MovementRemaining <= 0)
+            return Array.Empty<(int x, int y)>();
+
+        var start = (x: Hero.GridX, y: Hero.GridY);
+        var target = (x: targetX, y: targetY);
+        if (target == start || !CurrentMaze.IsWalkable(targetX, targetY) ||
+            IsEnemyOccupyingCell(targetX, targetY))
+            return Array.Empty<(int x, int y)>();
+
+        var queue = new Queue<(int x, int y)>();
+        var previous = new Dictionary<(int x, int y), (int x, int y)> { [start] = start };
+        var distance = new Dictionary<(int x, int y), int> { [start] = 0 };
+        queue.Enqueue(start);
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (current == target) break;
+            if (distance[current] >= TacticalTurn.MovementRemaining) continue;
+
+            foreach (var next in CardinalCells(current.x, current.y))
+            {
+                if (previous.ContainsKey(next) || !CurrentMaze.IsWalkable(next.x, next.y) ||
+                    IsEnemyOccupyingCell(next.x, next.y))
+                    continue;
+                previous[next] = current;
+                distance[next] = distance[current] + 1;
+                queue.Enqueue(next);
+            }
+        }
+
+        if (!previous.ContainsKey(target)) return Array.Empty<(int x, int y)>();
+        var path = new List<(int x, int y)>();
+        for (var cursor = target; cursor != start; cursor = previous[cursor])
+            path.Add(cursor);
+        path.Reverse();
+        return path;
+    }
+
+    /// <summary>Traverse a previewed tactical path as one destination command, spending one
+    /// movement point per cell and preserving every normal movement-side effect.</summary>
+    public bool TryTacticalMoveTo(int targetX, int targetY)
+    {
+        IReadOnlyList<(int x, int y)> path = GetTacticalPathTo(targetX, targetY);
+        if (path.Count == 0) return false;
+
+        int previousX = Hero.GridX;
+        int previousY = Hero.GridY;
+        foreach (var cell in path)
+        {
+            _lastMoveDirX = cell.x - previousX;
+            _lastMoveDirY = cell.y - previousY;
+            Hero.X = cell.x;
+            Hero.Y = cell.y;
+            CurrentMaze.Explored[cell.x, cell.y] = true;
+            previousX = cell.x;
+            previousY = cell.y;
+            TacticalTurn.MovementRemaining--;
+            RefreshTacticalIntentPreview(rememberObserved: true);
+        }
+
+        EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    public TacticalAttackPreview GetTacticalAttackPreview(int targetX, int targetY)
+    {
+        Attack attack = Hero.CurrentAttack ?? new Attack
+        {
+            Name = "Unarmed Strike",
+            Range = 1f,
+            Animation = AttackAnimation.Melee
+        };
+        bool sameCell = targetX == Hero.GridX && targetY == Hero.GridY;
+        bool targetWalkable = CurrentMaze.IsWalkable(targetX, targetY);
+        Enemy? targetEnemy = Enemies.FirstOrDefault(enemy => enemy.IsAlive &&
+            (int)MathF.Round(enemy.X) == targetX && (int)MathF.Round(enemy.Y) == targetY);
+        float centerDistance = Distance(Hero.X, Hero.Y, targetX, targetY);
+        float effectiveDistance = MathF.Max(0f, centerDistance - (targetEnemy?.Radius ?? 0f));
+        bool inRange = !sameCell && effectiveDistance <= attack.Range + 0.01f;
+        bool hasLineOfSight = targetWalkable && HasLineOfSight(Hero.X, Hero.Y, targetX, targetY);
+        bool canAfford = CanAffordCurrentAttack();
+        bool canControl = SimulationMode == SimulationMode.TurnBased && TacticalTurn.IsPlayerTurn &&
+            IsRunning && !IsHeroDead && CurrentActivity == null;
+
+        string status = !canControl ? "UNAVAILABLE"
+            : !TacticalTurn.ActionAvailable ? "ACTION SPENT"
+            : !canAfford ? "NO RESOURCES"
+            : sameCell ? "SELECT TARGET"
+            : !targetWalkable ? "INVALID TARGET"
+            : !inRange ? "OUT OF RANGE"
+            : !hasLineOfSight ? "BLOCKED"
+            : "READY";
+        bool canCommit = status == "READY";
+        (int x, int y) impact = canCommit
+            ? (targetX, targetY)
+            : FindTacticalAttackImpact(targetX, targetY, attack.Range);
+
+        var rangeCells = new List<(int x, int y)>();
+        int rangeExtent = (int)MathF.Ceiling(attack.Range);
+        for (int x = Hero.GridX - rangeExtent; x <= Hero.GridX + rangeExtent; x++)
+        {
+            for (int y = Hero.GridY - rangeExtent; y <= Hero.GridY + rangeExtent; y++)
+            {
+                if ((x != Hero.GridX || y != Hero.GridY) && CurrentMaze.IsWalkable(x, y) &&
+                    Distance(Hero.X, Hero.Y, x, y) <= attack.Range + 0.01f)
+                    rangeCells.Add((x, y));
+            }
+        }
+
+        float areaRadius = attack.Id == "arcane-blast" ? 1.75f : 0f;
+        var affectedCells = new List<(int x, int y)>();
+        int affectedEnemies = 0;
+        if (targetWalkable && areaRadius > 0f)
+        {
+            int areaExtent = (int)MathF.Ceiling(areaRadius);
+            for (int x = targetX - areaExtent; x <= targetX + areaExtent; x++)
+            {
+                for (int y = targetY - areaExtent; y <= targetY + areaExtent; y++)
+                {
+                    if (CurrentMaze.IsWalkable(x, y) &&
+                        Distance(targetX, targetY, x, y) <= areaRadius + 0.01f)
+                        affectedCells.Add((x, y));
+                }
+            }
+            affectedEnemies = Enemies.Count(enemy => enemy.IsAlive &&
+                Distance(targetX, targetY, enemy.X, enemy.Y) <= areaRadius + enemy.Radius);
+        }
+
+        return new TacticalAttackPreview(attack.Name, targetX, targetY, impact.x, impact.y,
+            attack.Range, areaRadius, targetWalkable, inRange, hasLineOfSight, canAfford,
+            canCommit, affectedEnemies, status, rangeCells, affectedCells);
+    }
+
+    public bool TryTacticalAttackAt(int targetX, int targetY)
+    {
+        TacticalAttackPreview preview = GetTacticalAttackPreview(targetX, targetY);
+        if (!preview.CanCommit) return false;
+
+        _combatSystem.PerformHeroTacticalAttack(Hero, targetX, targetY, Projectiles);
+        TacticalTurn.ActionAvailable = false;
+        EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    /// <summary>Compatibility directional command for non-mouse frontends. Direction is projected
+    /// to the furthest cell within the current attack's authored tactical range.</summary>
+    public bool TryTacticalAttack(float dirX, float dirY)
+    {
+        float length = MathF.Sqrt(dirX * dirX + dirY * dirY);
+        if (length < 0.001f) return false;
+        float range = Hero.CurrentAttack?.Range ?? 1f;
+        int targetX = (int)MathF.Round(Hero.X + dirX / length * range);
+        int targetY = (int)MathF.Round(Hero.Y + dirY / length * range);
+        return TryTacticalAttackAt(targetX, targetY);
+    }
+
+    private (int x, int y) FindTacticalAttackImpact(int targetX, int targetY, float range)
+    {
+        var impact = (x: Hero.GridX, y: Hero.GridY);
+        foreach (var cell in GridLineCells(Hero.GridX, Hero.GridY, targetX, targetY).Skip(1))
+        {
+            if (Distance(Hero.X, Hero.Y, cell.x, cell.y) > range + 0.01f ||
+                !CurrentMaze.IsWalkable(cell.x, cell.y))
+                break;
+            impact = cell;
+        }
+        return impact;
+    }
+
+    private static IEnumerable<(int x, int y)> GridLineCells(int startX, int startY,
+        int endX, int endY)
+    {
+        int dx = Math.Abs(endX - startX);
+        int dy = Math.Abs(endY - startY);
+        int sx = startX < endX ? 1 : -1;
+        int sy = startY < endY ? 1 : -1;
+        int error = dx - dy;
+        int x = startX;
+        int y = startY;
+        while (true)
+        {
+            yield return (x, y);
+            if (x == endX && y == endY) yield break;
+            int doubled = error * 2;
+            if (doubled > -dy) { error -= dy; x += sx; }
+            if (doubled < dx) { error += dx; y += sy; }
+        }
+    }
+
+    /// <summary>Spend the primary action on a short two-cell cardinal dash. Normal movement is
+    /// left untouched, making dash a positioning trade for the attack action.</summary>
+    public bool TryTacticalDash(int dx, int dy)
+    {
+        if (!CanTakeTacticalPlayerAction() || !TacticalTurn.ActionAvailable) return false;
+        if (Math.Abs(dx) + Math.Abs(dy) != 1) return false;
+
+        int moved = 0;
+        for (int i = 0; i < 2; i++)
+        {
+            int targetX = Hero.GridX + dx;
+            int targetY = Hero.GridY + dy;
+            if (!CurrentMaze.IsWalkable(targetX, targetY) || IsEnemyOccupyingCell(targetX, targetY))
+                break;
+            Hero.X = targetX;
+            Hero.Y = targetY;
+            CurrentMaze.Explored[targetX, targetY] = true;
+            moved++;
+        }
+
+        if (moved == 0) return false;
+        _lastMoveDirX = dx;
+        _lastMoveDirY = dy;
+        TacticalTurn.ActionAvailable = false;
+        LogMessage("Dashed.", MessageKind.System);
+        RefreshTacticalIntentPreview(rememberObserved: true);
+        EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    /// <summary>Consume a small item without spending the primary action.</summary>
+    public bool TryUseTacticalBonusItem(Item item)
+    {
+        if (!CanTakeTacticalPlayerAction() || !TacticalTurn.BonusActionAvailable) return false;
+        if (!Hero.Inventory.Contains(item)) return false;
+
+        switch (item.UseEffect)
+        {
+            case ItemUseEffect.RestoreHealth:
+                if (Hero.CurrentHp >= Hero.MaxHp) return false;
+                int amount = item.EffectPower + (int)item.Rarity * 5;
+                int restored = Math.Min(amount, Hero.MaxHp - Hero.CurrentHp);
+                Hero.CurrentHp += restored;
+                LogMessage($"Drank {item.Name} (+{restored} HP).", MessageKind.Loot);
+                break;
+            default:
+                return false;
+        }
+
+        if (item.Consumable)
+            Hero.Inventory.Remove(item);
+        TacticalTurn.BonusActionAvailable = false;
+        EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    /// <summary>Finish the player phase. Pending player effects resolve first, then each engaged
+    /// enemy receives exactly one ordered decision.</summary>
+    public bool EndTacticalTurn()
+    {
+        if (SimulationMode != SimulationMode.TurnBased || !TacticalTurn.IsPlayerTurn ||
+            !IsRunning || IsHeroDead)
+            return false;
+
+        _manualMoveX = 0f;
+        _manualMoveY = 0f;
+        ResetTacticalResolution();
+        TacticalTurn.IsPlayerTurn = false;
+        TacticalTurn.Phase = TacticalPhase.PlayerEffects;
+        TacticalTurn.ResolutionTicksRemaining = 1;
+        TacticalTurn.LastEnemyAction = Projectiles.Any(projectile => projectile.IsActive)
+            ? "Resolving player action"
+            : "Enemies assess the field";
+        return true;
+    }
+
+    public bool AdvanceTacticalTurnTick()
+    {
+        if (SimulationMode != SimulationMode.TurnBased || TacticalTurn.IsPlayerTurn ||
+            TacticalTurn.ResolutionTicksRemaining <= 0)
+            return false;
+
+        switch (TacticalTurn.Phase)
+        {
+            case TacticalPhase.PlayerEffects:
+                if (Projectiles.Any(projectile => projectile.IsActive) &&
+                    _tacticalEffectSafetyTicks < TacticalEffectSafetyLimit)
+                {
+                    _tacticalEffectSafetyTicks++;
+                    AdvanceTacticalEffectsTick();
+                    return FinishTacticalDeathIfNeeded();
+                }
+
+                PrepareTacticalEnemyPhase();
+                if (_tacticalEnemyQueue.Count == 0)
+                    FinishTacticalWorldPhase();
+                return true;
+
+            case TacticalPhase.EnemyActions:
+                if (_tacticalMovingEnemy != null)
+                {
+                    AdvanceTacticalEnemyMotion();
+                    AdvanceTacticalEffectsTick();
+                    return FinishTacticalDeathIfNeeded();
+                }
+
+                if (Projectiles.Any(projectile => projectile.IsActive) &&
+                    _tacticalEffectSafetyTicks < TacticalEffectSafetyLimit)
+                {
+                    _tacticalEffectSafetyTicks++;
+                    AdvanceTacticalEffectsTick();
+                    return FinishTacticalDeathIfNeeded();
+                }
+
+                if (_tacticalActionDelayTicks > 0)
+                {
+                    _tacticalActionDelayTicks--;
+                    AdvanceTacticalEffectsTick();
+                    return FinishTacticalDeathIfNeeded();
+                }
+
+                while (_tacticalEnemyQueue.Count > 0)
+                {
+                    Enemy enemy = _tacticalEnemyQueue.Dequeue();
+                    if (!enemy.IsAlive)
+                    {
+                        TacticalTurn.EnemyActionsRemaining = _tacticalEnemyQueue.Count;
+                        continue;
+                    }
+                    ExecuteTacticalEnemyAction(enemy);
+                    return true;
+                }
+
+                FinishTacticalWorldPhase();
+                return true;
+
+            default:
+                FinishTacticalWorldPhase();
+                return true;
+        }
+    }
+
+    private void ResetTacticalResolution()
+    {
+        if (_tacticalMovingEnemy != null)
+        {
+            _tacticalMovingEnemy.X = _tacticalMoveTargetX;
+            _tacticalMovingEnemy.Y = _tacticalMoveTargetY;
+        }
+        _tacticalEnemyQueue.Clear();
+        _tacticalMovingEnemy = null;
+        _tacticalMoveTicksRemaining = 0;
+        _tacticalActionDelayTicks = 0;
+        _tacticalEffectSafetyTicks = 0;
+        TacticalTurn.EnemyActionsTotal = 0;
+        TacticalTurn.EnemyActionsRemaining = 0;
+        TacticalTurn.ActiveEnemy = "";
+        TacticalTurn.LastEnemyAction = "";
+        TacticalTurn.ResolutionTicksRemaining = 0;
+        TacticalTurn.MutableEnemyIntents.Clear();
+    }
+
+    private void PrepareTacticalEnemyPhase()
+    {
+        List<Enemy> actors = SelectTacticalActors(out HashSet<Enemy> observed,
+            out HashSet<Enemy> encounterAlerted);
+        RememberTacticalObservation(observed, encounterAlerted);
+
+        foreach (Enemy enemy in actors)
+        {
+            if (!enemy.InCombat)
+            {
+                enemy.InCombat = true;
+                CodexService.Instance.RecordEncounter(enemy, CurrentFloor);
+            }
+            _tacticalEnemyQueue.Enqueue(enemy);
+        }
+        BuildTacticalIntents(actors);
+
+        var activeActors = actors.ToHashSet();
+        foreach (Enemy enemy in Enemies.Where(enemy => enemy.IsAlive && !activeActors.Contains(enemy)))
+            enemy.InCombat = false;
+
+        Hero.InCombat = actors.Count > 0;
+        TacticalTurn.Phase = TacticalPhase.EnemyActions;
+        TacticalTurn.EnemyActionsTotal = actors.Count;
+        TacticalTurn.EnemyActionsRemaining = actors.Count;
+        TacticalTurn.ActiveEnemy = "";
+        TacticalTurn.LastEnemyAction = actors.Count == 0
+            ? "The dungeon holds"
+            : $"{actors.Count} enem{(actors.Count == 1 ? "y" : "ies")} act";
+        _tacticalEffectSafetyTicks = 0;
+    }
+
+    public void RefreshTacticalIntentPreview() =>
+        RefreshTacticalIntentPreview(rememberObserved: false);
+
+    private void RefreshTacticalIntentPreview(bool rememberObserved)
+    {
+        TacticalTurn.MutableEnemyIntents.Clear();
+        if (SimulationMode != SimulationMode.TurnBased || !TacticalTurn.IsPlayerTurn || IsHeroDead)
+            return;
+        List<Enemy> actors = SelectTacticalActors(out HashSet<Enemy> observed,
+            out HashSet<Enemy> encounterAlerted);
+        if (rememberObserved) RememberTacticalObservation(observed, encounterAlerted);
+        BuildTacticalIntents(actors);
+    }
+
+    private void RememberTacticalObservation(IEnumerable<Enemy> observed,
+        IEnumerable<Enemy> encounterAlerted)
+    {
+        foreach (Enemy enemy in observed.Concat(encounterAlerted))
+        {
+            enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+            _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+        }
+    }
+
+    private List<Enemy> SelectTacticalActors(out HashSet<Enemy> observed,
+        out HashSet<Enemy> encounterAlerted)
+    {
+        var actors = new List<Enemy>();
+        observed = new HashSet<Enemy>();
+        encounterAlerted = new HashSet<Enemy>();
+        foreach (Enemy enemy in Enemies.Where(enemy => enemy.IsAlive))
+        {
+            float distance = Distance(enemy.X, enemy.Y, Hero.X, Hero.Y);
+            bool hasLineOfSight = HasLineOfSight(enemy.X, enemy.Y, Hero.X, Hero.Y);
+            bool persistent = distance < AgroRadius &&
+                enemyPursuitTicks.TryGetValue(enemy, out int pursuit) && pursuit > 0;
+            bool immediateThreat = hasLineOfSight &&
+                distance <= MathF.Max(VisionRange, enemy.AttackRange + 1f);
+            bool seesHero = EnemyCanSeeHero(enemy) || immediateThreat;
+            if (persistent || seesHero) actors.Add(enemy);
+            if (seesHero) observed.Add(enemy);
+        }
+
+        var alertedEncounters = actors.Where(enemy => enemy.EncounterId >= 0)
+            .Select(enemy => enemy.EncounterId)
+            .ToHashSet();
+        foreach (Enemy enemy in Enemies.Where(enemy => enemy.IsAlive &&
+                     alertedEncounters.Contains(enemy.EncounterId) && !actors.Contains(enemy)))
+        {
+            if (Distance(enemy.X, enemy.Y, Hero.X, Hero.Y) > 12f) continue;
+            actors.Add(enemy);
+            encounterAlerted.Add(enemy);
+        }
+
+        var stableOrder = Enemies.Select((enemy, index) => (enemy, index))
+            .ToDictionary(pair => pair.enemy, pair => pair.index);
+        return actors.Distinct()
+            .OrderByDescending(enemy => enemy.Agility)
+            .ThenBy(enemy => Distance(enemy.X, enemy.Y, Hero.X, Hero.Y))
+            .ThenBy(enemy => stableOrder[enemy])
+            .ToList();
+    }
+
+    private void BuildTacticalIntents(IReadOnlyList<Enemy> actors)
+    {
+        TacticalTurn.MutableEnemyIntents.Clear();
+        var positions = Enemies.Where(enemy => enemy.IsAlive).ToDictionary(
+            enemy => enemy,
+            enemy => (x: (int)MathF.Round(enemy.X), y: (int)MathF.Round(enemy.Y)));
+
+        for (int index = 0; index < actors.Count; index++)
+        {
+            Enemy enemy = actors[index];
+            TacticalEnemyIntent intent = PlanTacticalEnemyIntent(enemy, index + 1, positions);
+            TacticalTurn.MutableEnemyIntents.Add(intent);
+            if (intent.TargetX.HasValue && intent.TargetY.HasValue &&
+                intent.Kind is TacticalIntentKind.Advance or TacticalIntentKind.Reposition)
+            {
+                positions[enemy] = (intent.TargetX.Value, intent.TargetY.Value);
+            }
+        }
+    }
+
+    private void ExecuteTacticalEnemyAction(Enemy enemy)
+    {
+        TacticalTurn.ActiveEnemy = $"{enemy.Race} {enemy.Class}";
+        TacticalTurn.EnemyActionsRemaining = _tacticalEnemyQueue.Count;
+        _tacticalEffectSafetyTicks = 0;
+        TacticalEnemyIntent? intent = TacticalTurn.EnemyIntents
+            .FirstOrDefault(candidate => ReferenceEquals(candidate.Actor, enemy));
+        intent ??= PlanTacticalEnemyIntent(enemy,
+            TacticalTurn.EnemyActionsTotal - TacticalTurn.EnemyActionsRemaining,
+            CurrentEnemyPositions());
+
+        if (intent.Kind == TacticalIntentKind.Attack &&
+            _combatSystem.TryPerformTacticalEnemyAttack(Hero, enemy, Projectiles, CurrentMaze))
+        {
+            TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: {intent.Detail}";
+            LogMessage($"{TacticalTurn.ActiveEnemy} uses {intent.Detail}.", MessageKind.Combat);
+            _tacticalActionDelayTicks = TacticalActionDelayTicks;
+            return;
+        }
+
+        if (intent.Kind is TacticalIntentKind.Advance or TacticalIntentKind.Reposition &&
+            intent.TargetX.HasValue && intent.TargetY.HasValue)
+        {
+            BeginTacticalEnemyMotion(enemy, intent.TargetX.Value, intent.TargetY.Value);
+            TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: {intent.Detail}";
+            return;
+        }
+
+        TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: holds";
+        _tacticalActionDelayTicks = TacticalActionDelayTicks;
+    }
+
+    private TacticalEnemyIntent PlanTacticalEnemyIntent(Enemy enemy, int order,
+        IReadOnlyDictionary<Enemy, (int x, int y)> positions)
+    {
+        (int x, int y) start = positions.TryGetValue(enemy, out var planned)
+            ? planned
+            : ((int)MathF.Round(enemy.X), (int)MathF.Round(enemy.Y));
+        string actorName = $"{enemy.Race} {enemy.Class}";
+        bool hasMove = TryPlanTacticalEnemyMove(enemy, start.x, start.y, positions,
+            out (int x, int y) target, out bool retreating);
+        if (hasMove && retreating)
+        {
+            return new TacticalEnemyIntent(order, enemy, actorName, TacticalIntentKind.Reposition,
+                start.x, start.y, target.x, target.y, "repositions");
+        }
+        if (_combatSystem.CanPerformTacticalEnemyAttack(Hero, enemy, CurrentMaze))
+        {
+            return new TacticalEnemyIntent(order, enemy, actorName, TacticalIntentKind.Attack,
+                start.x, start.y, Hero.GridX, Hero.GridY, enemy.CurrentAttack?.Name ?? "Attack");
+        }
+
+        if (hasMove)
+        {
+            return new TacticalEnemyIntent(order, enemy, actorName, TacticalIntentKind.Advance,
+                start.x, start.y, target.x, target.y, "advances");
+        }
+
+        return new TacticalEnemyIntent(order, enemy, actorName, TacticalIntentKind.Hold,
+            start.x, start.y, null, null, "holds");
+    }
+
+    private bool TryPlanTacticalEnemyMove(Enemy enemy, int startX, int startY,
+        IReadOnlyDictionary<Enemy, (int x, int y)> positions,
+        out (int x, int y) targetCell, out bool retreating)
+    {
+        targetCell = default;
+        retreating = false;
+        int heroX = Hero.GridX;
+        int heroY = Hero.GridY;
+        float distance = Distance(startX, startY, Hero.X, Hero.Y);
+
+        if (enemy.AttackRange > 1.5f && distance < MathF.Max(1.5f, enemy.AttackRange * 0.55f) &&
+            HasLineOfSight(startX, startY, Hero.X, Hero.Y))
+        {
+            var retreats = CardinalCells(startX, startY)
+                .Where(cell => CanEnemyOccupyCell(cell.x, cell.y, enemy, positions))
+                .OrderByDescending(cell => Distance(cell.x, cell.y, Hero.X, Hero.Y))
+                .ThenBy(cell => cell.y)
+                .ThenBy(cell => cell.x)
+                .ToList();
+            if (retreats.Count > 0 &&
+                Distance(retreats[0].x, retreats[0].y, Hero.X, Hero.Y) > distance)
+            {
+                retreating = true;
+                targetCell = retreats[0];
+                return true;
+            }
+        }
+
+        (float x, float y) target = _enemyLastKnownHeroPos.TryGetValue(enemy, out var lastKnown)
+            ? lastKnown
+            : (Hero.X, Hero.Y);
+        (int x, int y)? step = FindTacticalPathStep(startX, startY,
+            (int)MathF.Round(target.x), (int)MathF.Round(target.y), enemy, positions);
+        if (!step.HasValue || (step.Value.x == heroX && step.Value.y == heroY)) return false;
+        targetCell = step.Value;
+        return true;
+    }
+
+    private Dictionary<Enemy, (int x, int y)> CurrentEnemyPositions() =>
+        Enemies.Where(enemy => enemy.IsAlive).ToDictionary(
+            enemy => enemy,
+            enemy => (x: (int)MathF.Round(enemy.X), y: (int)MathF.Round(enemy.Y)));
+
+    private void BeginTacticalEnemyMotion(Enemy enemy, int targetX, int targetY)
+    {
+        _tacticalMovingEnemy = enemy;
+        _tacticalMoveStartX = enemy.X;
+        _tacticalMoveStartY = enemy.Y;
+        _tacticalMoveTargetX = targetX;
+        _tacticalMoveTargetY = targetY;
+        _tacticalMoveTicksRemaining = TacticalMoveAnimationTicks;
+        enemy.TargetX = targetX;
+        enemy.TargetY = targetY;
+    }
+
+    private void AdvanceTacticalEnemyMotion()
+    {
+        if (_tacticalMovingEnemy == null) return;
+        int elapsed = TacticalMoveAnimationTicks - _tacticalMoveTicksRemaining + 1;
+        float progress = Math.Clamp(elapsed / (float)TacticalMoveAnimationTicks, 0f, 1f);
+        _tacticalMovingEnemy.X = _tacticalMoveStartX + (_tacticalMoveTargetX - _tacticalMoveStartX) * progress;
+        _tacticalMovingEnemy.Y = _tacticalMoveStartY + (_tacticalMoveTargetY - _tacticalMoveStartY) * progress;
+        _tacticalMoveTicksRemaining--;
+        if (_tacticalMoveTicksRemaining > 0) return;
+
+        _tacticalMovingEnemy.X = _tacticalMoveTargetX;
+        _tacticalMovingEnemy.Y = _tacticalMoveTargetY;
+        _tacticalMovingEnemy = null;
+        _tacticalActionDelayTicks = TacticalActionDelayTicks;
+    }
+
+    private (int x, int y)? FindTacticalPathStep(int startX, int startY, int targetX, int targetY,
+        Enemy actor, IReadOnlyDictionary<Enemy, (int x, int y)> positions)
+    {
+        var queue = new Queue<(int x, int y)>();
+        var previous = new Dictionary<(int x, int y), (int x, int y)>();
+        var start = (x: startX, y: startY);
+        var target = (x: targetX, y: targetY);
+        if (start == target) return null;
+        queue.Enqueue(start);
+        previous[start] = start;
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (current == target) break;
+            foreach (var next in CardinalCells(current.x, current.y))
+            {
+                if (previous.ContainsKey(next) || !CurrentMaze.IsWalkable(next.x, next.y)) continue;
+                bool isHeroTarget = next == target && next == (Hero.GridX, Hero.GridY);
+                if (!isHeroTarget && !CanEnemyOccupyCell(next.x, next.y, actor, positions)) continue;
+                previous[next] = current;
+                queue.Enqueue(next);
+            }
+        }
+
+        if (!previous.ContainsKey(target)) return null;
+        var step = target;
+        while (previous[step] != start)
+            step = previous[step];
+        return step;
+    }
+
+    private bool CanEnemyOccupyCell(int x, int y, Enemy actor,
+        IReadOnlyDictionary<Enemy, (int x, int y)> positions)
+    {
+        if (!CurrentMaze.IsWalkable(x, y) || (Hero.GridX == x && Hero.GridY == y)) return false;
+        return !positions.Any(pair => pair.Key != actor && pair.Key.IsAlive &&
+            pair.Value.x == x && pair.Value.y == y);
+    }
+
+    private static IEnumerable<(int x, int y)> CardinalCells(int x, int y)
+    {
+        yield return (x, y - 1);
+        yield return (x + 1, y);
+        yield return (x, y + 1);
+        yield return (x - 1, y);
+    }
+
+    private void AdvanceTacticalEffectsTick()
+    {
+        if (ScreenShake > 0f)
+        {
+            ScreenShake *= 0.8f;
+            if (ScreenShake < 0.1f) ScreenShake = 0f;
+        }
+        Hero.AnimationOffsetX *= 0.8f;
+        Hero.AnimationOffsetY *= 0.8f;
+        foreach (Enemy enemy in Enemies)
+        {
+            enemy.AnimationOffsetX *= 0.8f;
+            enemy.AnimationOffsetY *= 0.8f;
+        }
+        UpdateProjectilesAndEffects();
+        RegisterHeroDeathIfNeeded();
+        ApplyPendingGuardianVictory();
+    }
+
+    private void RegisterHeroDeathIfNeeded()
+    {
+        if (Hero.IsAlive || IsHeroDead) return;
+
+        Hero.CurrentHp = 0;
+        IsHeroDead = true;
+        DeathTimer = 0;
+        CodexService.Instance.RecordDeath(CurrentFloor);
+        LogMessage($"{Hero.Name} has died on floor {CurrentFloor}.", MessageKind.Warning);
+        SaveService.Delete(SaveId);
+    }
+
+    private void ApplyPendingGuardianVictory()
+    {
+        if (!_pendingGuardianVictory) return;
+
+        _pendingGuardianVictory = false;
+        IsInSafeRoom = false;
+        LogMessage("The Guardian falls! The way deeper opens.", MessageKind.Combat);
+        StartNewFloor();
+        _tacticalEnemyQueue.Clear();
+        _tacticalMovingEnemy = null;
+        TacticalTurn.Phase = TacticalPhase.WorldUpkeep;
+    }
+
+    private bool FinishTacticalDeathIfNeeded()
+    {
+        if (IsHeroDead) SetSimulationMode(SimulationMode.RealTime);
+        return true;
+    }
+
+    private void FinishTacticalWorldPhase()
+    {
+        TacticalTurn.Phase = TacticalPhase.WorldUpkeep;
+        TickCount += _tacticalResolutionTicksPerTurn;
+        RegenerateTacticalResources(_tacticalResolutionTicksPerTurn);
+        for (int tick = 0; tick < _tacticalResolutionTicksPerTurn && CurrentActivity != null; tick++)
+            UpdateCurrentActivity();
+        if (_heroAlertTicks > 0)
+            _heroAlertTicks = Math.Max(0, _heroAlertTicks - _tacticalResolutionTicksPerTurn);
+        foreach (Enemy enemy in Enemies)
+        {
+            if (enemyPursuitTicks.TryGetValue(enemy, out int pursuit) && pursuit > 0)
+                enemyPursuitTicks[enemy] = Math.Max(0, pursuit - _tacticalResolutionTicksPerTurn);
+        }
+        for (int tick = 0; tick < _tacticalResolutionTicksPerTurn; tick++) UpdatePerception();
+        UpdateDungeonThemeFeatures();
+
+        Hero.InCombat = Enemies.Any(enemy => enemy.IsAlive && enemy.InCombat);
+        if (!Hero.InCombat) CheckFeatures();
+        ApplyPendingGuardianVictory();
+        RegisterHeroDeathIfNeeded();
+
+        if (IsHeroDead)
+        {
+            SetSimulationMode(SimulationMode.RealTime);
+            return;
+        }
+        BeginTacticalPlayerTurn();
+    }
+
+    private void RegenerateTacticalResources(int ticks)
+    {
+        float combatModifier = Hero.InCombat ? 0.7f : 1f;
+        if (IsInSafeRoom && Boss == null) combatModifier = 3f;
+        _accumulatedStaminaRegen += Hero.EffectiveConstitution / (8f * _ticksPerSecond) * combatModifier * ticks;
+        _accumulatedManaRegen += Hero.EffectiveIntelligence / (8f * _ticksPerSecond) * combatModifier * ticks;
+        _accumulatedFaithRegen += Hero.EffectiveWisdom / (8f * _ticksPerSecond) * combatModifier * ticks;
+        Hero.CurrentStamina = RestoreAccumulated(ref _accumulatedStaminaRegen,
+            Hero.CurrentStamina, Hero.MaxStamina);
+        Hero.CurrentMana = RestoreAccumulated(ref _accumulatedManaRegen,
+            Hero.CurrentMana, Hero.MaxMana);
+        Hero.CurrentFaith = RestoreAccumulated(ref _accumulatedFaithRegen,
+            Hero.CurrentFaith, Hero.MaxFaith);
+
+        float healthModifier = IsInSafeRoom && Boss == null ? 3f : 1f;
+        _accumulatedHealthRegen += Hero.EffectiveConstitution / (16f * _ticksPerSecond) * healthModifier * ticks;
+        Hero.CurrentHp = RestoreAccumulated(ref _accumulatedHealthRegen,
+            Hero.CurrentHp, Hero.MaxHp);
+    }
+
+    private static int RestoreAccumulated(ref float accumulated, int current, int maximum)
+    {
+        if (accumulated < 1f) return current;
+        int amount = (int)accumulated;
+        current = Math.Min(maximum, current + amount);
+        accumulated -= amount;
+        return current;
+    }
+
+    private static float Distance(float ax, float ay, float bx, float by)
+    {
+        float dx = ax - bx;
+        float dy = ay - by;
+        return MathF.Sqrt(dx * dx + dy * dy);
+    }
+
+    private bool CanTakeTacticalPlayerAction() =>
+        SimulationMode == SimulationMode.TurnBased && TacticalTurn.IsPlayerTurn &&
+        IsRunning && !IsHeroDead && CurrentActivity == null;
+
+    private bool CanAffordCurrentAttack()
+    {
+        var attack = Hero.CurrentAttack;
+        return attack == null || !attack.IsHeavyAttack ||
+            (Hero.CurrentStamina >= attack.StaminaCost &&
+             Hero.CurrentMana >= AffinityService.EffectiveManaCost(Hero.Affinities, MagicElements.For(attack), attack.ManaCost) &&
+             Hero.CurrentFaith >= attack.FaithCost);
+    }
+
+    private bool IsEnemyOccupyingCell(int x, int y) =>
+        Enemies.Any(enemy => enemy.IsAlive &&
+            (int)MathF.Round(enemy.X) == x && (int)MathF.Round(enemy.Y) == y);
+
+    private void BeginTacticalPlayerTurn()
+    {
+        TacticalTurn.TurnNumber++;
+        TacticalTurn.MovementAllowance = CalculateTacticalMovementAllowance();
+        TacticalTurn.MovementRemaining = TacticalTurn.MovementAllowance;
+        TacticalTurn.ActionAvailable = true;
+        TacticalTurn.BonusActionAvailable = true;
+        TacticalTurn.IsPlayerTurn = true;
+        TacticalTurn.Phase = TacticalPhase.Player;
+        TacticalTurn.ResolutionTicksRemaining = 0;
+        TacticalTurn.ActiveEnemy = "";
+        TacticalTurn.LastEnemyAction = "";
+        TacticalTurn.EnemyActionsRemaining = 0;
+        Hero.AttackCooldown = 0;
+        RefreshTacticalIntentPreview(rememberObserved: true);
+    }
+
+    private void EndTacticalTurnIfSpent()
+    {
+        if (TacticalTurn.MovementRemaining == 0 && !TacticalTurn.ActionAvailable &&
+            !TacticalTurn.BonusActionAvailable)
+            EndTacticalTurn();
+    }
+
     /// <summary>
     /// Fire the hero's current attack toward a world direction (Manual click-to-fire). No-op in
     /// Auto mode, while dead/paused, on cooldown, or when a heavy attack can't be afforded. The
@@ -144,14 +1044,7 @@ public class GameState
         if (ControlMode != ControlMode.Manual || IsHeroDead || !IsRunning) return;
         if (Hero.AttackCooldown > 0) return;
 
-        var attack = Hero.CurrentAttack;
-        if (attack != null && attack.IsHeavyAttack &&
-            (Hero.CurrentStamina < attack.StaminaCost ||
-             Hero.CurrentMana < AffinityService.EffectiveManaCost(Hero.Affinities, MagicElements.For(attack), attack.ManaCost) ||
-             Hero.CurrentFaith < attack.FaithCost))
-        {
-            return; // can't afford this attack right now
-        }
+        if (!CanAffordCurrentAttack()) return;
 
         _combatSystem.PerformHeroDirectionalAttack(Hero, dirX, dirY, Projectiles);
     }
@@ -242,6 +1135,7 @@ public class GameState
     private readonly int _chestOpeningTicks;     // ~3s to open a chest
     private readonly int _combatStartWindupTicks; // ~0.3s wind-up before first attack on engage
     private readonly int _attackSwitchTicks;     // ~2s between smart attack-rotation switches
+    private readonly int _tacticalResolutionTicksPerTurn;
 
     public int Seed { get; set; }
     public int TickCount { get; private set; }
@@ -311,6 +1205,7 @@ public class GameState
         _chestOpeningTicks = GameSettings.Current.SecondsToTicks(3f);
         _combatStartWindupTicks = GameSettings.Current.SecondsToTicks(0.3f);
         _attackSwitchTicks = GameSettings.Current.SecondsToTicks(2f);
+        _tacticalResolutionTicksPerTurn = GameSettings.Current.SecondsToTicks(0.5f);
         _dashTicks = GameSettings.Current.SecondsToTicks(0.2f);
         _dashCooldownTicks = GameSettings.Current.SecondsToTicks(1f);
         _alertTicks = GameSettings.Current.SecondsToTicks(1.2f);
@@ -364,6 +1259,7 @@ public class GameState
     public void Tick()
     {
         if (!IsRunning) return;
+        if (SimulationMode == SimulationMode.TurnBased) return;
 
         // Decay screen shake regardless of death/combat state so it always settles.
         if (ScreenShake > 0f)
@@ -1313,6 +2209,34 @@ public class GameState
             return null;
         }
         return CombinationEngine.Combine(a, b);
+    }
+
+    /// <summary>Combine two distinct things the hero owns, consuming both only after every
+    /// location and ownership check passes. The result is placed in Inventory; callers may equip
+    /// an attack-bearing result through the normal hotbar flow.</summary>
+    public Combinable? CombineOwned(Combinable a, Combinable b, CombineLocation location, out string reason)
+    {
+        if (!CombinationEngine.CanCombine(a, b, location, out reason)) return null;
+
+        bool ownsA = Hero.Inventory.Contains(a) || Hero.Loadout.Contains(a);
+        bool ownsB = Hero.Inventory.Contains(b) || Hero.Loadout.Contains(b);
+        if (!ownsA || !ownsB)
+        {
+            reason = "Both components must be owned by the hero.";
+            return null;
+        }
+
+        Combinable result = CombinationEngine.Combine(a, b);
+        bool loadoutChanged = Hero.Loadout.Remove(a);
+        loadoutChanged |= Hero.Loadout.Remove(b);
+        Hero.Inventory.Remove(a);
+        Hero.Inventory.Remove(b);
+        Hero.Inventory.Add(result);
+        if (loadoutChanged) RefreshAttacks();
+
+        reason = "";
+        LogMessage($"Combined {a.Name} and {b.Name} into {result.Name}.", MessageKind.Loot);
+        return result;
     }
 
     private const int GoldPerRarityPoint = 10;

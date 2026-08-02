@@ -96,6 +96,12 @@ sealed class Program
             return;
         }
 
+        if (Environment.GetEnvironmentVariable("TEST_TACTICAL") == "1")
+        {
+            RunTacticalModeDemo();
+            return;
+        }
+
         // If TEST_AFFINITY is set, verify the elemental affinity system and exit
         if (Environment.GetEnvironmentVariable("TEST_AFFINITY") == "1")
         {
@@ -253,6 +259,294 @@ sealed class Program
             int dodges = dodgeGs.Messages.Messages.Count(m => m.Text.Contains("dodge", StringComparison.OrdinalIgnoreCase));
             Console.WriteLine($"High-agility hero, 800 ticks vs a low-accuracy attacker: {dodges} dodge event(s) in the recent log (expect > 0)");
         }
+    }
+
+    public static void RunTacticalModeDemo()
+    {
+        Console.WriteLine("=== Tactical turn mode ===");
+        var gs = new GameState(8675309, "Tactician", "Rogue", "Human") { IsRunning = true };
+        gs.SetControlMode(ControlMode.Manual);
+        Enemy tacticalActor = gs.Enemies.First();
+        Enemy tacticalSecondActor = gs.Enemies.Skip(1).First();
+        gs.Enemies.Clear();
+        gs.Hero.Agility = 100;
+        gs.SetSimulationMode(SimulationMode.TurnBased);
+
+        static void Require(bool condition, string message)
+        {
+            if (!condition) throw new InvalidOperationException(message);
+        }
+
+        Require(gs.TacticalTurn.IsPlayerTurn, "Turn mode must begin with the player phase.");
+        Require(gs.TacticalTurn.MovementAllowance == GameState.TacticalMovementCap,
+            "Extreme agility must be capped.");
+
+        int frozenTick = gs.TickCount;
+        gs.Tick();
+        Require(gs.TickCount == frozenTick, "Normal Tick must not advance during the player phase.");
+
+        var directions = new[] { (dx: 1, dy: 0), (dx: -1, dy: 0), (dx: 0, dy: 1), (dx: 0, dy: -1) };
+        var origin = gs.CurrentMaze.GetEmptyCells().First(cell =>
+            directions.Any(direction => gs.CurrentMaze.IsWalkable(cell.x + direction.dx, cell.y + direction.dy)));
+        gs.Hero.X = origin.x;
+        gs.Hero.Y = origin.y;
+        var move = directions.First(direction => gs.CurrentMaze.IsWalkable(origin.x + direction.dx, origin.y + direction.dy));
+        int movementBefore = gs.TacticalTurn.MovementRemaining;
+        Require(gs.TryTacticalMove(move.dx, move.dy), "A valid tactical move should succeed.");
+        Require(gs.TacticalTurn.MovementRemaining == movementBefore - 1,
+            "A cardinal step must spend one movement point.");
+
+        var destination = gs.CurrentMaze.BfsDistancesFrom(gs.Hero.GridX, gs.Hero.GridY)
+            .Where(pair => pair.Value is >= 2 and <= 3)
+            .OrderByDescending(pair => pair.Value)
+            .First();
+        IReadOnlyList<(int x, int y)> destinationPath =
+            gs.GetTacticalPathTo(destination.Key.x, destination.Key.y);
+        int movementBeforeDestination = gs.TacticalTurn.MovementRemaining;
+        Require(destinationPath.Count == destination.Value,
+            "Destination preview must return the shortest path and exact movement cost.");
+        Require(gs.TryTacticalMoveTo(destination.Key.x, destination.Key.y) &&
+                gs.Hero.GridX == destination.Key.x && gs.Hero.GridY == destination.Key.y &&
+                gs.TacticalTurn.MovementRemaining == movementBeforeDestination - destinationPath.Count,
+            "Destination movement must follow the preview and spend one point per cell.");
+
+        var attackDirection = directions.First(direction =>
+            gs.CurrentMaze.IsWalkable(gs.Hero.GridX + direction.dx, gs.Hero.GridY + direction.dy));
+        Require(gs.TryTacticalAttack(attackDirection.dx, attackDirection.dy),
+            "The primary attack should be available once.");
+        Require(!gs.TryTacticalAttack(attackDirection.dx, attackDirection.dy),
+            "A second primary action in the same turn must fail.");
+
+        gs.Hero.CurrentHp = Math.Max(1, gs.Hero.MaxHp - 40);
+        var potion = CombinableCatalog.HealthPotion();
+        gs.Hero.Inventory.Add(potion);
+        int hpBefore = gs.Hero.CurrentHp;
+        Require(gs.TryUseTacticalBonusItem(potion), "A health potion should use the bonus action.");
+        Require(gs.Hero.CurrentHp > hpBefore && !gs.Hero.Inventory.Contains(potion),
+            "The potion must heal and be consumed.");
+        var secondPotion = CombinableCatalog.HealthPotion();
+        gs.Hero.Inventory.Add(secondPotion);
+        Require(!gs.TryUseTacticalBonusItem(secondPotion),
+            "A second bonus action in the same turn must fail.");
+
+        Require(gs.EndTacticalTurn(), "The player should be able to end a partially spent turn.");
+        int resolutionTicks = 0;
+        while (!gs.TacticalTurn.IsPlayerTurn && resolutionTicks < 100)
+        {
+            Require(gs.AdvanceTacticalTurnTick(), "The world phase should accept tactical ticks.");
+            resolutionTicks++;
+        }
+
+        Require(gs.TacticalTurn.IsPlayerTurn && gs.TacticalTurn.TurnNumber == 2,
+            "The next player turn must begin after world resolution.");
+        Require(gs.TacticalTurn.ActionAvailable && gs.TacticalTurn.BonusActionAvailable,
+            "Action budgets must refresh on the next player turn.");
+        Require(gs.TickCount > frozenTick, "World resolution must advance the simulation.");
+
+        var enemyCell = directions.First(direction =>
+            gs.CurrentMaze.IsWalkable(gs.Hero.GridX + direction.dx, gs.Hero.GridY + direction.dy));
+        tacticalActor.X = gs.Hero.GridX + enemyCell.dx;
+        tacticalActor.Y = gs.Hero.GridY + enemyCell.dy;
+        tacticalActor.TargetX = tacticalActor.X;
+        tacticalActor.TargetY = tacticalActor.Y;
+        tacticalActor.MaxHp = tacticalActor.Hp = 100_000;
+        tacticalActor.AttackRange = 1.5f;
+        tacticalActor.AttackCooldown = int.MaxValue;
+        tacticalActor.InCombat = true;
+        gs.Enemies.Add(tacticalActor);
+        gs.Hero.MaxHp = gs.Hero.CurrentHp = 100_000;
+        Require(gs.GetTacticalPathTo((int)tacticalActor.X, (int)tacticalActor.Y).Count == 0,
+            "A living enemy cell must never be a tactical movement destination.");
+        gs.RefreshTacticalIntentPreview();
+        Require(gs.TacticalTurn.EnemyIntents.Count == 1 &&
+                gs.TacticalTurn.EnemyIntents[0].Kind == TacticalIntentKind.Attack &&
+                ReferenceEquals(gs.TacticalTurn.EnemyIntents[0].Actor, tacticalActor),
+            "An adjacent enemy must preview its attack before the phase begins.");
+
+        int attacksBefore = gs.Messages.Messages.Count(message =>
+            message.Text.Contains(" uses ", StringComparison.OrdinalIgnoreCase));
+        Require(gs.EndTacticalTurn(), "An unspent player turn should still be endable.");
+        int enemyPhaseTicks = 0;
+        while (!gs.TacticalTurn.IsPlayerTurn && enemyPhaseTicks < 100)
+        {
+            Require(gs.AdvanceTacticalTurnTick(), "The enemy phase should accept tactical ticks.");
+            enemyPhaseTicks++;
+        }
+
+        int attacksAfter = gs.Messages.Messages.Count(message =>
+            message.Text.Contains(" uses ", StringComparison.OrdinalIgnoreCase));
+        Require(gs.TacticalTurn.IsPlayerTurn && gs.TacticalTurn.TurnNumber == 3,
+            "A discrete enemy phase must return control for turn three.");
+        Require(gs.TacticalTurn.EnemyActionsTotal == 1,
+            "Exactly one engaged enemy should have been queued.");
+        Require(attacksAfter == attacksBefore + 1,
+            "An engaged adjacent enemy must attack exactly once, regardless of real-time cooldown.");
+
+        var movementLane = gs.CurrentMaze.GetEmptyCells()
+            .SelectMany(cell => directions.Select(direction => (cell, direction)))
+            .First(pair =>
+                gs.CurrentMaze.IsWalkable(pair.cell.x + pair.direction.dx, pair.cell.y + pair.direction.dy) &&
+                gs.CurrentMaze.IsWalkable(pair.cell.x + pair.direction.dx * 2, pair.cell.y + pair.direction.dy * 2));
+        gs.Hero.X = movementLane.cell.x;
+        gs.Hero.Y = movementLane.cell.y;
+        tacticalActor.X = movementLane.cell.x + movementLane.direction.dx * 2;
+        tacticalActor.Y = movementLane.cell.y + movementLane.direction.dy * 2;
+        tacticalActor.TargetX = tacticalActor.X;
+        tacticalActor.TargetY = tacticalActor.Y;
+        tacticalActor.AttackRange = 0.25f;
+        float actorStartX = tacticalActor.X;
+        float actorStartY = tacticalActor.Y;
+        gs.RefreshTacticalIntentPreview();
+        TacticalEnemyIntent movementIntent = gs.TacticalTurn.EnemyIntents.Single();
+        Require(movementIntent.Kind == TacticalIntentKind.Advance &&
+                movementIntent.TargetX.HasValue && movementIntent.TargetY.HasValue &&
+                Math.Abs(movementIntent.TargetX.Value - actorStartX) +
+                Math.Abs(movementIntent.TargetY.Value - actorStartY) == 1f,
+            "An out-of-range enemy must preview the same one-tile advance it will execute.");
+        Require(gs.EndTacticalTurn(), "The movement scenario should start an enemy phase.");
+        int movementPhaseTicks = 0;
+        while (!gs.TacticalTurn.IsPlayerTurn && movementPhaseTicks < 100)
+        {
+            Require(gs.AdvanceTacticalTurnTick(), "The enemy movement phase should accept tactical ticks.");
+            movementPhaseTicks++;
+        }
+
+        float actorTravel = MathF.Abs(tacticalActor.X - actorStartX) +
+            MathF.Abs(tacticalActor.Y - actorStartY);
+        Require(gs.TacticalTurn.IsPlayerTurn && gs.TacticalTurn.TurnNumber == 4,
+            "A discrete movement phase must return control for turn four.");
+        Require(MathF.Abs(actorTravel - 1f) < 0.001f,
+            "An out-of-range enemy must move exactly one cardinal tile per phase.");
+        tacticalActor.AttackRange = 4f;
+        gs.RefreshTacticalIntentPreview();
+        Require(gs.TacticalTurn.EnemyIntents.Single().Kind == TacticalIntentKind.Reposition,
+            "A ranged enemy crowded by the hero must preview a retreat before considering an attack.");
+        float retreatStartX = tacticalActor.X;
+        float retreatStartY = tacticalActor.Y;
+        float distanceBeforeRetreat = MathF.Abs(tacticalActor.X - gs.Hero.X) +
+            MathF.Abs(tacticalActor.Y - gs.Hero.Y);
+        Require(gs.EndTacticalTurn(), "The retreat scenario should start an enemy phase.");
+        int retreatPhaseTicks = 0;
+        while (!gs.TacticalTurn.IsPlayerTurn && retreatPhaseTicks < 100)
+        {
+            Require(gs.AdvanceTacticalTurnTick(), "The enemy retreat phase should accept tactical ticks.");
+            retreatPhaseTicks++;
+        }
+        float retreatTravel = MathF.Abs(tacticalActor.X - retreatStartX) +
+            MathF.Abs(tacticalActor.Y - retreatStartY);
+        float distanceAfterRetreat = MathF.Abs(tacticalActor.X - gs.Hero.X) +
+            MathF.Abs(tacticalActor.Y - gs.Hero.Y);
+        Require(gs.TacticalTurn.TurnNumber == 5 && MathF.Abs(retreatTravel - 1f) < 0.001f &&
+                distanceAfterRetreat > distanceBeforeRetreat,
+            "The ranged retreat must execute as exactly one tile away from the hero.");
+
+        var orderOrigin = gs.CurrentMaze.GetEmptyCells().First(cell =>
+            directions.Count(direction =>
+                gs.CurrentMaze.IsWalkable(cell.x + direction.dx, cell.y + direction.dy)) >= 2);
+        var orderCells = directions.Where(direction =>
+            gs.CurrentMaze.IsWalkable(orderOrigin.x + direction.dx, orderOrigin.y + direction.dy)).Take(2).ToArray();
+        gs.Hero.X = orderOrigin.x;
+        gs.Hero.Y = orderOrigin.y;
+        tacticalActor.X = orderOrigin.x + orderCells[0].dx;
+        tacticalActor.Y = orderOrigin.y + orderCells[0].dy;
+        tacticalActor.AttackRange = 1.5f;
+        tacticalActor.Agility = 2;
+        tacticalSecondActor.X = orderOrigin.x + orderCells[1].dx;
+        tacticalSecondActor.Y = orderOrigin.y + orderCells[1].dy;
+        tacticalSecondActor.MaxHp = tacticalSecondActor.Hp = 100_000;
+        tacticalSecondActor.AttackRange = 1.5f;
+        tacticalSecondActor.Agility = 20;
+        gs.Enemies.Add(tacticalSecondActor);
+        gs.RefreshTacticalIntentPreview();
+        Require(gs.TacticalTurn.EnemyIntents.Count == 2 &&
+                ReferenceEquals(gs.TacticalTurn.EnemyIntents[0].Actor, tacticalSecondActor) &&
+                gs.TacticalTurn.EnemyIntents.Select(intent => intent.Order).SequenceEqual(new[] { 1, 2 }),
+            "Intent order must place the more agile enemy first and number the sequence.");
+        gs.Enemies.Remove(tacticalSecondActor);
+
+        gs.SetSimulationMode(SimulationMode.RealTime);
+        int realtimeTick = gs.TickCount;
+        gs.Tick();
+        Require(gs.TickCount == realtimeTick + 1, "Real-time ticking must resume after toggling off.");
+
+        var aimGs = new GameState(424242, "Arcanist", "Mage Apprentice", "Human") { IsRunning = true };
+        Enemy[] areaTargets = aimGs.Enemies.Take(2).ToArray();
+        aimGs.Enemies.Clear();
+        aimGs.SetControlMode(ControlMode.Manual);
+        aimGs.SelectAttack(1);
+        aimGs.SetSimulationMode(SimulationMode.TurnBased);
+        var aimLane = aimGs.CurrentMaze.GetEmptyCells()
+            .SelectMany(cell => directions.Select(direction => (cell, direction)))
+            .First(pair =>
+                aimGs.CurrentMaze.IsWalkable(pair.cell.x + pair.direction.dx, pair.cell.y + pair.direction.dy) &&
+                aimGs.CurrentMaze.IsWalkable(pair.cell.x + pair.direction.dx * 2, pair.cell.y + pair.direction.dy * 2) &&
+                aimGs.CurrentMaze.IsWalkable(pair.cell.x + pair.direction.dx * 3, pair.cell.y + pair.direction.dy * 3));
+        aimGs.Hero.X = aimLane.cell.x;
+        aimGs.Hero.Y = aimLane.cell.y;
+        var areaTargetCell = (x: aimLane.cell.x + aimLane.direction.dx * 3,
+            y: aimLane.cell.y + aimLane.direction.dy * 3);
+        var nearAreaCell = (x: aimLane.cell.x + aimLane.direction.dx * 2,
+            y: aimLane.cell.y + aimLane.direction.dy * 2);
+        areaTargets[0].X = areaTargetCell.x;
+        areaTargets[0].Y = areaTargetCell.y;
+        areaTargets[0].MaxHp = areaTargets[0].Hp = 100_000;
+        areaTargets[1].X = nearAreaCell.x;
+        areaTargets[1].Y = nearAreaCell.y;
+        areaTargets[1].MaxHp = areaTargets[1].Hp = 100_000;
+        aimGs.Enemies.AddRange(areaTargets);
+
+        TacticalAttackPreview readyAim = aimGs.GetTacticalAttackPreview(areaTargetCell.x, areaTargetCell.y);
+        Require(readyAim.CanCommit && readyAim.InRange && readyAim.HasLineOfSight &&
+                readyAim.AreaRadius > 1f && readyAim.AffectedEnemyCount == 2 &&
+                readyAim.RangeCells.Contains(areaTargetCell) && readyAim.AffectedCells.Contains(areaTargetCell),
+            "Arcane targeting must preview range, clear LOS, affected cells, and both area targets.");
+
+        var distantTarget = aimGs.CurrentMaze.GetEmptyCells().First(cell =>
+            MathF.Sqrt(MathF.Pow(cell.x - aimGs.Hero.X, 2) + MathF.Pow(cell.y - aimGs.Hero.Y, 2)) >
+            readyAim.Range + 2f);
+        TacticalAttackPreview distantAim = aimGs.GetTacticalAttackPreview(distantTarget.x, distantTarget.y);
+        Require(!distantAim.CanCommit && !distantAim.InRange && distantAim.Status == "OUT OF RANGE",
+            "A target beyond authored range must preview as out of range without spending the action.");
+
+        TacticalAttackPreview? blockedAim = null;
+        foreach (var start in aimGs.CurrentMaze.GetEmptyCells())
+        {
+            aimGs.Hero.X = start.x;
+            aimGs.Hero.Y = start.y;
+            int extent = (int)MathF.Ceiling(readyAim.Range);
+            for (int x = start.x - extent; x <= start.x + extent && blockedAim == null; x++)
+            {
+                for (int y = start.y - extent; y <= start.y + extent; y++)
+                {
+                    if (!aimGs.CurrentMaze.IsWalkable(x, y)) continue;
+                    TacticalAttackPreview candidate = aimGs.GetTacticalAttackPreview(x, y);
+                    if (candidate.InRange && !candidate.HasLineOfSight)
+                    {
+                        blockedAim = candidate;
+                        break;
+                    }
+                }
+            }
+            if (blockedAim != null) break;
+        }
+        Require(blockedAim is { CanCommit: false, Status: "BLOCKED" },
+            "A walkable target behind a wall must preview as LOS-blocked.");
+
+        aimGs.Hero.X = aimLane.cell.x;
+        aimGs.Hero.Y = aimLane.cell.y;
+        int manaBeforeAim = aimGs.Hero.CurrentMana;
+        Require(aimGs.TryTacticalAttackAt(areaTargetCell.x, areaTargetCell.y) &&
+                !aimGs.TacticalTurn.ActionAvailable && aimGs.Hero.CurrentMana < manaBeforeAim,
+            "A legal targeted spell must spend the action and its resource cost.");
+        Projectile aimedProjectile = aimGs.Projectiles.Last();
+        Require(MathF.Abs(aimedProjectile.TargetX - areaTargetCell.x) < 0.001f &&
+                MathF.Abs(aimedProjectile.TargetY - areaTargetCell.y) < 0.001f &&
+                MathF.Abs(aimedProjectile.CurrentX - areaTargetCell.x) < 0.001f &&
+                MathF.Abs(aimedProjectile.CurrentY - areaTargetCell.y) < 0.001f,
+            "The committed tactical area effect must resolve from the previewed target cell.");
+
+        Console.WriteLine($"Movement cap={gs.CalculateTacticalMovementAllowance()}, empty={resolutionTicks}, attack={enemyPhaseTicks}, move={movementPhaseTicks}, retreat={retreatPhaseTicks} ticks.");
+        Console.WriteLine("Tactical pathing, destination movement, attack targeting, enemy intents, upkeep, and mode exit passed.");
     }
 
     // Debug/test entrypoint: verify active dodge, trap perception, disarm, and corpse looting.
@@ -790,6 +1084,15 @@ sealed class Program
         Show("generic  ", CombinableCatalog.Sword(), CombinableCatalog.Fireball());
         Show("generic  ", CombinableCatalog.IceShard(), CombinableCatalog.ManaCircuitry());
         Show("generic  ", CombinableCatalog.ShieldGenerator(), CombinableCatalog.IceShard());
+
+        var mage = new GameState(71, "Synthesist", "Mage Apprentice", "Human");
+        Combinable first = mage.Hero.Loadout[0];
+        Combinable second = mage.Hero.Loadout[1];
+        Combinable? ownedResult = mage.CombineOwned(first, second, CombineLocation.Anywhere, out string ownedReason);
+        if (ownedResult == null || mage.Hero.Loadout.Contains(first) || mage.Hero.Loadout.Contains(second) ||
+            !mage.Hero.Inventory.Contains(ownedResult))
+            throw new InvalidOperationException($"Owned combination transaction failed: {ownedReason}");
+        Console.WriteLine($"[owned    ] consumed 2 equipped spells -> {ownedResult.Name} in inventory");
 
         Console.WriteLine("\n=== Attack visual routing (id -> VisualStyle) ===");
         foreach (var cls in new[] { "Warrior", "Mage Apprentice", "Rogue", "Archer", "Bard", "Priest", "Wanderer" })

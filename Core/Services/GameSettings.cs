@@ -28,7 +28,7 @@ public class GameSettings
     {
         try
         {
-            var path = Path.Combine("Data", "Config", "settings.json");
+            var path = GamePaths.Content("Data", "Config", "settings.json");
             if (File.Exists(path))
             {
                 var json = File.ReadAllText(path);

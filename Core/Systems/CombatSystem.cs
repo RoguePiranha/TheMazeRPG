@@ -199,6 +199,36 @@ public class CombatSystem
         AffinityService.OnElementCast(hero.Affinities, MagicElements.For(attack));
     }
 
+    /// <summary>Perform a cell-targeted tactical attack. Validation remains GameState's
+    /// responsibility; unlike real-time directional fire, the projectile stops at the selected
+    /// cell so authored range and the targeting preview describe the same action.</summary>
+    public void PerformHeroTacticalAttack(Hero hero, float targetX, float targetY,
+        List<Projectile> projectiles)
+    {
+        var attack = hero.CurrentAttack ?? new Attack
+        {
+            Name = "Unarmed Strike",
+            Damage = 8,
+            Range = 1.0f,
+            Cooldown = 20,
+            CritChance = 0.05f,
+            Animation = AttackAnimation.Melee
+        };
+        float dirX = targetX - hero.X;
+        float dirY = targetY - hero.Y;
+        float length = MathF.Sqrt(dirX * dirX + dirY * dirY);
+        if (length < 0.001f) return;
+        dirX /= length;
+        dirY /= length;
+
+        DeductAttackCost(hero, attack);
+        int statDamage = ComputeHeroStatDamage(hero, attack);
+        SpawnHeroProjectile(hero, attack, dirX, dirY, targetX, targetY,
+            statDamage, isStatDamage: true, projectiles,
+            spawnAtTarget: attack.Id == "arcane-blast");
+        AffinityService.OnElementCast(hero.Affinities, MagicElements.For(attack));
+    }
+
     private static void DeductAttackCost(Hero hero, Attack attack)
     {
         if (!attack.IsHeavyAttack) return;
@@ -239,7 +269,8 @@ public class CombatSystem
     /// sets the hero's post-attack cooldown.
     /// </summary>
     private static void SpawnHeroProjectile(Hero hero, Attack attack, float dirX, float dirY,
-        float targetX, float targetY, int damage, bool isStatDamage, List<Projectile> projectiles)
+        float targetX, float targetY, int damage, bool isStatDamage, List<Projectile> projectiles,
+        bool spawnAtTarget = false)
     {
         var visual = AttackVisuals.For(attack);
         var element = MagicElements.For(attack);
@@ -251,8 +282,8 @@ public class CombatSystem
             {
                 StartX = hero.X,
                 StartY = hero.Y,
-                CurrentX = hero.X,
-                CurrentY = hero.Y,
+                CurrentX = spawnAtTarget ? targetX : hero.X,
+                CurrentY = spawnAtTarget ? targetY : hero.Y,
                 TargetX = targetX,
                 TargetY = targetY,
                 Speed = speed,
@@ -450,6 +481,29 @@ public class CombatSystem
         {
             enemy.AttackCooldown = 10; // retry soon when blocked by LOS
         }
+    }
+
+    /// <summary>Attempt exactly one enemy attack for a tactical turn. Cooldowns are intentionally
+    /// ignored because the turn action itself is the rate limit.</summary>
+    public bool TryPerformTacticalEnemyAttack(Hero hero, Enemy enemy, List<Projectile> projectiles, Maze maze)
+    {
+        if (!CanPerformTacticalEnemyAttack(hero, enemy, maze)) return false;
+
+        PerformEnemyAttack(hero, enemy, projectiles);
+        return true;
+    }
+
+    public bool CanPerformTacticalEnemyAttack(Hero hero, Enemy enemy, Maze maze)
+    {
+        if (!hero.IsAlive || !enemy.IsAlive) return false;
+
+        float dx = hero.X - enemy.X;
+        float dy = hero.Y - enemy.Y;
+        float distance = MathF.Sqrt(dx * dx + dy * dy);
+        bool overlapping = distance <= hero.Radius + enemy.Radius + 0.05f;
+        bool hasLineOfSight = overlapping || HasLineOfSight(enemy.X, enemy.Y, hero.X, hero.Y, maze);
+        float effectiveDistance = MathF.Max(0f, distance - hero.Radius);
+        return effectiveDistance <= enemy.AttackRange + 0.01f && hasLineOfSight;
     }
     
     /// <summary>

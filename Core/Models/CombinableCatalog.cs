@@ -54,6 +54,13 @@ public static class CombinableCatalog
         Description = "Creates a shield that absorbs damage."
     };
 
+    public static Item HealthPotion() => new()
+    {
+        Id = "health-potion", Name = "Health Potion", Rarity = Rarity.Common,
+        UseEffect = ItemUseEffect.RestoreHealth, EffectPower = 30, Consumable = true,
+        Description = "Restores health when consumed."
+    };
+
     public static Ability DenseMusculature() => new()
     {
         Id = "dense-musculature", Name = "Dense Musculature", Rarity = Rarity.Rare,
