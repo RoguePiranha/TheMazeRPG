@@ -31,10 +31,9 @@ public class Hero
     public int Wisdom { get; set; } = 1;         // Magic Resist, Healing, Faith
     public int Charisma { get; set; } = 1;       // NPC Interaction, Followers
 
-    // Manual stat allocation: every level grants StatPointsPerLevel points the player assigns by
-    // hand (GameState.SpendStatPoint) from the stats screen — there is no class auto-allocation.
-    // Classes differ by their starting stats, not by per-level growth.
-    public const int StatPointsPerLevel = 5;
+    // Compatibility default. Runtime class definitions split this budget between automatic
+    // class-weighted gains and points the player assigns from the character screen.
+    public const int StatPointsPerLevel = 4;
     public int UnspentStatPoints { get; set; }
 
     // Racial effectiveness multipliers (set from race). Base stats above are what the character
@@ -142,59 +141,11 @@ public class Hero
     // spell tier per element, and grows with use (see AffinityService). Seeded from race+class.
     public Affinities Affinities { get; set; } = new();
 
+    // Persisted slot-based class, profession, and skill progression.
+    public ProgressionState Progression { get; set; } = new();
+
     // Animation state for combat movement
     public float AnimationOffsetX { get; set; }
     public float AnimationOffsetY { get; set; }
     
-    public void GainExperience(int amount)
-    {
-        // Charisma boosts experience gains (effective value)
-        int bonusXP = (int)(amount * (1.0f + EffectiveCharisma * 0.05f));
-        Experience += bonusXP;
-        while (Experience >= ExperienceToNext)
-        {
-            LevelUp();
-        }
-    }
-    
-    private void LevelUp()
-    {
-        Level++;
-        Experience -= ExperienceToNext;
-        // Quadratic XP curve per Levels and Stats.xlsx: XP to reach level L = 100 * L^2.
-        ExperienceToNext = 100 * Level * Level;
-        
-        // Stat gains per level (influenced by effective core stats)
-        int hpGain = 10 + (int)EffectiveConstitution + (Level % 5 == 0 ? 10 : 0); // Bonus HP every 5 levels
-        MaxHp += hpGain;
-        CurrentHp = MaxHp; // Full heal on level up
-
-        Attack += 2 + (int)(EffectiveStrength / 2) + (Level % 3 == 0 ? 2 : 0); // Bonus attack every 3 levels
-        Defense += 1 + (int)(EffectiveConstitution / 3) + (Level % 4 == 0 ? 2 : 0); // Bonus defense every 4 levels
-
-        // Unlock new attack at milestones
-        if (Level == 5)
-        {
-            Attacks.Add(new Attack { Id = "power-strike", Name = "Power Strike", Damage = 18, Range = 1.2f, Cooldown = 28, Animation = AttackAnimation.Heavy, CritChance = 0.12f, Description = "A heavy blow with bonus crit." });
-        }
-        if (Level == 10)
-        {
-            Attacks.Add(new Attack { Id = "quick-jab", Name = "Quick Jab", Damage = 12, Range = 1.0f, Cooldown = 16, Animation = AttackAnimation.Quick, CritChance = 0.18f, Description = "A rapid jab with high crit chance." });
-        }
-        if (Level == 15)
-        {
-            // Basic "X Bolt" magic attack (naming convention: Mana Bolt / Fire Bolt / Ice Bolt).
-            // Distinct id from the Mage's "arcane-blast" so visuals/behavior keyed off Attack.Id
-            // don't conflate it with that AoE spell.
-            Attacks.Add(new Attack { Id = "mana-bolt", Name = "Mana Bolt", Damage = 22, Range = 2.0f, Cooldown = 32, Animation = AttackAnimation.Magic, CritChance = 0.10f, Description = "A ranged magic attack." });
-        }
-
-        // Core stats are no longer auto-allocated by class. Each level grants a pool of points
-        // the player assigns by hand from the stats screen (GameState.SpendStatPoint). ClassData's
-        // StatGrowth table is intentionally unused here now (classes differ by starting stats).
-        UnspentStatPoints += StatPointsPerLevel;
-
-        // Satisfying level-up feedback (animation/sound placeholder)
-        // TODO: Trigger level-up animation and sound effect in UI layer
-    }
 }

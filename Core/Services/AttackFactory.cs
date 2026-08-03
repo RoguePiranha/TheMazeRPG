@@ -43,7 +43,8 @@ public static class AttackFactory
             "Cleric" or "Priest" => new() { HolyTouch(), DivineWrath() },
             "Ranger" or "Archer" => new() { QuickShot(), PowerShot() },
             "Bard" => new() { SoundWave(), SonicBoom() },
-            _ => new() { LightPunch(), HeavyStrike() }
+            "Wanderer" => new() { LightPunch(), HeavyStrike() },
+            _ => new()
         };
 
         if (level >= 5) attacks.Add(new Attack { Id = "power-strike", Name = "Power Strike", Damage = 18, Range = 1.2f, Cooldown = 28, Animation = AttackAnimation.Heavy, CritChance = 0.12f, Description = "A heavy blow with bonus crit." });

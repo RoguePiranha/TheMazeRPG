@@ -51,11 +51,28 @@ public static class CombinableCatalog
         Description = "A dexterity-based melee weapon."
     };
 
+    public static Weapon Staff() => new()
+    {
+        Id = "staff", Name = "Staff", Rarity = Rarity.Common,
+        WeaponType = WeaponType.Staff,
+        BaseDamage = 5, Range = 1.3f, Cooldown = 22, Animation = AttackAnimation.Melee,
+        Attributes = { GameAttribute.Arcane },
+        Description = "A balanced staff that can serve as an arcane focus."
+    };
+
     public static Item ShieldGenerator() => new()
     {
         Id = "shield-generator", Name = "Shield Generator", Rarity = Rarity.Uncommon,
         Attributes = { GameAttribute.Arcane }, EquipSlot = EquipmentSlot.Amulet, DefenseBonus = 4,
         Description = "An amulet-sized projector that reinforces the wearer's defenses."
+    };
+
+    public static Item HolySymbol() => new()
+    {
+        Id = "holy-symbol", Name = "Holy Symbol", Rarity = Rarity.Common,
+        Attributes = { GameAttribute.Blessed, GameAttribute.Holy },
+        EquipSlot = EquipmentSlot.Amulet,
+        Description = "A small blessed emblem used as a focus for faith."
     };
 
     public static Armor IronHelm() => new()

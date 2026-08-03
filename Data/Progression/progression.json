@@ -1,0 +1,282 @@
+{
+  "startingClassSlots": 2,
+  "startingProfessionSlots": 1,
+  "defaultClassAttributePointsPerLevel": 4,
+  "offerPresentationLimit": 4,
+  "definitions": [
+    {
+      "id": "wanderer",
+      "name": "Wanderer",
+      "description": "A flexible adventurer shaped by travel, improvisation, and broad experience.",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Strength": 1, "Constitution": 1, "Agility": 1, "Dexterity": 1, "Intelligence": 1, "Wisdom": 1, "Charisma": 1 },
+      "baseOfferWeight": 5,
+      "initialRoutes": [
+        { "id": "open-road", "explanation": "Your uncommitted training leaves room for a broad adventuring path.", "baseScore": 10, "allOf": [{ "factId": "character.exists" }] }
+      ],
+      "specializations": [
+        {
+          "id": "bard",
+          "name": "Bard",
+          "description": "An adaptable traveler who gathers and performs the stories of many communities.",
+          "baseOfferWeight": 20,
+          "routes": [
+            { "id": "worldly-performer", "explanation": "Repeated successful performances turn your traveled stories into a practiced identity.", "baseScore": 100, "allOf": [{ "factId": "practice.performance-actions", "threshold": 3 }] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "warrior",
+      "name": "Warrior",
+      "description": "A martial path built around direct weapon use, strength, and durable defense.",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Strength": 3, "Constitution": 3, "Dexterity": 1 },
+      "weaponAffinities": ["Sword", "Axe", "Mace", "Spear"],
+      "baseOfferWeight": 20,
+      "initialRoutes": [
+        { "id": "armed-for-close-combat", "explanation": "Your sword and close-combat equipment reveal a martial foundation.", "baseScore": 100, "allOf": [{ "factId": "equipment.weapon.sword" }] },
+        { "id": "strength-and-armor", "explanation": "Your strength and heavy protection support a direct martial path.", "baseScore": 80, "allOf": [{ "factId": "attribute.strength", "threshold": 7 }, { "factId": "equipment.armor.heavy" }] }
+      ],
+      "specializations": [
+        { "id": "swordsman", "name": "Swordsman", "description": "A focused practitioner of sword guards, cuts, counters, and controlled footwork.", "baseOfferWeight": 20, "routes": [
+          { "id": "sword-practice", "explanation": "Continued sword use supports a dedicated sword specialization.", "baseScore": 100, "allOf": [{ "factId": "equipment.weapon.sword" }] }
+        ] },
+        { "id": "shieldbearer", "name": "Shieldbearer", "description": "A protector trained to hold space, intercept attacks, and maintain a defensive line.", "baseOfferWeight": 20, "routes": [
+          { "id": "protected-allies", "explanation": "Repeatedly preventing harm to allies reveals a protective specialization.", "baseScore": 110, "allOf": [{ "factId": "practice.blocked-damage-for-allies", "threshold": 3 }] }
+        ] },
+        { "id": "berserker", "name": "Berserker", "description": "A controlled aggression specialist who remains dangerous while injured.", "baseOfferWeight": 20, "routes": [
+          { "id": "fought-through-injury", "explanation": "Continuing to fight effectively while injured reveals a berserker specialization.", "baseScore": 110, "allOf": [{ "factId": "practice.fought-while-injured", "threshold": 3 }] }
+        ] },
+        { "id": "squire", "name": "Squire", "description": "A disciplined martial attendant trained in arms, armor, protection, and service.", "baseOfferWeight": 20, "routes": [
+          { "id": "squire-training", "explanation": "Formal service and martial instruction reveal the Squire specialization.", "baseScore": 100, "allOf": [{ "factId": "training.squire" }] }
+        ] }
+      ]
+    },
+    {
+      "id": "archer",
+      "name": "Archer",
+      "description": "A ranged martial path focused on bows, positioning, and precise attacks.",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Agility": 3, "Dexterity": 3, "Wisdom": 1 },
+      "weaponAffinities": ["Bow"],
+      "baseOfferWeight": 20,
+      "initialRoutes": [
+        { "id": "bow-training", "explanation": "Carrying and preparing a bow reveals a ranged martial path.", "baseScore": 110, "allOf": [{ "factId": "equipment.weapon.bow" }] }
+      ]
+    },
+    {
+      "id": "rogue",
+      "name": "Rogue",
+      "description": "An agile path of opportunistic attacks, precision, and practical cunning.",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Agility": 3, "Dexterity": 3, "Charisma": 1 },
+      "weaponAffinities": ["Dagger"],
+      "baseOfferWeight": 20,
+      "initialRoutes": [
+        { "id": "dagger-work", "explanation": "Your dagger equipment supports a fast, precision-based path.", "baseScore": 100, "allOf": [{ "factId": "equipment.weapon.dagger" }] },
+        { "id": "paired-daggers", "explanation": "Your paired daggers strongly favor an agile close-combat style.", "baseScore": 120, "allOf": [{ "factId": "equipment.weapon.dagger", "threshold": 2 }] }
+      ],
+      "specializations": [
+        { "id": "thief", "name": "Thief", "description": "A specialist in protected-property infiltration, locks, traps, and indirect acquisition.", "baseOfferWeight": 20, "routes": [
+          { "id": "lock-practice", "explanation": "Repeatedly bypassing locks reveals a Thief specialization.", "baseScore": 100, "allOf": [{ "factId": "practice.lockpick-actions", "threshold": 3 }] },
+          { "id": "trap-practice", "explanation": "Repeatedly identifying or bypassing traps reveals a Thief specialization.", "baseScore": 100, "allOf": [{ "factId": "practice.trap-actions", "threshold": 3 }] }
+        ] }
+      ]
+    },
+    {
+      "id": "priest",
+      "name": "Priest",
+      "description": "A faith-driven support and combat path using blessings, wards, and sacred power.",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Wisdom": 3, "Charisma": 2, "Constitution": 1 },
+      "baseOfferWeight": 20,
+      "initialRoutes": [
+        { "id": "blessed-focus", "explanation": "Your blessed focus provides the foundation for a sacred combat role.", "baseScore": 110, "allOf": [{ "factId": "equipment.attribute.blessed" }] }
+      ]
+    },
+    {
+      "id": "mage-apprentice",
+      "name": "Mage Apprentice",
+      "description": "A foundational magical path centered on spellcraft, mana, and arcane control.",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Intelligence": 3, "Wisdom": 2, "Dexterity": 1 },
+      "weaponAffinities": ["Staff"],
+      "baseOfferWeight": 20,
+      "initialRoutes": [
+        { "id": "arcane-staff", "explanation": "Your staff provides a practical focus for foundational magic.", "baseScore": 110, "allOf": [{ "factId": "equipment.weapon.staff" }] },
+        { "id": "learned-spell", "explanation": "Your prepared spell demonstrates the beginnings of formal spellcraft.", "baseScore": 100, "allOf": [{ "factId": "equipment.spell.any" }] }
+      ],
+      "specializations": [
+        { "id": "necromancer", "name": "Necromancer", "description": "A practitioner focused on remains, spirits, vitality, and controlled Death magic.", "baseOfferWeight": 20, "routes": [
+          { "id": "death-practice", "explanation": "Repeated controlled Death magic reveals a necromantic specialization.", "baseScore": 110, "allOf": [{ "factId": "practice.death-spells", "threshold": 3 }] },
+          { "id": "death-affinity", "explanation": "Developed Death affinity and practical spell use reveal a necromantic specialization.", "baseScore": 100, "allOf": [{ "factId": "affinity.death", "threshold": 30 }, { "factId": "equipment.spell.any" }] }
+        ] },
+        { "id": "elementalist", "name": "Elementalist", "description": "A caster who studies multiple elemental sources and their practical interactions.", "baseOfferWeight": 20, "routes": [
+          { "id": "multi-source-practice", "explanation": "Stable practice with multiple elemental sources reveals an Elementalist specialization.", "baseScore": 110, "allOf": [{ "factId": "practice.distinct-elements", "threshold": 2 }] }
+        ] }
+      ]
+    },
+    {
+      "id": "bard",
+      "name": "Bard",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Charisma": 3, "Dexterity": 2, "Agility": 1 }
+    },
+    {
+      "id": "healer",
+      "name": "Healer",
+      "description": "A practical restoration path focused on stabilization, cleansing, recovery, and keeping a party alive under pressure.",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Wisdom": 3, "Intelligence": 2, "Charisma": 1 },
+      "baseOfferWeight": 20,
+      "initialRoutes": [
+        { "id": "practical-care", "explanation": "Repeated treatment under pressure reveals a practical restoration path.", "baseScore": 110, "allOf": [{ "factId": "practice.healing-actions", "threshold": 3 }] },
+        { "id": "life-restoration", "explanation": "Demonstrated healing supported by Life affinity reveals a restorative path.", "baseScore": 100, "allOf": [{ "factId": "practice.healing-actions" }, { "factId": "affinity.life", "threshold": 30 }] },
+        { "id": "healer-training", "explanation": "Formal instruction gives you the foundation to serve as a party healer.", "baseScore": 100, "allOf": [{ "factId": "training.healer" }] }
+      ]
+    },
+    {
+      "id": "alchemist",
+      "name": "Alchemist",
+      "description": "A combat-reaction path using bombs, catalysts, toxins, mutagens, transmutation, and prepared battlefield formulas.",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Intelligence": 3, "Wisdom": 2, "Dexterity": 1 },
+      "baseOfferWeight": 20,
+      "initialRoutes": [
+        { "id": "combat-reactions", "explanation": "Repeated use of prepared reactions in danger reveals a combat-alchemy path.", "baseScore": 110, "allOf": [{ "factId": "practice.alchemical-combat-actions", "threshold": 3 }] },
+        { "id": "repeatable-reaction", "explanation": "Developing a repeatable reagent reaction reveals an alchemical foundation.", "baseScore": 100, "allOf": [{ "factId": "knowledge.alchemical-reactions" }] },
+        { "id": "alchemist-training", "explanation": "Formal alchemical instruction gives you a foundation for dangerous field formulas.", "baseScore": 100, "allOf": [{ "factId": "training.alchemist" }] }
+      ]
+    },
+    {
+      "id": "mage",
+      "name": "Mage",
+      "description": "A fully independent structured caster capable of stabilizing and constructing complete spell formulas.",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Intelligence": 3, "Wisdom": 2, "Dexterity": 1 },
+      "weaponAffinities": ["Staff"]
+    },
+    {
+      "id": "spellsword",
+      "name": "Spellsword",
+      "description": "An integrated martial caster who sustains spell structures in melee and channels magic through a weapon.",
+      "domain": "Class",
+      "maxLevel": 25,
+      "xpToNextLevel": [100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100],
+      "attributePointsPerLevel": 4,
+      "autoAttributeWeights": { "Strength": 2, "Intelligence": 2, "Dexterity": 1, "Constitution": 1 },
+      "weaponAffinities": ["Sword", "Staff"]
+    },
+    {
+      "id": "miner",
+      "name": "Miner",
+      "domain": "Profession",
+      "maxLevel": 25,
+      "xpCurveMultiplier": 50,
+      "xpToNextLevel": [50, 200, 450, 800, 1250, 1800, 2450, 3200, 4050],
+      "fixedAttributesPerLevel": { "Strength": 1 },
+      "associatedSkills": ["mining"],
+      "actionXp": 25,
+      "baseOfferWeight": 20,
+      "initialRoutes": [
+        { "id": "practical-mining", "explanation": "Your practical ore extraction revealed the Miner profession.", "baseScore": 100, "allOf": [{ "factId": "practice.mining-actions" }] }
+      ],
+      "specializations": [
+        { "id": "prospector", "name": "Prospector", "description": "A mining specialist trained to locate and evaluate valuable deposits.", "baseOfferWeight": 20, "routes": [
+          { "id": "evaluated-deposits", "explanation": "Sustained extraction practice reveals a talent for prospecting deposits.", "baseScore": 100, "allOf": [{ "factId": "practice.mining-actions", "threshold": 10 }] }
+        ] }
+      ]
+    },
+    {
+      "id": "apothecary",
+      "name": "Apothecary",
+      "domain": "Profession",
+      "maxLevel": 25,
+      "xpCurveMultiplier": 50,
+      "xpToNextLevel": [50, 200, 450, 800, 1250, 1800, 2450, 3200, 4050],
+      "fixedAttributesPerLevel": { "Wisdom": 1 },
+      "associatedSkills": ["herbalism"],
+      "actionXp": 25
+    }
+  ],
+  "advancementRecipes": [
+    {
+      "id": "mage-apprentice-to-mage",
+      "resultDefinitionId": "mage",
+      "name": "Mage",
+      "description": "Advance beyond apprenticeship into independent structured spellcraft.",
+      "kind": "SinglePath",
+      "domain": "Class",
+      "baseOfferWeight": 20,
+      "sources": [{ "definitionId": "mage-apprentice", "minimumLevel": 25 }],
+      "routes": [
+        { "id": "independent-spellcraft", "explanation": "Your independent spell construction demonstrates mastery beyond apprenticeship.", "baseScore": 110, "allOf": [{ "factId": "knowledge.independent-spell-construction" }] }
+      ]
+    },
+    {
+      "id": "warrior-mage-to-spellsword",
+      "resultDefinitionId": "spellsword",
+      "name": "Spellsword",
+      "description": "Converge mastered martial and structured magical paths into a single integrated combat identity.",
+      "kind": "Convergence",
+      "domain": "Class",
+      "baseOfferWeight": 25,
+      "sources": [
+        { "definitionId": "warrior", "minimumLevel": 25 },
+        { "definitionId": "mage-apprentice", "minimumLevel": 25 }
+      ],
+      "routes": [
+        { "id": "spell-melee-integration", "explanation": "You have practiced sustaining spell structures during direct weapon combat.", "baseScore": 120, "allOf": [{ "factId": "practice.spell-melee-integration", "threshold": 3 }] }
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "id": "mining",
+      "name": "Mining",
+      "maxLevel": 10,
+      "xpToNextLevel": [50, 200, 450, 800, 1250, 1800, 2450, 3200, 4050],
+      "yieldBonusPerLevel": 0.1,
+      "bonusDropChancePerLevel": 0.02
+    },
+    {
+      "id": "herbalism",
+      "name": "Herbalism",
+      "maxLevel": 10,
+      "xpToNextLevel": [50, 200, 450, 800, 1250, 1800, 2450, 3200, 4050],
+      "yieldBonusPerLevel": 0.1,
+      "bonusDropChancePerLevel": 0.02
+    }
+  ]
+}

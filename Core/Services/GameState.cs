@@ -1238,6 +1238,7 @@ public class GameState
     /// a new character, or restored from the loaded SaveData in LoadFrom so re-saving overwrites
     /// the same file rather than multiplying save slots.</summary>
     public string SaveId { get; private set; } = Guid.NewGuid().ToString();
+    public CharacterCreationSelection? CreationSelection => _creationSelection?.Clone();
 
     // Playtime accumulated in prior sessions (from a loaded save); TotalPlaytimeSeconds adds the
     // current session's elapsed ticks on top so it stays accurate without a per-tick save write.
@@ -1271,6 +1272,7 @@ public class GameState
     private string _characterName = "Hero";
     private string _className = "Wanderer";
     private string _raceName = "Human";
+    private CharacterCreationSelection? _creationSelection;
 
     // Not readonly: RestartGame reseeds these with a fresh seed.
     private MazeGenerator _mazeGenerator;
@@ -1321,6 +1323,8 @@ public class GameState
         
         // Apply class and race stats
         _characterDataService.ApplyClassAndRace(Hero, className, raceName);
+        Hero.Progression = ProgressionService.Instance.CreateCompatibilityState(className);
+        ProgressionService.Instance.Normalize(Hero);
 
         // Update resource pools based on attributes
         UpdateHeroResourcePools();
@@ -1330,7 +1334,7 @@ public class GameState
         Hero.CurrentMana = Hero.MaxMana;
         Hero.CurrentFaith = Hero.MaxFaith;
 
-        Console.WriteLine($"Character Created: {Hero.Name} - {Hero.Race} {Hero.Class}");
+        GameLog.Debug($"Character Created: {Hero.Name} - {Hero.Race} {Hero.Class}");
         GameLog.Debug($"Colors - Race: {Hero.RaceColor}, Class: {Hero.ClassColor}");
         GameLog.Debug($"Base Str {Hero.Strength} -> Effective {Hero.EffectiveStrength:0.0}; Con {Hero.Constitution} -> {Hero.EffectiveConstitution:0.0} (MaxStamina {Hero.MaxStamina}); Int {Hero.Intelligence} -> {Hero.EffectiveIntelligence:0.0} (MaxMana {Hero.MaxMana})");
 
@@ -1345,6 +1349,44 @@ public class GameState
         // Debug flags from environment
         DebugDrawHitboxes = (Environment.GetEnvironmentVariable("DEBUG_HITBOXES") == "1");
         DebugDrawLOS = (Environment.GetEnvironmentVariable("DEBUG_LOS") == "1");
+    }
+
+    public GameState(int seed, CharacterCreationSelection creation)
+        : this(seed,
+            string.IsNullOrWhiteSpace(creation.Name) ? "Wayfarer" : creation.Name.Trim(),
+            "Wanderer",
+            creation.RaceName)
+    {
+        _creationSelection = creation.Clone();
+        _characterName = Hero.Name;
+        _raceName = creation.RaceName;
+        _className = "Classless";
+
+        _characterDataService.ApplyClasslessAndRace(Hero, creation.RaceName);
+        Hero.Progression = ProgressionService.Instance.CreateEmptyState();
+        ProgressionService.Instance.Normalize(Hero);
+
+        IEnumerable<string> itemIds = creation.ItemIds;
+        if (!creation.IsCustom && creation.ItemIds.Count == 0)
+            itemIds = StarterLoadoutService.Instance.SelectionFromKit(
+                Hero.Name, creation.RaceName, creation.KitId).ItemIds;
+        _creationSelection.ItemIds = itemIds.ToList();
+        StarterLoadoutService.Instance.ApplyToHero(Hero, itemIds);
+        UpdateHeroResourcePools();
+        Hero.CurrentHp = Hero.MaxHp;
+        Hero.CurrentStamina = Hero.MaxStamina;
+        Hero.CurrentMana = Hero.MaxMana;
+        Hero.CurrentFaith = Hero.MaxFaith;
+        RefreshAttacks();
+    }
+
+    public static GameState FromSave(int seed, SaveData data)
+    {
+        GameState state = data.CreationSelection != null
+            ? new GameState(seed, data.CreationSelection)
+            : new GameState(seed, data.HeroName, data.ClassName, data.RaceName);
+        state.LoadFrom(data);
+        return state;
     }
     
     public void Tick()
@@ -1470,15 +1512,8 @@ public class GameState
                 }
                 else if (IsInSafeRoom)
                 {
-                    // Default auto-play behavior in a safe room: push toward the Guardian gate
-                    // rather than retreat to the shrine. This is a stand-in for a real player
-                    // choice (shrine vs. guardian) until a pause/manual-control system exists —
-                    // see Implementation Plan section 0a.
-                    var guardianDoor = CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.GuardianDoor);
-                    if (guardianDoor != null)
-                    {
-                        _movementSystem.MoveHeroTowardTarget(Hero, guardianDoor.X, guardianDoor.Y, CurrentMaze);
-                    }
+                    // Safe rooms are a genuine player choice. Never auto-select the Guardian door
+                    // or shrine on the player's behalf.
                 }
                 else if (StairsLocation.HasValue)
                 {
@@ -2019,13 +2054,8 @@ public class GameState
     private void HandleEnemyDefeated(Enemy enemy)
     {
         int xpGain = (int)((10 + enemy.MaxHp / 4) * enemy.XpMultiplier);
-        int levelBefore = Hero.Level;
-        Hero.GainExperience(xpGain);
-        LogMessage($"Slew the {enemy.Race} {enemy.Class} (+{xpGain} XP)", MessageKind.Combat);
-        if (Hero.Level > levelBefore)
-        {
-            LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
-        }
+        int awarded = ProgressionService.Instance.GrantSharedXp(Hero, xpGain);
+        LogMessage($"Slew the {enemy.Race} {enemy.Class} (+{awarded} shared XP)", MessageKind.Combat);
 
         // Loot now stays on the body — the hero loots the corpse (right-click → Loot) rather than
         // it auto-collecting. Roll the drop into the enemy's inventory + a small gold drop.
@@ -2047,7 +2077,7 @@ public class GameState
         // from inside a live `foreach (var p in Projectiles)` (ProcessProjectileCollisions), so
         // we can't mutate Enemies/Projectiles here (StartNewFloor clears both) — defer it and
         // apply it once that enumeration has finished (see Tick()).
-        if (IsInSafeRoom && enemy == Boss)
+        if (enemy == Boss)
         {
             _pendingGuardianVictory = true;
         }
@@ -2172,7 +2202,17 @@ public class GameState
     {
         var currentId = Hero.CurrentAttack?.Id;
         Hero.Attacks = new List<Attack> { AttackFactory.GetBasicAttack(Hero) };
-        Hero.Attacks.AddRange(AttackFactory.GetClassAttacks(Hero.Class, Hero.Level));
+        foreach (ProgressionInstance activeClass in Hero.Progression.ClassSlots
+                     .Where(slot => !slot.IsLocked && slot.Instance != null)
+                     .Select(slot => slot.Instance!))
+        {
+            foreach (Attack attack in AttackFactory.GetClassAttacks(activeClass.Name, activeClass.Level))
+                if (Hero.Attacks.All(existing => existing.Id != attack.Id)) Hero.Attacks.Add(attack);
+            foreach (ProgressionLineageEntry lineage in activeClass.Lineage)
+                foreach (Attack attack in AttackFactory.GetClassAttacks(
+                             lineage.Name, Math.Max(1, lineage.LevelAtConsumption)))
+                    if (Hero.Attacks.All(existing => existing.Id != attack.Id)) Hero.Attacks.Add(attack);
+        }
         Hero.Attacks.AddRange(AttackFactory.GetSlottedSpellAttacks(Hero.Loadout));
         Hero.CurrentAttack = Hero.Attacks.FirstOrDefault(a => a.Id == currentId) ?? Hero.Attacks.FirstOrDefault();
     }
@@ -2232,7 +2272,9 @@ public class GameState
         {
             bool interactable = IsInOverworld
                 ? IsOverworldInteractable(f.Type)
-                : !IsInSafeRoom && f.Type == MazeFeatureType.Chest && !f.IsUsed;
+                : IsInSafeRoom
+                    ? f.Type is MazeFeatureType.Shrine or MazeFeatureType.GuardianDoor
+                    : f.Type == MazeFeatureType.Chest && !f.IsUsed;
             if (!interactable) continue;
             float dx = f.X - Hero.X, dy = f.Y - Hero.Y;
             float d2 = dx * dx + dy * dy;
@@ -2385,27 +2427,9 @@ public class GameState
             // (see MineOre/Craft/EnterDungeon and GameView's structure menus). Proximity detection
             // for the E prompt is UpdateNearbyInteractable, not this feature-trigger loop.
 
-            if (feature.Type == MazeFeatureType.Shrine)
-            {
-                // Only meaningful in a safe room; touching it exits the dungeon.
-                if (distance < 0.6f && IsInSafeRoom)
-                {
-                    feature.IsUsed = true;
-                    EnterOverworld();
-                    return; // state just reset — stop processing this tick's features
-                }
-                continue;
-            }
-
-            if (feature.Type == MazeFeatureType.GuardianDoor)
-            {
-                if (distance < 0.9f)
-                {
-                    feature.IsUsed = true;
-                    SpawnGuardian(feature.X, feature.Y);
-                }
-                continue;
-            }
+            // Safe-room exits are deliberate Press-E choices. Proximity only exposes the
+            // contextual prompt; walking into either feature does nothing.
+            if (feature.Type is MazeFeatureType.Shrine or MazeFeatureType.GuardianDoor) continue;
 
             // For stairs, allow close interaction regardless of cone visibility. No key needed —
             // reaching the stairs is enough; the challenge is the maze distance to get there.
@@ -2735,11 +2759,8 @@ public class GameState
         if (!chest.OpenRewardGranted)
         {
             chest.OpenRewardGranted = true;
-            int levelBefore = Hero.Level;
-            Hero.GainExperience(25);
-            LogMessage("Opened a chest (+25 XP).", MessageKind.Loot);
-            if (Hero.Level > levelBefore)
-                LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
+            int awarded = ProgressionService.Instance.GrantSharedXp(Hero, 25);
+            LogMessage($"Opened a chest (+{awarded} shared XP).", MessageKind.Loot);
         }
         return true;
     }
@@ -2857,17 +2878,34 @@ public class GameState
     /// The fight itself IS the Guardian floor (5, 10, 15, ...): entering it advances
     /// CurrentFloor from e.g. 4 (safe room "4.5") to 5, so the Guardian's level scales off the
     /// Guardian floor and victory proceeds to floor 6.</summary>
-    private void SpawnGuardian(float x, float y)
+    public void EnterGuardianChamber()
     {
+        if (!IsInSafeRoom || NearbyInteractable?.Type != MazeFeatureType.GuardianDoor) return;
+
+        IsInSafeRoom = false;
         CurrentFloor++;
+        CurrentMaze = GenerateGuardianChamber();
+        Hero.X = 1;
+        Hero.Y = CurrentMaze.Height / 2;
+        NearbyInteractable = null;
+        Enemies.Clear();
+        Projectiles.Clear();
+        HitEffects.Clear();
+
         Boss = EnemyFactory.RandomBoss(CurrentFloor, _characterDataService, _random);
-        Boss.X = x;
-        Boss.Y = y;
-        Boss.TargetX = x;
-        Boss.TargetY = y;
+        Boss.X = CurrentMaze.Width - 3;
+        Boss.Y = CurrentMaze.Height / 2;
+        Boss.TargetX = Boss.X;
+        Boss.TargetY = Boss.Y;
         Enemies.Add(Boss);
         GameLog.Debug($"Guardian spawned: {Boss.Race} {Boss.Class} (Level {Boss.Level})");
-        LogMessage($"The Guardian bars the way — {Boss.Race} {Boss.Class}, level {Boss.Level}!", MessageKind.Warning);
+        LogMessage($"Floor {CurrentFloor}: the Guardian chamber. {Boss.Race} {Boss.Class}, level {Boss.Level}, bars the way!", MessageKind.Warning);
+    }
+
+    public void UseSafeRoomShrine()
+    {
+        if (!IsInSafeRoom || NearbyInteractable?.Type != MazeFeatureType.Shrine) return;
+        EnterOverworld();
     }
 
     /// <summary>
@@ -2886,7 +2924,8 @@ public class GameState
         CurrentMaze = GenerateSafeRoomMaze();
         Hero.X = 1;
         Hero.Y = CurrentMaze.Height / 2;
-        LogMessage("A safe room. The shrine's blue glow is restful. Progress saved.", MessageKind.System);
+        ControlMode = ControlMode.Manual;
+        LogMessage("A safe room between floors. Approach the door to challenge the next Guardian, or the shrine to return to town. Progress saved.", MessageKind.System);
 
         // Safe rooms are the only mid-dungeon save points: checkpoint automatically on entry.
         // Continuing this save resumes back in this safe room (SaveData.SafeRoomFloor).
@@ -2912,6 +2951,21 @@ public class GameState
 
         maze.Features.Add(new MazeFeature { X = width / 2, Y = midY, Type = MazeFeatureType.Shrine });
         maze.Features.Add(new MazeFeature { X = width - 2, Y = midY, Type = MazeFeatureType.GuardianDoor });
+        return maze;
+    }
+
+    private Maze GenerateGuardianChamber()
+    {
+        const int width = 15;
+        const int height = 9;
+        var maze = new Maze(width, height) { FloorNumber = CurrentFloor };
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+        {
+            bool border = x == 0 || x == width - 1 || y == 0 || y == height - 1;
+            maze.Walls[x, y] = border;
+            if (!border) maze.Explored[x, y] = true;
+        }
         return maze;
     }
 
@@ -2949,17 +3003,29 @@ public class GameState
     }
 
     /// <summary>
-    /// Restore a hero's progress from a save. Call after constructing a GameState normally (with
-    /// the saved class/race, so class-derived setup like effectiveness/starting loadout is
-    /// computed correctly), then this overwrites the fresh stats/inventory with the saved ones
-    /// and resumes where the save was made: a safe-room checkpoint (SaveData.SafeRoomFloor), or
-    /// otherwise the Overworld's dungeon entrance. Regular dungeon floors are never saved, so a
-    /// mid-dive quit resumes from the entry-time snapshot at the entrance.
+    /// Restore a hero's progress from a save after the appropriate legacy or equipment-first
+    /// constructor has established race effectiveness. Saved stats, inventory, progression, and
+    /// the checkpoint location then replace the fresh state.
     /// </summary>
     public void LoadFrom(SaveData data)
     {
         SaveId = data.SaveId;
         _priorPlaytimeSeconds = data.PlaytimeSeconds;
+        _characterName = data.HeroName;
+        _className = data.ClassName;
+        _raceName = data.RaceName;
+        _creationSelection = data.CreationSelection?.Clone();
+
+        Hero.Name = data.HeroName;
+        if (string.Equals(data.ClassName, "Classless", StringComparison.OrdinalIgnoreCase))
+        {
+            Hero.Class = "Classless";
+            Hero.ClassData = null;
+            Hero.ClassColor = "#808080";
+        }
+        else if (!string.Equals(Hero.Class, data.ClassName, StringComparison.OrdinalIgnoreCase) ||
+                 Hero.ClassData == null)
+            _characterDataService.ApplyClassIdentity(Hero, data.ClassName);
 
         Hero.Level = data.Level;
         Hero.Experience = data.Experience;
@@ -2974,6 +3040,9 @@ public class GameState
         Hero.Wisdom = data.Wisdom;
         Hero.Charisma = data.Charisma;
         Hero.UnspentStatPoints = data.UnspentStatPoints;
+        Hero.Progression = data.Progression ?? ProgressionService.Instance.CreateCompatibilityState(
+            data.ClassName, data.Level, data.Experience);
+        ProgressionService.Instance.Normalize(Hero);
         Hero.Gold = data.Gold;
         Hero.Resources = new Dictionary<string, int>(data.Resources);
         Hero.Loadout = new List<Combinable>(data.Loadout
@@ -2981,6 +3050,7 @@ public class GameState
         Hero.Inventory = new List<Combinable>(data.Inventory);
         Hero.Equipment = new Dictionary<EquipmentSlot, Combinable>(data.Equipment ?? new());
         Hero.WeaponTraining = new HashSet<WeaponType>(data.WeaponTraining ?? new());
+        if (data.Affinities != null) Hero.Affinities = data.Affinities.Clone();
         MigrateLegacyLoadout(data);
         RefreshAttacks();
 
@@ -3164,6 +3234,182 @@ public class GameState
         return true;
     }
 
+    /// <summary>Allocate shared XP to one active class slot. Profession slots reject this path.</summary>
+    public ProgressionAdvanceResult AllocateClassXp(string slotId, int amount)
+    {
+        int constitutionBefore = Hero.Constitution;
+        ProgressionAdvanceResult result = ProgressionService.Instance.AllocateSharedXp(Hero, slotId, amount);
+        if (!result.Success) return result;
+
+        ApplyAttributeRewardSideEffects(constitutionBefore);
+        RefreshAttacks();
+        if (result.LevelsGained > 0)
+        {
+            string automatic = result.AutomaticAttributesGranted.Count == 0
+                ? "no automatic attributes"
+                : string.Join(", ", result.AutomaticAttributesGranted.Select(pair => $"+{pair.Value} {pair.Key}"));
+            LogMessage($"Class advanced {result.LevelsGained} level(s): {automatic}; " +
+                $"+{result.FreeAttributePointsGranted} free points.", MessageKind.LevelUp);
+        }
+        return result;
+    }
+
+    /// <summary>Foundation for the contextual offer engine: place an accepted profession in an empty slot.</summary>
+    public bool TryActivateProfession(string professionId, out string error) =>
+        ProgressionService.Instance.TryPlacePath(Hero, ProgressionDomain.Profession, professionId, out error);
+
+    public IReadOnlyList<ProgressionOffer> GenerateProgressionOffers(ProgressionDomain domain, string slotId)
+    {
+        return ProgressionOfferService.Instance.GenerateOffers(
+            Hero, domain, slotId, BuildProgressionContext());
+    }
+
+    public IReadOnlyList<ProgressionSpecializationOffer> GenerateSpecializationOffers(string slotId) =>
+        ProgressionOfferService.Instance.GenerateSpecializationOffers(
+            Hero, slotId, BuildProgressionContext());
+
+    public IReadOnlyList<ProgressionAdvancementOffer> GenerateAdvancementOffers(string slotId) =>
+        ProgressionOfferService.Instance.GenerateAdvancementOffers(
+            Hero, slotId, BuildProgressionContext());
+
+    public bool AcceptProgressionOffer(string slotId, ProgressionOffer offer, out string error)
+    {
+        IReadOnlyList<ProgressionOffer> current = GenerateProgressionOffers(offer.Domain, slotId);
+        ProgressionOffer? valid = current.FirstOrDefault(candidate =>
+            string.Equals(candidate.ResultDefinitionId, offer.ResultDefinitionId,
+                StringComparison.OrdinalIgnoreCase) && candidate.ContextHash == offer.ContextHash);
+        if (valid == null)
+        {
+            error = "The character context changed. Review the updated offers.";
+            return false;
+        }
+
+        bool hadActiveClass = Hero.Progression.ClassSlots.Any(slot => slot.Instance != null);
+        if (!ProgressionService.Instance.TryPlacePath(
+                Hero, offer.Domain, slotId, offer.ResultDefinitionId, out error)) return false;
+
+        if (offer.Domain == ProgressionDomain.Class && !hadActiveClass)
+        {
+            _characterDataService.ApplyClassIdentity(Hero, valid.Name);
+            _className = valid.Name;
+        }
+        else if (offer.Domain == ProgressionDomain.Class)
+            _characterDataService.ApplyClassAffinities(Hero, valid.Name);
+        RefreshAttacks();
+        LogMessage($"Accepted {valid.Name} as a level-1 {offer.Domain.ToString().ToLowerInvariant()} path.",
+            MessageKind.LevelUp);
+        error = "";
+        return true;
+    }
+
+    public bool AcceptSpecializationOffer(string slotId, ProgressionSpecializationOffer offer,
+        out string error)
+    {
+        ProgressionSpecializationOffer? valid = GenerateSpecializationOffers(slotId)
+            .FirstOrDefault(candidate =>
+                string.Equals(candidate.SpecializationId, offer.SpecializationId,
+                    StringComparison.OrdinalIgnoreCase) && candidate.ContextHash == offer.ContextHash);
+        if (valid == null)
+        {
+            error = "The character context changed. Review the updated specializations.";
+            return false;
+        }
+        if (!ProgressionService.Instance.TrySpecialize(
+                Hero, slotId, valid.SpecializationId, out error)) return false;
+        RefreshAttacks();
+        LogMessage($"Specialized as {valid.Name} without resetting the path's level or XP.",
+            MessageKind.LevelUp);
+        error = "";
+        return true;
+    }
+
+    public bool AcceptAdvancementOffer(string slotId, ProgressionAdvancementOffer offer,
+        out string error)
+    {
+        ProgressionAdvancementOffer? valid = GenerateAdvancementOffers(slotId)
+            .FirstOrDefault(candidate =>
+                string.Equals(candidate.RecipeId, offer.RecipeId, StringComparison.OrdinalIgnoreCase) &&
+                candidate.ContextHash == offer.ContextHash);
+        if (valid == null)
+        {
+            error = "The character context changed. Review the updated advancements.";
+            return false;
+        }
+        if (!ProgressionService.Instance.TryAdvance(Hero, valid.RecipeId, valid.TargetSlotId,
+                valid.SourceSlotIds, out error)) return false;
+
+        if (valid.Domain == ProgressionDomain.Class)
+        {
+            ProgressionInstance? primary = Hero.Progression.ClassSlots
+                .FirstOrDefault(candidate => !candidate.IsLocked && candidate.Instance != null)?.Instance;
+            if (primary != null && string.Equals(primary.Name, valid.Name, StringComparison.OrdinalIgnoreCase))
+                _characterDataService.ApplyClassIdentity(Hero, primary.Name);
+            else
+                _characterDataService.ApplyClassAffinities(Hero, valid.Name);
+            if (primary != null) _className = primary.Name;
+        }
+        RefreshAttacks();
+        LogMessage($"Advanced to {valid.Name} at level 1; source paths were preserved in lineage.",
+            MessageKind.LevelUp);
+        error = "";
+        return true;
+    }
+
+    public void RecordProgressionFact(string factId, decimal amount = 1m)
+    {
+        if (string.IsNullOrWhiteSpace(factId) || amount == 0m) return;
+        Hero.Progression.Facts[factId] = Hero.Progression.Facts.GetValueOrDefault(factId, 0m) + amount;
+    }
+
+    private Dictionary<string, decimal> BuildProgressionContext()
+    {
+        var context = new Dictionary<string, decimal>
+        {
+            [IsInOverworld ? "environment.overworld" : "environment.dungeon"] = 1m
+        };
+        if (!IsInOverworld) context["environment.underground"] = 1m;
+        return context;
+    }
+
+    /// <summary>Apply direct practice XP to an active profession and its associated skills.</summary>
+    public ProgressionAdvanceResult RecordProfessionAction(string professionId)
+    {
+        int constitutionBefore = Hero.Constitution;
+        ProgressionAdvanceResult result = ProgressionService.Instance.RecordProfessionAction(Hero, professionId);
+        if (result.Success)
+        {
+            ApplyAttributeRewardSideEffects(constitutionBefore);
+            if (result.LevelsGained > 0)
+                LogMessage($"{professionId} advanced {result.LevelsGained} level(s).", MessageKind.LevelUp);
+        }
+        return result;
+    }
+
+    internal int SkillAdjustedYield(string skillId, int baseAmount)
+    {
+        float multiplier = ProgressionService.Instance.SkillYieldMultiplier(Hero, skillId);
+        float adjusted = baseAmount * multiplier;
+        int amount = Math.Max(baseAmount, (int)MathF.Floor(adjusted));
+        if (_random.NextDouble() < adjusted - MathF.Floor(adjusted)) amount++;
+        return amount;
+    }
+
+    internal bool RollSkillBonusDrop(string skillId) =>
+        _random.NextDouble() < ProgressionService.Instance.SkillBonusDropChance(Hero, skillId);
+
+    private void ApplyAttributeRewardSideEffects(int constitutionBefore)
+    {
+        int constitutionGain = Hero.Constitution - constitutionBefore;
+        if (constitutionGain > 0)
+        {
+            int hpBump = Math.Max(1, (int)Math.Round(
+                HpPerConstitutionPoint * Hero.ConstitutionEffectiveness)) * constitutionGain;
+            Hero.MaxHp += hpBump;
+            Hero.CurrentHp = Math.Min(Hero.MaxHp, Hero.CurrentHp + hpBump);
+        }
+        UpdateHeroResourcePools();
+    }
+
     // ---- Debug console --------------------------------------------------------------------
     // Registry of spawnable combinables for /additem and /addspell, keyed by stable id. Fresh
     // instance per call so added copies don't alias a template. Sourced from the same catalogs
@@ -3220,7 +3466,7 @@ public class GameState
         switch (cmd)
         {
             case "help": case "?":
-                result = "addxp N | addlevel N | addpoints N | addgold N | additem <id> [n] | " +
+                result = "addxp N | addlevel N | addpoints N | addgold N | addprofession <id> | additem <id> [n] | " +
                          "addspell <id> [n] | moveplayer dungeon N|overworld|safe N | " +
                          "reset health|mana|stamina|faith|all | listitems";
                 break;
@@ -3228,17 +3474,35 @@ public class GameState
             case "addxp": case "xp":
             {
                 int n = IntArg(1, 0);
-                Hero.GainExperience(n);
-                result = $"+{n} XP -> Level {Hero.Level} ({Hero.Experience}/{Hero.ExperienceToNext})";
+                int awarded = ProgressionService.Instance.GrantSharedXp(Hero, n);
+                result = $"+{awarded} shared XP -> bank {Hero.Progression.UnallocatedXp}";
                 break;
             }
 
             case "addlevel": case "level":
             {
                 int n = Math.Max(0, IntArg(1, 1));
+                ProgressionSlot? slot = Hero.Progression.ClassSlots
+                    .FirstOrDefault(candidate => !candidate.IsLocked && candidate.Instance != null);
+                int advanced = 0;
                 for (int i = 0; i < n; i++)
-                    Hero.GainExperience(Math.Max(1, Hero.ExperienceToNext - Hero.Experience));
-                result = $"+{n} level(s) -> Level {Hero.Level}, {Hero.UnspentStatPoints} stat point(s)";
+                {
+                    if (slot?.Instance == null) break;
+                    int needed = ProgressionService.Instance.XpNeededForNext(slot.Instance);
+                    if (needed <= 0) break;
+                    Hero.Progression.UnallocatedXp += needed;
+                    advanced += AllocateClassXp(slot.SlotId, needed).LevelsGained;
+                }
+                result = $"+{advanced} class level(s) -> overall level {Hero.Level}, " +
+                    $"{Hero.UnspentStatPoints} free stat point(s)";
+                break;
+            }
+
+            case "addprofession": case "profession":
+            {
+                string id = Arg(1);
+                bool activated = TryActivateProfession(id, out string error);
+                result = activated ? $"Activated profession: {id}" : error;
                 break;
             }
 
@@ -3459,6 +3723,7 @@ public class GameState
     /// </summary>
     public void RestartGame()
     {
+        string restartClass = Hero.Class;
         // Generate new seed for different maze
         Seed = new Random().Next();
         
@@ -3505,8 +3770,25 @@ public class GameState
             Y = 1
         };
         
-        // Apply class and race stats
-        _characterDataService.ApplyClassAndRace(Hero, _className, _raceName);
+        if (_creationSelection != null)
+        {
+            _characterDataService.ApplyClasslessAndRace(Hero, _raceName);
+            Hero.Progression = string.Equals(restartClass, "Classless", StringComparison.OrdinalIgnoreCase)
+                ? ProgressionService.Instance.CreateEmptyState()
+                : ProgressionService.Instance.CreateCompatibilityState(restartClass);
+            if (!string.Equals(restartClass, "Classless", StringComparison.OrdinalIgnoreCase))
+                _characterDataService.ApplyClassIdentity(Hero, restartClass);
+            _className = restartClass;
+            StarterLoadoutService.Instance.ApplyToHero(Hero, _creationSelection.ItemIds);
+        }
+        else
+        {
+            _characterDataService.ApplyClassAndRace(Hero, _className, _raceName);
+            Hero.Progression = ProgressionService.Instance.CreateCompatibilityState(_className);
+            Hero.Loadout = new List<Combinable>();
+            Hero.Equipment = AttackFactory.GetStartingEquipment(_className);
+        }
+        ProgressionService.Instance.Normalize(Hero);
         
         // Update resource pools based on attributes
         UpdateHeroResourcePools();
@@ -3516,9 +3798,6 @@ public class GameState
         Hero.CurrentMana = Hero.MaxMana;
         Hero.CurrentFaith = Hero.MaxFaith;
 
-        // Equip the class starting loadout and project it into executable attacks
-        Hero.Loadout = new List<Combinable>();
-        Hero.Equipment = AttackFactory.GetStartingEquipment(_className);
         RefreshAttacks();
 
         // Start new floor

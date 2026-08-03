@@ -26,7 +26,8 @@ public static class WeaponProficiencyService
         WeaponType type = ResolveType(weapon);
         return type != WeaponType.Unknown &&
             (hero.WeaponTraining.Contains(type) ||
-             hero.ClassData?.WeaponAffinities.Contains(type) == true);
+             hero.ClassData?.WeaponAffinities.Contains(type) == true ||
+             ProgressionService.Instance.HasActiveWeaponAffinity(hero, type));
     }
 
     public static WeaponUseProfile Evaluate(Hero hero, Attack attack)
@@ -47,7 +48,8 @@ public static class WeaponProficiencyService
     {
         WeaponType type = ResolveType(weapon);
         if (hero.WeaponTraining.Contains(type)) return $"{type} skill";
-        if (hero.ClassData?.WeaponAffinities.Contains(type) == true) return $"{hero.Class} affinity";
+        if (hero.ClassData?.WeaponAffinities.Contains(type) == true ||
+            ProgressionService.Instance.HasActiveWeaponAffinity(hero, type)) return "Active class affinity";
         return $"Untrained: {(1f - UntrainedDamageMultiplier):P0} damage and " +
             $"{(1f - UntrainedAccuracyMultiplier):P0} accuracy penalty";
     }

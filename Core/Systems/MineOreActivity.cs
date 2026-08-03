@@ -1,4 +1,5 @@
 using System;
+using TheMazeRPG.Core.Models;
 using TheMazeRPG.Core.Services;
 
 namespace TheMazeRPG.Core.Systems;
@@ -33,10 +34,24 @@ public class MineOreActivity : Activity
 
     public override void OnFinish(GameState gameState)
     {
-        gameState.AddHeroResource(_materialId, _amount);
+        int amount = gameState.SkillAdjustedYield("mining", _amount);
+        gameState.AddHeroResource(_materialId, amount);
         var name = MaterialDataService.Instance.Materials.TryGetValue(_materialId, out var def)
             ? def.Name : _materialId;
-        gameState.LogMessage($"Mined {_amount}x {name}", MessageKind.Loot);
+        gameState.LogMessage($"Mined {amount}x {name}", MessageKind.Loot);
+        gameState.RecordProgressionFact("practice.mining-actions");
+        ProgressionAdvanceResult progress = gameState.RecordProfessionAction("miner");
+        if (progress.Success)
+        {
+            gameState.LogMessage(
+                $"Miner +{progress.XpApplied} XP; Mining +{progress.SkillXpApplied} XP",
+                MessageKind.System);
+            if (gameState.RollSkillBonusDrop("mining"))
+            {
+                gameState.AddHeroResource("rough-gem", 1);
+                gameState.LogMessage("The ore held a rough gem.", MessageKind.Loot);
+            }
+        }
         _onComplete?.Invoke(gameState);
     }
 }

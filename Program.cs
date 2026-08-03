@@ -44,6 +44,18 @@ sealed class Program
             return;
         }
 
+        if (Environment.GetEnvironmentVariable("TEST_PROGRESSION") == "1")
+        {
+            RunProgressionDemo();
+            return;
+        }
+
+        if (Environment.GetEnvironmentVariable("TEST_CREATION") == "1")
+        {
+            RunEquipmentFirstCreationDemo();
+            return;
+        }
+
         // If TEST_BALANCE is set, dump enemy damage per floor and exit
         if (Environment.GetEnvironmentVariable("TEST_BALANCE") == "1")
         {
@@ -615,27 +627,23 @@ sealed class Program
         Console.WriteLine($"LootAll gold: hero gold {goldBefore}->{loot.Hero.Gold}, body gold {corpse.Gold} (expect +12, body 0)");
     }
 
-    // Debug/test entrypoint: verify manual level-up stat allocation (no class auto-growth; points
-    // bank up and are spent by hand; Constitution/Intelligence bumps flow to derived caps; the
-    // banked pool persists through a load).
+    // Debug/test entrypoint: verify the class-authored half-automatic/half-free attribute split,
+    // derived resource updates, manual spending, and persistence.
     public static void RunStatsDemo()
     {
-        Console.WriteLine("=== Manual stat allocation ===");
+        Console.WriteLine("=== Class and manual stat allocation ===");
 
         var gs = new GameState(1, "Cadet", "Warrior", "Human");
         var h = gs.Hero;
         Console.WriteLine($"Level 1 unspent points: {h.UnspentStatPoints} (expect 0)");
 
-        // Capture starting core stats to prove level-ups no longer auto-allocate them.
-        int str0 = h.Strength, con0 = h.Constitution, dex0 = h.Dexterity, agi0 = h.Agility,
-            int0 = h.Intelligence, wis0 = h.Wisdom, cha0 = h.Charisma;
-
-        h.GainExperience(2000); // enough for several levels
-        int gained = h.Level - 1;
-        Console.WriteLine($"After 2000 XP: Level {h.Level}, unspent {h.UnspentStatPoints} (expect {gained * Hero.StatPointsPerLevel})");
-        bool autoAllocated = h.Strength != str0 || h.Constitution != con0 || h.Dexterity != dex0 ||
-                             h.Agility != agi0 || h.Intelligence != int0 || h.Wisdom != wis0 || h.Charisma != cha0;
-        Console.WriteLine($"Core stats auto-changed on level-up: {autoAllocated} (expect False — allocation is manual)");
+        int str0 = h.Strength, con0 = h.Constitution;
+        ProgressionService.Instance.GrantSharedXp(h, 100);
+        ProgressionSlot classSlot = h.Progression.ClassSlots[0];
+        ProgressionAdvanceResult advance = gs.AllocateClassXp(classSlot.SlotId, 100);
+        Console.WriteLine($"Warrior advance: success={advance.Success}, Level {h.Level}, " +
+            $"Str {str0}->{h.Strength}, Con {con0}->{h.Constitution}, free points {h.UnspentStatPoints} " +
+            "(expect level 2, +1 Str, +1 Con, 2 free)");
 
         // Spend a Constitution point: stat + points update, and MaxHp/MaxStamina rise immediately.
         int hpBefore = h.MaxHp, stamBefore = h.MaxStamina, ptsBefore = h.UnspentStatPoints, conBefore = h.Constitution;
@@ -665,7 +673,7 @@ sealed class Program
             Level = 3, ExperienceToNext = 900, MaxHp = 150, CurrentHp = 150,
             Strength = 5, Constitution = 5, Agility = 5, Dexterity = 5,
             Intelligence = 5, Wisdom = 5, Charisma = 5,
-            UnspentStatPoints = 7, ResumePoint = ResumePoint.DungeonStart
+            UnspentStatPoints = 7, Progression = h.Progression, ResumePoint = ResumePoint.DungeonStart
         });
         Console.WriteLine($"LoadFrom unspent points: {g2.Hero.UnspentStatPoints} (expect 7)");
     }
@@ -1280,7 +1288,8 @@ sealed class Program
         var guardianDoor = gsGuardian.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.GuardianDoor);
         gsGuardian.Hero.X = guardianDoor.X;
         gsGuardian.Hero.Y = guardianDoor.Y;
-        for (int t = 0; t < 10 && gsGuardian.Boss == null; t++) gsGuardian.Tick();
+        gsGuardian.UpdateNearbyInteractable();
+        gsGuardian.EnterGuardianChamber();
         Console.WriteLine($"Approached Guardian door -> Boss={(gsGuardian.Boss != null ? $"{gsGuardian.Boss.Race} {gsGuardian.Boss.Class} L{gsGuardian.Boss.Level} HP{gsGuardian.Boss.MaxHp}" : "null (not spawned!)")}");
 
         if (gsGuardian.Boss != null)
@@ -1307,7 +1316,8 @@ sealed class Program
         var door2 = gsGuardian.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.GuardianDoor);
         gsGuardian.Hero.X = door2.X;
         gsGuardian.Hero.Y = door2.Y;
-        for (int t = 0; t < 10 && gsGuardian.Boss == null; t++) gsGuardian.Tick();
+        gsGuardian.UpdateNearbyInteractable();
+        gsGuardian.EnterGuardianChamber();
         Console.WriteLine($"Second Guardian: spawned={gsGuardian.Boss != null} at floor {gsGuardian.CurrentFloor} (expect 10)");
 
         // Message log: real play should have generated a feed (floor descents, safe rooms,
@@ -1329,13 +1339,14 @@ sealed class Program
             gsShrine.Enemies.Clear(); // this section validates the safe-room exit path
             for (int t = 0; t < 30 && gsShrine.CurrentFloor == floor; t++) gsShrine.Tick();
         }
-        gsShrine.Hero.GainExperience(500); // give the hero real progress so "preserved" is a meaningful check
+        ProgressionService.Instance.GrantSharedXp(gsShrine.Hero, 500); // bank real progress for the preservation check
         int levelBeforeExit = gsShrine.Hero.Level;
         int xpBeforeExit = gsShrine.Hero.Experience;
         var shrine = gsShrine.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Shrine);
         gsShrine.Hero.X = shrine.X;
         gsShrine.Hero.Y = shrine.Y;
-        for (int t = 0; t < 10 && gsShrine.IsInSafeRoom; t++) gsShrine.Tick();
+        gsShrine.UpdateNearbyInteractable();
+        gsShrine.UseSafeRoomShrine();
         Console.WriteLine($"After touching shrine -> Floor={gsShrine.CurrentFloor}, InSafeRoom={gsShrine.IsInSafeRoom}");
         Console.WriteLine($"Hero progress preserved: Level {levelBeforeExit}->{gsShrine.Hero.Level}, XP {xpBeforeExit}->{gsShrine.Hero.Experience} (should be unchanged, unlike death)");
         var codexShrine = CodexService.Instance.Data;
@@ -1534,6 +1545,291 @@ sealed class Program
         var corpse = new Enemy { Hp = 0, Gold = 19 };
         Require(chestGame.LootGold(corpse) && corpse.Gold == 0, "Corpse gold could not be looted independently.");
         Console.WriteLine($"PASS: {gs.Hero.Equipment.Count} slots, {gs.Hero.Attacks.Count} actions, gear defense +{gs.Hero.EquipmentDefenseBonus}.");
+    }
+
+    public static void RunProgressionDemo()
+    {
+        static void Require(bool condition, string message)
+        {
+            if (!condition) throw new InvalidOperationException(message);
+        }
+
+        Console.WriteLine("=== Slot-based progression ===");
+        var game = new GameState(808, "Pathfinder", "Warrior", "Human");
+        Hero hero = game.Hero;
+        ProgressionSlot warriorSlot = hero.Progression.ClassSlots[0];
+        Require(hero.Progression.ClassSlots.Count == 2 && hero.Progression.ProfessionSlots.Count == 1,
+            "Starting progression slots were not initialized from data.");
+        Require(warriorSlot.Instance is { Name: "Warrior", Level: 1 } &&
+            hero.Progression.CharacterLevel == 1, "Legacy class creation bridge did not create Warrior 1.");
+
+        int strengthBefore = hero.Strength;
+        int constitutionBefore = hero.Constitution;
+        int awarded = ProgressionService.Instance.GrantSharedXp(hero, 100);
+        ProgressionAdvanceResult classAdvance = game.AllocateClassXp(warriorSlot.SlotId, 100);
+        Require(awarded >= 100 && classAdvance is
+            { Success: true, LevelsGained: 1, FreeAttributePointsGranted: 2 },
+            "Shared XP did not advance the selected class with the configured reward split.");
+        Require(hero.Strength == strengthBefore + 1 && hero.Constitution == constitutionBefore + 1 &&
+            hero.UnspentStatPoints == 2, "Warrior automatic and free attributes were not granted correctly.");
+        Require(hero.Progression.CharacterLevel == 2 && hero.Level == 2,
+            "Overall level did not follow the active class level.");
+
+        int sharedBeforeProfession = hero.Progression.UnallocatedXp;
+        ProgressionAdvanceResult withoutMiner = game.RecordProfessionAction("miner");
+        Require(!withoutMiner.Success && hero.Progression.Skills.Count == 0 &&
+            hero.Progression.UnallocatedXp == sharedBeforeProfession,
+            "Mining without Miner incorrectly granted profession, skill, or shared XP.");
+        new MineOreActivity("iron-ore", 3, 1).OnFinish(game);
+        Require(hero.Resources.GetValueOrDefault("iron-ore") == 3 && hero.Progression.Skills.Count == 0,
+            "Baseline mining should produce ore without granting profession progression.");
+        Require(game.TryActivateProfession("miner", out string professionError), professionError);
+
+        int overallBeforeProfession = hero.Progression.CharacterLevel;
+        int minerStrengthBefore = hero.Strength;
+        new MineOreActivity("iron-ore", 3, 1).OnFinish(game);
+        new MineOreActivity("iron-ore", 3, 1).OnFinish(game);
+        ProgressionInstance miner = hero.Progression.ProfessionSlots[0].Instance!;
+        Require(miner.Level == 2 && hero.Progression.Skills["mining"].Level == 2,
+            "Miner and Mining did not advance together from direct action XP.");
+        Require(hero.Strength == minerStrengthBefore + 1 && hero.Progression.CharacterLevel == overallBeforeProfession,
+            "Profession fixed reward or overall-level isolation is incorrect.");
+        Require(hero.Progression.UnallocatedXp == sharedBeforeProfession,
+            "Profession action XP changed the shared XP pool.");
+        miner.Level = 10;
+        game.RecordProgressionFact("practice.mining-actions", 7);
+        string minerInstanceId = miner.InstanceId;
+        ProgressionSpecializationOffer prospector = game.GenerateSpecializationOffers(
+                hero.Progression.ProfessionSlots[0].SlotId)
+            .First(offer => offer.SpecializationId == "prospector");
+        Require(game.AcceptSpecializationOffer(hero.Progression.ProfessionSlots[0].SlotId,
+            prospector, out string prospectorError), prospectorError);
+        Require(miner is { Level: 10, Specialization: { DefinitionId: "prospector" } } &&
+            miner.InstanceId == minerInstanceId,
+            "Profession specialization reset or replaced the Miner path.");
+
+        int sharedBeforeRejectedAllocation = hero.Progression.UnallocatedXp;
+        ProgressionAdvanceResult professionAllocation = game.AllocateClassXp(
+            hero.Progression.ProfessionSlots[0].SlotId, sharedBeforeRejectedAllocation);
+        Require(!professionAllocation.Success &&
+            hero.Progression.UnallocatedXp == sharedBeforeRejectedAllocation,
+            "A profession slot accepted allocated shared XP.");
+
+        warriorSlot.Instance!.Level = 9;
+        warriorSlot.Instance.CurrentXp = 0;
+        string warriorInstanceId = warriorSlot.Instance.InstanceId;
+        hero.Progression.UnallocatedXp += 8100;
+        ProgressionAdvanceResult levelTen = game.AllocateClassXp(warriorSlot.SlotId, 8100);
+        Require(levelTen.Success && warriorSlot.Instance.Level == 10 &&
+            warriorSlot.State == ProgressionSlotState.Active,
+            "Level 10 incorrectly ended the path instead of opening additive specialization.");
+        ProgressionSpecializationOffer swordsman = game.GenerateSpecializationOffers(warriorSlot.SlotId)
+            .First(offer => offer.SpecializationId == "swordsman");
+        Require(game.AcceptSpecializationOffer(warriorSlot.SlotId, swordsman, out string specializationError),
+            specializationError);
+        Require(warriorSlot.Instance is
+            { Level: 10, Specialization: { DefinitionId: "swordsman" } } &&
+            warriorSlot.Instance.InstanceId == warriorInstanceId,
+            "Specialization reset or replaced the level-10 Warrior instance.");
+
+        warriorSlot.Instance.Level = 24;
+        warriorSlot.Instance.CurrentXp = 0;
+        hero.Progression.UnallocatedXp += 60000;
+        int bankBeforeCap = hero.Progression.UnallocatedXp;
+        ProgressionAdvanceResult capAdvance = game.AllocateClassXp(warriorSlot.SlotId, 60000);
+        Require(capAdvance.Success && warriorSlot.Instance.Level == 25 &&
+            warriorSlot.State == ProgressionSlotState.Mastered,
+            "Class did not stop cleanly at level 25.");
+        Require(hero.Progression.UnallocatedXp == bankBeforeCap - 57600,
+            "XP beyond the level-25 capacity was not preserved in the shared pool.");
+
+        var migrated = new GameState(809, "LegacyCap", "Warrior", "Human");
+        ProgressionInstance migratedInstance = migrated.Hero.Progression.ClassSlots[0].Instance!;
+        migratedInstance.Level = 10;
+        migratedInstance.MaxLevel = 10;
+        ProgressionService.Instance.Normalize(migrated.Hero);
+        Require(migratedInstance.MaxLevel == 25 &&
+            migrated.Hero.Progression.ClassSlots[0].State == ProgressionSlotState.Active,
+            "A saved level-10 path did not migrate to the new level-25 cap.");
+
+        var duplicateGame = new GameState(810, "Weighted", "Warrior", "Human");
+        ProgressionSlot duplicateSlot = duplicateGame.Hero.Progression.ClassSlots[1];
+        Require(ProgressionService.Instance.TryPlacePath(duplicateGame.Hero, ProgressionDomain.Class,
+                duplicateSlot.SlotId, "warrior", out string duplicateError), duplicateError);
+        Require(duplicateGame.Hero.Progression.CharacterLevel == 2,
+            "Independent duplicate class instances were not counted separately.");
+
+        var mageAdvance = new GameState(811, "Independent", "Mage Apprentice", "Human");
+        ProgressionSlot mageSlot = mageAdvance.Hero.Progression.ClassSlots[0];
+        mageSlot.Instance!.Level = 25;
+        mageAdvance.RecordProgressionFact("knowledge.independent-spell-construction");
+        ProgressionAdvancementOffer mageOffer = mageAdvance.GenerateAdvancementOffers(mageSlot.SlotId)
+            .First(offer => offer.ResultDefinitionId == "mage");
+        Require(mageAdvance.AcceptAdvancementOffer(mageSlot.SlotId, mageOffer, out string mageError), mageError);
+        Require(mageSlot.Instance is { DefinitionId: "mage", Level: 1 } &&
+            mageSlot.Instance.Lineage.Any(entry => entry is
+                { DefinitionId: "mage-apprentice", LevelAtConsumption: 25 }) &&
+            mageAdvance.Hero.Class == "Mage",
+            "Single-path advancement did not create Mage 1 with preserved lineage.");
+
+        var convergence = new GameState(812, "Integrated", "Warrior", "Human");
+        ProgressionSlot warriorSource = convergence.Hero.Progression.ClassSlots[0];
+        ProgressionSlot mageSource = convergence.Hero.Progression.ClassSlots[1];
+        Require(ProgressionService.Instance.TryPlacePath(convergence.Hero, ProgressionDomain.Class,
+            mageSource.SlotId, "mage-apprentice", out string sourceError), sourceError);
+        warriorSource.Instance!.Level = 25;
+        mageSource.Instance!.Level = 25;
+        convergence.RecordProgressionFact("practice.spell-melee-integration", 3);
+        ProgressionAdvancementOffer spellsword = convergence.GenerateAdvancementOffers(warriorSource.SlotId)
+            .First(offer => offer.ResultDefinitionId == "spellsword");
+        Require(convergence.AcceptAdvancementOffer(
+            warriorSource.SlotId, spellsword, out string convergenceError), convergenceError);
+        Require(warriorSource.Instance is { DefinitionId: "spellsword", Level: 1 } &&
+            mageSource.Instance == null && warriorSource.Instance.Lineage.Count == 2 &&
+            convergence.Hero.Progression.CharacterLevel == 1 &&
+            convergence.Hero.Attacks.Any(attack => attack.Id == "quick-slash") &&
+            convergence.Hero.Attacks.Any(attack => attack.Id == "magic-dart"),
+            "Convergence did not condense sources while preserving lineage and learned techniques.");
+
+        string json = System.Text.Json.JsonSerializer.Serialize(hero.Progression);
+        ProgressionState? restored = System.Text.Json.JsonSerializer.Deserialize<ProgressionState>(json);
+        Require(restored != null && restored.CharacterLevel == hero.Progression.CharacterLevel &&
+            restored.ClassSlots[0].Instance?.Specialization?.DefinitionId == "swordsman" &&
+            restored.ProfessionSlots[0].Instance is
+                { Level: 10, Specialization: { DefinitionId: "prospector" } } &&
+            restored.Skills["mining"].Level == 2,
+            "Progression state did not survive JSON persistence.");
+
+        Console.WriteLine($"PASS: level-10 specialization, level-25 mastery, Mage advancement, " +
+            $"Spellsword convergence, and {miner.Name} practice progression.");
+    }
+
+    public static void RunEquipmentFirstCreationDemo()
+    {
+        static void Require(bool condition, string message)
+        {
+            if (!condition) throw new InvalidOperationException(message);
+        }
+
+        Console.WriteLine("=== Equipment-first creation and contextual offers ===");
+        StarterLoadoutService loadouts = StarterLoadoutService.Instance;
+        var characterData = new CharacterDataService();
+        string[] primaryClasses =
+        {
+            "Wanderer", "Warrior", "Archer", "Rogue", "Priest", "Mage Apprentice",
+            "Healer", "Alchemist"
+        };
+        Require(primaryClasses.All(name => characterData.Classes.ContainsKey(name) &&
+                ProgressionDataService.Instance.FindDefinition(name) is { Domain: ProgressionDomain.Class }),
+            "The primary class roster is inconsistent between character and progression data.");
+        Require(characterData.Classes["Healer"].StartingStats.Values.Sum() == 28 &&
+                characterData.Classes["Alchemist"].StartingStats.Values.Sum() == 28,
+            "New primary class starting profiles do not match the foundation attribute budget.");
+
+        CharacterCreationSelection soldier = loadouts.SelectionFromKit(
+            "NoClassYet", "Human", "soldier");
+        var game = new GameState(909, soldier);
+        Hero hero = game.Hero;
+        Require(hero.Class == "Classless" && hero.Progression.CharacterLevel == 0 &&
+            hero.Progression.ClassSlots.All(slot => slot.Instance == null),
+            "A starter kit directly assigned a class.");
+        Require(hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) is Weapon { WeaponType: WeaponType.Sword } &&
+            hero.Attacks.All(attack => attack.Id != "quick-slash"),
+            "Soldier equipment or classless technique isolation is incorrect.");
+
+        ProgressionSlot classSlot = hero.Progression.ClassSlots[0];
+        IReadOnlyList<ProgressionOffer> soldierOffers = game.GenerateProgressionOffers(
+            ProgressionDomain.Class, classSlot.SlotId);
+        Require(soldierOffers.Any(offer => offer.ResultDefinitionId == "warrior") &&
+            soldierOffers.Any(offer => offer.ResultDefinitionId == "wanderer") &&
+            soldierOffers.All(offer => offer.ResultDefinitionId != "archer"),
+            "Soldier equipment did not produce the expected contextual class offers.");
+        ProgressionOffer warrior = soldierOffers.First(offer => offer.ResultDefinitionId == "warrior");
+        Require(game.AcceptProgressionOffer(classSlot.SlotId, warrior, out string warriorError), warriorError);
+        Require(hero.Class == "Warrior" && hero.Progression.CharacterLevel == 1 &&
+            hero.Attacks.Any(attack => attack.Id == "quick-slash") &&
+            WeaponProficiencyService.IsTrained(hero, (Weapon)hero.Equipment[EquipmentSlot.MainHand]),
+            "Accepting Warrior did not apply class identity, techniques, level, and affinity.");
+        ProgressionSlot secondClassSlot = hero.Progression.ClassSlots[1];
+        Require(game.GenerateProgressionOffers(ProgressionDomain.Class, secondClassSlot.SlotId)
+                .Any(offer => offer.ResultDefinitionId == "warrior"),
+            "A second independently developed Warrior instance was incorrectly suppressed.");
+
+        var outrider = new GameState(910, loadouts.SelectionFromKit("Context", "Elf", "outrider"));
+        ProgressionSlot outriderSlot = outrider.Hero.Progression.ClassSlots[0];
+        ProgressionOffer archer = outrider.GenerateProgressionOffers(ProgressionDomain.Class, outriderSlot.SlotId)
+            .First(offer => offer.ResultDefinitionId == "archer");
+        outrider.Hero.Equipment.Remove(EquipmentSlot.MainHand);
+        Require(!outrider.AcceptProgressionOffer(outriderSlot.SlotId, archer, out _),
+            "An offer remained acceptable after its equipment evidence was removed.");
+
+        var customMage = new CharacterCreationSelection
+        {
+            Name = "Custom", RaceName = "Human", KitId = "custom", IsCustom = true,
+            ItemIds = new List<string> { "staff", "ice-shard", "leather-coat" }
+        };
+        var mageGame = new GameState(911, customMage);
+        Require(mageGame.GenerateProgressionOffers(ProgressionDomain.Class,
+                mageGame.Hero.Progression.ClassSlots[0].SlotId)
+            .Any(offer => offer.ResultDefinitionId == "mage-apprentice"),
+            "A custom staff-and-spell loadout did not reveal Mage Apprentice.");
+
+        var healerGame = new GameState(914, loadouts.SelectionFromKit("Caregiver", "Human", "traveler"));
+        healerGame.RecordProgressionFact("practice.healing-actions", 3);
+        ProgressionSlot healerSlot = healerGame.Hero.Progression.ClassSlots[0];
+        ProgressionOffer healerOffer = healerGame.GenerateProgressionOffers(
+                ProgressionDomain.Class, healerSlot.SlotId)
+            .First(offer => offer.ResultDefinitionId == "healer");
+        Require(healerGame.AcceptProgressionOffer(healerSlot.SlotId, healerOffer, out string healerError),
+            healerError);
+        Require(healerGame.Hero is { Class: "Healer", ClassData: not null },
+            "Healer offer did not resolve to a complete runtime class profile.");
+
+        var alchemistGame = new GameState(915, loadouts.SelectionFromKit("Reagent", "Human", "traveler"));
+        alchemistGame.RecordProgressionFact("knowledge.alchemical-reactions");
+        ProgressionSlot alchemistSlot = alchemistGame.Hero.Progression.ClassSlots[0];
+        ProgressionOffer alchemistOffer = alchemistGame.GenerateProgressionOffers(
+                ProgressionDomain.Class, alchemistSlot.SlotId)
+            .First(offer => offer.ResultDefinitionId == "alchemist");
+        Require(alchemistGame.AcceptProgressionOffer(
+            alchemistSlot.SlotId, alchemistOffer, out string alchemistError), alchemistError);
+        Require(alchemistGame.Hero is { Class: "Alchemist", ClassData: not null },
+            "Alchemist offer did not resolve to a complete runtime class profile.");
+
+        var minerGame = new GameState(912, loadouts.SelectionFromKit("Worker", "Dwarf", "traveler"));
+        ProgressionSlot professionSlot = minerGame.Hero.Progression.ProfessionSlots[0];
+        int sharedBeforeMining = minerGame.Hero.Progression.UnallocatedXp;
+        new MineOreActivity("iron-ore", 3, 1).OnFinish(minerGame);
+        IReadOnlyList<ProgressionOffer> professionOffers = minerGame.GenerateProgressionOffers(
+            ProgressionDomain.Profession, professionSlot.SlotId);
+        Require(professionOffers.Any(offer => offer.ResultDefinitionId == "miner") &&
+            minerGame.Hero.Progression.Skills.Count == 0,
+            "Baseline mining did not reveal Miner or incorrectly granted a skill.");
+        ProgressionOffer minerOffer = professionOffers.First(offer => offer.ResultDefinitionId == "miner");
+        Require(minerGame.AcceptProgressionOffer(professionSlot.SlotId, minerOffer, out string minerError), minerError);
+        new MineOreActivity("iron-ore", 3, 1).OnFinish(minerGame);
+        Require(professionSlot.Instance is { DefinitionId: "miner", CurrentXp: 25 } &&
+            minerGame.Hero.Progression.Skills["mining"].CurrentXp == 25 &&
+            minerGame.Hero.Progression.UnallocatedXp == sharedBeforeMining,
+            "Accepted Miner did not receive isolated direct profession and skill XP.");
+
+        game.RestartGame();
+        Require(game.Hero.Class == "Warrior" && game.Hero.Progression.CharacterLevel == 1 &&
+            game.Hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) is Weapon { WeaponType: WeaponType.Sword },
+            "Restart did not retain equipment-first identity and accepted foundation class.");
+
+        SaveService.Save(game);
+        SaveData? saved = SaveService.Load(game.SaveId);
+        Require(saved?.CreationSelection is { KitId: "soldier" } && saved.Version == 4,
+            "Equipment-first creation choices were not persisted.");
+        GameState restored = GameState.FromSave(913, saved!);
+        Require(restored.Hero.Class == "Warrior" && restored.Hero.Progression.CharacterLevel == 1 &&
+            restored.CreationSelection?.ItemIds.Contains("sword") == true,
+            "Equipment-first save migration did not restore class and loadout identity.");
+        SaveService.Delete(game.SaveId);
+
+        Console.WriteLine($"PASS: {primaryClasses.Length} primary classes, classless start, " +
+            $"{soldierOffers.Count} contextual offers; Healer, Alchemist, and Miner evidence resolved.");
     }
 
     public static void RunMapRenderDemo()
@@ -1879,7 +2175,7 @@ sealed class Program
         Console.WriteLine("=== Step 2: Overworld entry/exit wiring ===");
         var gs = new GameState(44, "Pioneer", "Warrior", "Human");
         gs.IsRunning = true;
-        gs.Hero.GainExperience(300); // real progress, so "preserved on exit" is a meaningful check
+        ProgressionService.Instance.GrantSharedXp(gs.Hero, 300); // real progress, so "preserved on exit" is meaningful
         int levelBeforeExit = gs.Hero.Level;
 
         // Fast-forward to floor 4's safe room (same teleport technique as TEST_DUNGEON).
@@ -1896,7 +2192,8 @@ sealed class Program
         var shrine = gs.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Shrine);
         gs.Hero.X = shrine.X;
         gs.Hero.Y = shrine.Y;
-        for (int t = 0; t < 10 && gs.IsInSafeRoom; t++) gs.Tick();
+        gs.UpdateNearbyInteractable();
+        gs.UseSafeRoomShrine();
 
         var entrance = gs.CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.DungeonEntrance);
         Console.WriteLine($"After shrine touch -> IsInOverworld={gs.IsInOverworld}, HeroPos=({gs.Hero.X},{gs.Hero.Y}), EntrancePos=({entrance?.X},{entrance?.Y})");
@@ -1951,7 +2248,7 @@ sealed class Program
         // Build up real progress, then trigger the shrine's EnterOverworld (which auto-saves).
         var gs1 = new GameState(55, "Saver", "Warrior", "Human");
         gs1.IsRunning = true;
-        gs1.Hero.GainExperience(500);
+        ProgressionService.Instance.GrantSharedXp(gs1.Hero, 500);
         gs1.Hero.Gold = 42;
         gs1.Hero.Resources["iron-ore"] = 5;
         gs1.Hero.Inventory.Add(CraftedItemCatalog.Build("iron-sword")!);
@@ -1967,7 +2264,8 @@ sealed class Program
         var shrine = gs1.CurrentMaze.Features.First(f => f.Type == MazeFeatureType.Shrine);
         gs1.Hero.X = shrine.X;
         gs1.Hero.Y = shrine.Y;
-        for (int t = 0; t < 10 && gs1.IsInSafeRoom; t++) gs1.Tick();
+        gs1.UpdateNearbyInteractable();
+        gs1.UseSafeRoomShrine();
 
         Console.WriteLine($"Before save: Level {gs1.Hero.Level}, Gold {gs1.Hero.Gold}, iron-ore {gs1.Hero.Resources.GetValueOrDefault("iron-ore", 0)}, Inventory count {gs1.Hero.Inventory.Count}");
         Console.WriteLine($"Save slot exists (written by EnterOverworld's auto-save): {SaveService.HasAnySaves()}");

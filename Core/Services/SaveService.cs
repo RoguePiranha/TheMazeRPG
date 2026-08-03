@@ -80,7 +80,7 @@ public static class SaveService
         var hero = gameState.Hero;
         var data = new SaveData
         {
-            Version = 2,
+            Version = 4,
             SaveId = gameState.SaveId,
             PlaytimeSeconds = gameState.TotalPlaytimeSeconds,
             SavedAtUtc = DateTime.UtcNow,
@@ -94,7 +94,8 @@ public static class SaveService
             HeroName = hero.Name,
             ClassName = hero.Class,
             RaceName = hero.Race,
-            Level = hero.Level,
+            CreationSelection = gameState.CreationSelection,
+            Level = hero.Progression.CharacterLevel,
             Experience = hero.Experience,
             ExperienceToNext = hero.ExperienceToNext,
             MaxHp = hero.MaxHp,
@@ -107,12 +108,14 @@ public static class SaveService
             Wisdom = hero.Wisdom,
             Charisma = hero.Charisma,
             UnspentStatPoints = hero.UnspentStatPoints,
+            Progression = hero.Progression,
             Gold = hero.Gold,
             Resources = new Dictionary<string, int>(hero.Resources),
             Loadout = new List<Combinable>(hero.Loadout),
             Inventory = new List<Combinable>(hero.Inventory),
             Equipment = new Dictionary<EquipmentSlot, Combinable>(hero.Equipment),
-            WeaponTraining = new HashSet<WeaponType>(hero.WeaponTraining)
+            WeaponTraining = new HashSet<WeaponType>(hero.WeaponTraining),
+            Affinities = hero.Affinities.Clone()
         };
 
         try

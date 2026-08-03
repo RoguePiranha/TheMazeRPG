@@ -28,8 +28,13 @@ public partial class GameHost : Node
     private bool _startFogPreview;
     private bool _startInventory;
     private bool _startCharacter;
+    private bool _startCharacterCustom;
     private bool _startSaves;
     private bool _startCharacterSheet;
+    private bool _startProgression;
+    private bool _startOffers;
+    private bool _startSpecialization;
+    private bool _startAdvancement;
     private bool _startLoot;
     private bool _startCodex;
     private bool _startCombination;
@@ -73,16 +78,22 @@ public partial class GameHost : Node
         {
             ShowSaves();
         }
-        else if (_startCharacter)
+        else if (_startCharacter || _startCharacterCustom)
         {
-            _ui.ShowCharacterCreation(new CharacterDataService());
+            _ui.ShowCharacterCreation(new CharacterDataService(), _startCharacterCustom);
         }
         else if (_startTurnBased || _startEnemyPhase || _startIntentPreview || _startPathPreview || _startAttackPreview || _startFogPreview || _startInventory ||
-                 _startCharacterSheet || _startLoot || _startCombination || _startChest || _startChestPrompt || _startDeath)
+                 _startCharacterSheet || _startProgression || _startOffers || _startSpecialization || _startAdvancement ||
+                 _startLoot || _startCombination || _startChest || _startChestPrompt || _startDeath)
         {
             string characterClass = _startCombination || _startAttackPreview ? "Mage Apprentice"
-                : _startInventory ? "Warrior" : "Wanderer";
-            StartNewGame("Wayfarer", characterClass, "Human", persist: false);
+                : _startInventory || _startProgression || _startSpecialization ? "Warrior"
+                : _startAdvancement ? "Mage Apprentice" : "Wanderer";
+            if (_startOffers)
+                StartNewGame(StarterLoadoutService.Instance.SelectionFromKit(
+                    "Wayfarer", "Human", "soldier"), persist: false);
+            else
+                StartNewGame("Wayfarer", characterClass, "Human", persist: false);
             if (_startTurnBased || _startEnemyPhase || _startIntentPreview || _startPathPreview || _startAttackPreview)
                 _gameState.SetSimulationMode(SimulationMode.TurnBased);
             if (_startEnemyPhase)
@@ -105,6 +116,32 @@ public partial class GameHost : Node
             }
             if (_startCharacterSheet)
                 _ui.ShowCharacterSheet(_gameState);
+            if (_startProgression)
+            {
+                ProgressionService.Instance.GrantSharedXp(_gameState.Hero, 250);
+                _gameState.TryActivateProfession("miner", out _);
+                _gameState.RecordProfessionAction("miner");
+                _gameState.RecordProfessionAction("miner");
+                _ui.ShowProgression(_gameState);
+            }
+            if (_startOffers)
+            {
+                ProgressionSlot slot = _gameState.Hero.Progression.ClassSlots[0];
+                _ui.ShowProgressionOffers(_gameState, ProgressionDomain.Class, slot.SlotId);
+            }
+            if (_startSpecialization)
+            {
+                ProgressionSlot slot = _gameState.Hero.Progression.ClassSlots[0];
+                slot.Instance!.Level = 10;
+                _ui.ShowSpecializationOffers(_gameState, slot.SlotId);
+            }
+            if (_startAdvancement)
+            {
+                ProgressionSlot slot = _gameState.Hero.Progression.ClassSlots[0];
+                slot.Instance!.Level = 25;
+                _gameState.RecordProgressionFact("knowledge.independent-spell-construction");
+                _ui.ShowAdvancementOffers(_gameState, slot.SlotId);
+            }
             if (_startLoot && _gameState.Enemies.FirstOrDefault() is { } corpse)
             {
                 corpse.Hp = 0;
@@ -240,6 +277,10 @@ public partial class GameHost : Node
             _gameState.UpdateNearbyInteractable();
             if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Chest } chest)
                 _ui.ShowChestActions(_gameState, chest);
+            else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.GuardianDoor })
+                _ui.ShowSafeRoomChoice(_gameState, challengeGuardian: true);
+            else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Shrine })
+                _ui.ShowSafeRoomChoice(_gameState, challengeGuardian: false);
             GetViewport().SetInputAsHandled();
             return;
         }
@@ -360,7 +401,7 @@ public partial class GameHost : Node
             _ui.ShowCharacterCreation(new CharacterDataService());
         };
         _ui.ContinueRequested += ShowSaves;
-        _ui.CharacterCreated += (name, characterClass, race) => StartNewGame(name, characterClass, race, persist: true);
+        _ui.CharacterCreated += selection => StartNewGame(selection, persist: true);
         _ui.SaveLoadRequested += LoadGame;
         _ui.SaveDeleteRequested += id => { SaveService.Delete(id); ShowSaves(); };
         _ui.BackToTitleRequested += ShowTitle;
@@ -436,6 +477,14 @@ public partial class GameHost : Node
         EnterGame(state);
     }
 
+    private void StartNewGame(CharacterCreationSelection selection, bool persist)
+    {
+        var state = new GameState(System.Environment.TickCount, selection) { IsRunning = true };
+        state.SetControlMode(ControlMode.Manual);
+        if (persist) SaveService.Save(state);
+        EnterGame(state);
+    }
+
     private void LoadGame(string saveId)
     {
         SaveData? data = SaveService.Load(saveId);
@@ -445,8 +494,7 @@ public partial class GameHost : Node
             return;
         }
 
-        var state = new GameState(System.Environment.TickCount, data.HeroName, data.ClassName, data.RaceName);
-        state.LoadFrom(data);
+        var state = GameState.FromSave(System.Environment.TickCount, data);
         state.SetControlMode(ControlMode.Manual);
         state.IsRunning = true;
 
@@ -698,8 +746,13 @@ public partial class GameHost : Node
         _startFogPreview = arguments.Any(value => value.Equals("--start-fog-preview", StringComparison.OrdinalIgnoreCase));
         _startInventory = arguments.Any(value => value.Equals("--start-inventory", StringComparison.OrdinalIgnoreCase));
         _startCharacter = arguments.Any(value => value.Equals("--start-character", StringComparison.OrdinalIgnoreCase));
+        _startCharacterCustom = arguments.Any(value => value.Equals("--start-character-custom", StringComparison.OrdinalIgnoreCase));
         _startSaves = arguments.Any(value => value.Equals("--start-saves", StringComparison.OrdinalIgnoreCase));
         _startCharacterSheet = arguments.Any(value => value.Equals("--start-character-sheet", StringComparison.OrdinalIgnoreCase));
+        _startProgression = arguments.Any(value => value.Equals("--start-progression", StringComparison.OrdinalIgnoreCase));
+        _startOffers = arguments.Any(value => value.Equals("--start-offers", StringComparison.OrdinalIgnoreCase));
+        _startSpecialization = arguments.Any(value => value.Equals("--start-specialization", StringComparison.OrdinalIgnoreCase));
+        _startAdvancement = arguments.Any(value => value.Equals("--start-advancement", StringComparison.OrdinalIgnoreCase));
         _startLoot = arguments.Any(value => value.Equals("--start-loot", StringComparison.OrdinalIgnoreCase));
         _startCodex = arguments.Any(value => value.Equals("--start-codex", StringComparison.OrdinalIgnoreCase));
         _startCombination = arguments.Any(value => value.Equals("--start-combination", StringComparison.OrdinalIgnoreCase));

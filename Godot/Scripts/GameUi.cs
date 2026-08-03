@@ -10,6 +10,8 @@ namespace TheMazeRPG.GodotClient;
 /// <summary>Godot-facing menus and dungeon overlays. All mutations still go through Core APIs.</summary>
 public partial class GameUi : Control
 {
+    private enum CharacterTab { Inventory, Stats, Progression }
+
     private static readonly Color Ink = new("#0B0E11");
     private static readonly Color Panel = new("#171C20");
     private static readonly Color PanelRaised = new("#20272C");
@@ -47,7 +49,6 @@ public partial class GameUi : Control
     private string _hotbarSignature = "";
 
     private readonly List<string> _raceNames = new();
-    private readonly List<string> _classNames = new();
     private readonly List<SaveSummary> _saveSummaries = new();
     private string? _pendingDeleteId;
 
@@ -57,7 +58,7 @@ public partial class GameUi : Control
 
     public event Action? NewGameRequested;
     public event Action? ContinueRequested;
-    public event Action<string, string, string>? CharacterCreated;
+    public event Action<CharacterCreationSelection>? CharacterCreated;
     public event Action<string>? SaveLoadRequested;
     public event Action<string>? SaveDeleteRequested;
     public event Action? BackToTitleRequested;
@@ -121,7 +122,7 @@ public partial class GameUi : Control
         _frontEnd.AddChild(center);
     }
 
-    public void ShowCharacterCreation(CharacterDataService data)
+    public void ShowCharacterCreation(CharacterDataService data, bool startCustom = false)
     {
         CloseModal(false);
         _hud.Visible = false;
@@ -131,10 +132,9 @@ public partial class GameUi : Control
 
         _raceNames.Clear();
         _raceNames.AddRange(data.Races.Keys.OrderBy(name => name));
-        _classNames.Clear();
-        _classNames.AddRange(data.Classes.Keys.OrderBy(name => name));
+        StarterLoadoutService loadouts = StarterLoadoutService.Instance;
 
-        var body = new VBoxContainer { CustomMinimumSize = new Vector2(800, 590) };
+        var body = new VBoxContainer { CustomMinimumSize = new Vector2(900, 600) };
         body.AddThemeConstantOverride("separation", 10);
         body.AddChild(LabelOf("CREATE CHARACTER", 28, Gold, HorizontalAlignment.Center));
 
@@ -151,19 +151,38 @@ public partial class GameUi : Control
         var columns = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
         columns.AddThemeConstantOverride("separation", 16);
         var raceList = SelectionList(_raceNames, out VBoxContainer raceColumn, "RACE");
-        var classList = SelectionList(_classNames, out VBoxContainer classColumn, "CLASS");
         var raceDetail = DetailLabel();
-        var classDetail = DetailLabel();
         raceColumn.AddChild(raceDetail);
-        classColumn.AddChild(classDetail);
+        raceColumn.CustomMinimumSize = new Vector2(330, 0);
+
+        var loadoutColumn = new VBoxContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill
+        };
+        loadoutColumn.AddThemeConstantOverride("separation", 8);
+        loadoutColumn.AddChild(LabelOf("STARTING LOADOUT", 13, Muted));
+        var modes = ActionsRow();
+        var kitsMode = CommandButton("KITS", Gold, 150);
+        var customMode = CommandButton("CUSTOM", Muted, 150);
+        modes.AddChild(kitsMode);
+        modes.AddChild(customMode);
+        loadoutColumn.AddChild(modes);
+        var loadoutBody = new VBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+        loadoutBody.AddThemeConstantOverride("separation", 7);
+        loadoutColumn.AddChild(loadoutBody);
         columns.AddChild(raceColumn);
-        columns.AddChild(classColumn);
+        columns.AddChild(loadoutColumn);
         body.AddChild(columns);
 
         int humanIndex = Math.Max(0, _raceNames.IndexOf("Human"));
-        int wandererIndex = Math.Max(0, _classNames.IndexOf("Wanderer"));
         raceList.Select(humanIndex);
-        classList.Select(wandererIndex);
+        int selectedKitIndex = Math.Max(0, loadouts.Catalog.Kits.FindIndex(kit => kit.Id == "traveler"));
+        bool customLoadout = false;
+        var customSelections = loadouts.Catalog.CustomGroups.ToDictionary(
+            group => group.Id,
+            group => group.Options.FirstOrDefault()?.Id ?? "",
+            StringComparer.OrdinalIgnoreCase);
 
         void UpdateRace(int index)
         {
@@ -174,17 +193,86 @@ public partial class GameUi : Control
             raceDetail.Text = race.Description + (effectiveness.Length > 0 ? $"\n{effectiveness}" : "\nBalanced effectiveness");
         }
 
-        void UpdateClass(int index)
+        void BuildKitMode()
         {
-            CharacterClass characterClass = data.Classes[_classNames[index]];
-            classDetail.Text = characterClass.Description + "\n" + string.Join("  ",
-                characterClass.StartingStats.Select(pair => $"{Abbreviate(pair.Key)} {pair.Value}"));
+            ClearChildren(loadoutBody);
+            var kitList = new ItemList
+            {
+                CustomMinimumSize = new Vector2(0, 225),
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                SelectMode = ItemList.SelectModeEnum.Single
+            };
+            foreach (StarterKitDefinition kit in loadouts.Catalog.Kits) kitList.AddItem(kit.Name);
+            var detail = DetailLabel(82);
+            void SelectKit(int index)
+            {
+                selectedKitIndex = Math.Clamp(index, 0, loadouts.Catalog.Kits.Count - 1);
+                StarterKitDefinition kit = loadouts.Catalog.Kits[selectedKitIndex];
+                detail.Text = kit.Description + "\n" + string.Join("  ", kit.ItemIds
+                    .GroupBy(id => id)
+                    .Select(group =>
+                    {
+                        string itemName = loadouts.CreateItem(group.Key)?.Name ?? group.Key;
+                        return group.Count() > 1 ? $"{itemName} x{group.Count()}" : itemName;
+                    }));
+            }
+            kitList.ItemSelected += index => SelectKit((int)index);
+            kitList.Select(selectedKitIndex);
+            SelectKit(selectedKitIndex);
+            loadoutBody.AddChild(kitList);
+            loadoutBody.AddChild(detail);
         }
 
+        void BuildCustomMode()
+        {
+            ClearChildren(loadoutBody);
+            var summary = DetailLabel(60);
+            void UpdateSummary() => summary.Text = string.Join("  ", loadouts.Catalog.CustomGroups.Select(group =>
+            {
+                string selected = customSelections.GetValueOrDefault(group.Id, "");
+                return group.Options.FirstOrDefault(option => option.Id == selected)?.Name ?? "None";
+            }));
+
+            foreach (StarterLoadoutGroup group in loadouts.Catalog.CustomGroups)
+            {
+                var options = new OptionButton { CustomMinimumSize = new Vector2(0, 36) };
+                foreach (StarterLoadoutOption option in group.Options) options.AddItem(option.Name);
+                int selected = Math.Max(0, group.Options.FindIndex(option =>
+                    option.Id == customSelections.GetValueOrDefault(group.Id)));
+                options.Select(selected);
+                string groupId = group.Id;
+                options.ItemSelected += index =>
+                {
+                    customSelections[groupId] = group.Options[(int)index].Id;
+                    UpdateSummary();
+                };
+                loadoutBody.AddChild(Labeled(group.Name.ToUpperInvariant(), options));
+            }
+            UpdateSummary();
+            loadoutBody.AddChild(summary);
+        }
+
+        kitsMode.Pressed += () =>
+        {
+            customLoadout = false;
+            kitsMode.Disabled = true;
+            customMode.Disabled = false;
+            BuildKitMode();
+        };
+        customMode.Pressed += () =>
+        {
+            customLoadout = true;
+            kitsMode.Disabled = false;
+            customMode.Disabled = true;
+            BuildCustomMode();
+        };
         raceList.ItemSelected += index => UpdateRace((int)index);
-        classList.ItemSelected += index => UpdateClass((int)index);
         UpdateRace(humanIndex);
-        UpdateClass(wandererIndex);
+        customLoadout = startCustom;
+        kitsMode.Disabled = !startCustom;
+        customMode.Disabled = startCustom;
+        if (startCustom) BuildCustomMode();
+        else BuildKitMode();
 
         var actions = ActionsRow();
         var back = CommandButton("BACK", Muted, 150);
@@ -194,14 +282,29 @@ public partial class GameUi : Control
         {
             string heroName = string.IsNullOrWhiteSpace(name.Text) ? "Wayfarer" : name.Text.Trim();
             int raceIndex = SelectedIndex(raceList, humanIndex);
-            int classIndex = SelectedIndex(classList, wandererIndex);
-            CharacterCreated?.Invoke(heroName, _classNames[classIndex], _raceNames[raceIndex]);
+            string raceName = _raceNames[raceIndex];
+            CharacterCreationSelection selection;
+            if (customLoadout)
+            {
+                selection = new CharacterCreationSelection
+                {
+                    Name = heroName,
+                    RaceName = raceName,
+                    KitId = "custom",
+                    IsCustom = true,
+                    ItemIds = loadouts.Catalog.ResolveCustomItems(customSelections)
+                };
+            }
+            else
+                selection = loadouts.SelectionFromKit(
+                    heroName, raceName, loadouts.Catalog.Kits[selectedKitIndex].Id);
+            CharacterCreated?.Invoke(selection);
         };
         actions.AddChild(back);
         actions.AddChild(begin);
         body.AddChild(actions);
 
-        AddFrontPanel(body, new Vector2(860, 650));
+        AddFrontPanel(body, new Vector2(1000, 680));
     }
 
     public void ShowSaves(IReadOnlyList<SaveSummary> saves)
@@ -340,9 +443,13 @@ public partial class GameUi : Control
         _interactionToast.Visible = nearby != null;
         if (nearby != null)
         {
-            string action = nearby.Type == MazeFeatureType.Chest
-                ? nearby.IsOpened ? "LOOT CHEST" : "CHEST"
-                : nearby.Type.ToString().ToUpperInvariant();
+            string action = nearby.Type switch
+            {
+                MazeFeatureType.Chest => nearby.IsOpened ? "LOOT CHEST" : "CHEST",
+                MazeFeatureType.GuardianDoor => $"CHALLENGE FLOOR {state.CurrentFloor + 1} GUARDIAN",
+                MazeFeatureType.Shrine => "RETURN TO TOWN",
+                _ => nearby.Type.ToString().ToUpperInvariant()
+            };
             _interactionLabel.Text = $"PRESS E   {action}";
         }
         RefreshHotbar(state);
@@ -375,9 +482,35 @@ public partial class GameUi : Control
         ShowModal(body, new Vector2(390, 440));
     }
 
+    public void ShowSafeRoomChoice(GameState state, bool challengeGuardian)
+    {
+        string title = challengeGuardian ? "GUARDIAN DOOR" : "SAFE-ROOM SHRINE";
+        var body = ModalBody(title, challengeGuardian ? Red : Blue, new Vector2(390, 0));
+        body.AddChild(LabelOf(challengeGuardian
+                ? $"Beyond this door is Floor {state.CurrentFloor + 1}.\nThe Guardian fight will begin there."
+                : "This shrine ends the current dive\nand returns you safely to town.",
+            15, Text, HorizontalAlignment.Center));
+
+        var proceed = CommandButton(challengeGuardian
+            ? $"ENTER FLOOR {state.CurrentFloor + 1}"
+            : "RETURN TO TOWN", challengeGuardian ? Red : Blue, 290);
+        proceed.Pressed += () =>
+        {
+            CloseModal();
+            if (challengeGuardian) state.EnterGuardianChamber();
+            else state.UseSafeRoomShrine();
+        };
+        body.AddChild(proceed);
+
+        var cancel = CommandButton("STAY IN SAFE ROOM", Muted, 290);
+        cancel.Pressed += () => CloseModal();
+        body.AddChild(cancel);
+        ShowModal(body, new Vector2(450, 300));
+    }
+
     public void ShowCharacterSheet(GameState state)
     {
-        ShowCharacterPanel(state, statsTab: true);
+        ShowCharacterPanel(state, CharacterTab.Stats);
     }
 
     public void ShowCodex(bool playStats = false)
@@ -594,30 +727,45 @@ public partial class GameUi : Control
 
     public void ShowInventory(GameState state)
     {
-        ShowCharacterPanel(state, statsTab: false);
+        ShowCharacterPanel(state, CharacterTab.Inventory);
     }
 
-    private void ShowCharacterPanel(GameState state, bool statsTab)
+    public void ShowProgression(GameState state)
+    {
+        ShowCharacterPanel(state, CharacterTab.Progression);
+    }
+
+    private void ShowCharacterPanel(GameState state, CharacterTab selectedTab)
     {
         Hero hero = state.Hero;
         var body = ModalBody("CHARACTER", Gold, new Vector2(850, 520));
         body.AddThemeConstantOverride("separation", 6);
         body.AddChild(LabelOf(
-            $"{hero.Name.ToUpperInvariant()}     LEVEL {hero.Level}     {hero.Race.ToUpperInvariant()} {hero.Class.ToUpperInvariant()}",
+            $"{hero.Name.ToUpperInvariant()}     LEVEL {hero.Progression.CharacterLevel}     {hero.Race.ToUpperInvariant()} {hero.Class.ToUpperInvariant()}",
             14, Text, HorizontalAlignment.Center));
 
         var tabs = ActionsRow();
-        var inventoryTab = CommandButton("INVENTORY", statsTab ? Muted : Gold, 190);
-        inventoryTab.Pressed += () => ShowCharacterPanel(state, statsTab: false);
-        var stats = CommandButton("STATS", statsTab ? Gold : Muted, 190);
-        stats.Pressed += () => ShowCharacterPanel(state, statsTab: true);
+        var inventoryTab = CommandButton("INVENTORY", selectedTab == CharacterTab.Inventory ? Gold : Muted, 190);
+        inventoryTab.Pressed += () => ShowCharacterPanel(state, CharacterTab.Inventory);
+        var stats = CommandButton("STATS", selectedTab == CharacterTab.Stats ? Gold : Muted, 190);
+        stats.Pressed += () => ShowCharacterPanel(state, CharacterTab.Stats);
+        var progression = CommandButton("PROGRESSION", selectedTab == CharacterTab.Progression ? Gold : Muted, 190);
+        progression.Pressed += () => ShowCharacterPanel(state, CharacterTab.Progression);
         tabs.AddChild(inventoryTab);
         tabs.AddChild(stats);
+        tabs.AddChild(progression);
         body.AddChild(tabs);
 
-        if (statsTab)
+        if (selectedTab == CharacterTab.Stats)
         {
             BuildStatsTab(state, body);
+            var close = CommandButton("CLOSE", Green, 160);
+            close.Pressed += () => CloseModal();
+            body.AddChild(Centered(close));
+        }
+        else if (selectedTab == CharacterTab.Progression)
+        {
+            BuildProgressionTab(state, body);
             var close = CommandButton("CLOSE", Green, 160);
             close.Pressed += () => CloseModal();
             body.AddChild(Centered(close));
@@ -629,7 +777,7 @@ public partial class GameUi : Control
     private void BuildStatsTab(GameState state, VBoxContainer body)
     {
         Hero hero = state.Hero;
-        body.AddChild(LabelOf($"XP {hero.Experience}/{hero.ExperienceToNext}     POINTS {hero.UnspentStatPoints}",
+        body.AddChild(LabelOf($"SHARED XP {hero.Progression.UnallocatedXp}     POINTS {hero.UnspentStatPoints}",
             13, hero.UnspentStatPoints > 0 ? Gold : Muted, HorizontalAlignment.Center));
         var statGrid = new GridContainer { Columns = 4, SizeFlagsVertical = SizeFlags.ExpandFill };
         statGrid.AddThemeConstantOverride("h_separation", 18);
@@ -650,7 +798,7 @@ public partial class GameUi : Control
             string selectedStat = stat;
             add.Pressed += () =>
             {
-                if (state.SpendStatPoint(selectedStat)) ShowCharacterPanel(state, statsTab: true);
+                if (state.SpendStatPoint(selectedStat)) ShowCharacterPanel(state, CharacterTab.Stats);
             };
             statGrid.AddChild(add);
         }
@@ -661,6 +809,324 @@ public partial class GameUi : Control
         body.AddChild(LabelOf(
             $"DEFENSE {hero.Defense} + {hero.EquipmentDefenseBonus} GEAR     WEAPON DAMAGE +{hero.EquippedWeaponDamage}     TACTICAL MOVE {state.CalculateTacticalMovementAllowance()}     GOLD {hero.Gold}",
             13, Green, HorizontalAlignment.Center));
+    }
+
+    private void BuildProgressionTab(GameState state, VBoxContainer body)
+    {
+        Hero hero = state.Hero;
+        var scroll = new ScrollContainer
+        {
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 390)
+        };
+        var content = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        content.AddThemeConstantOverride("separation", 8);
+        content.AddChild(LabelOf($"SHARED XP     {hero.Progression.UnallocatedXp}", 16,
+            hero.Progression.UnallocatedXp > 0 ? Gold : Muted, HorizontalAlignment.Center));
+        content.AddChild(LabelOf("CLASSES", 13, Blue));
+
+        foreach (ProgressionSlot slot in hero.Progression.ClassSlots)
+        {
+            var row = new HBoxContainer { CustomMinimumSize = new Vector2(0, 42) };
+            row.AddThemeConstantOverride("separation", 12);
+            string description;
+            int needed = 0;
+            if (slot.State == ProgressionSlotState.Locked) description = "LOCKED";
+            else if (slot.Instance == null) description = "EMPTY";
+            else
+            {
+                ProgressionInstance instance = slot.Instance;
+                needed = ProgressionService.Instance.XpNeededForNext(instance);
+                string specialization = instance.Specialization == null
+                    ? "" : $"     [{instance.Specialization.Name.ToUpperInvariant()}]";
+                description = instance.Level >= instance.MaxLevel
+                    ? $"{instance.Name.ToUpperInvariant()}{specialization}     LEVEL {instance.Level}     MASTERED"
+                    : $"{instance.Name.ToUpperInvariant()}     LEVEL {instance.Level}     " +
+                      $"{instance.CurrentXp}/{instance.CurrentXp + needed} XP{specialization}";
+            }
+            var label = LabelOf(description, 14, slot.Instance == null ? Muted : Text);
+            label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            row.AddChild(label);
+
+            if (slot.Instance != null && slot.State == ProgressionSlotState.Active)
+            {
+                int allocation = needed;
+                var allocate = CommandButton("ALLOCATE", Gold, 115);
+                allocate.Disabled = hero.Progression.UnallocatedXp <= 0;
+                allocate.TooltipText = $"Allocate up to {needed} shared XP to {slot.Instance.Name}";
+                string selectedSlot = slot.SlotId;
+                allocate.Pressed += () =>
+                {
+                    state.AllocateClassXp(selectedSlot, allocation);
+                    ShowCharacterPanel(state, CharacterTab.Progression);
+                };
+                row.AddChild(allocate);
+            }
+            if (slot.Instance is { Level: >= 10, Specialization: null } &&
+                state.GenerateSpecializationOffers(slot.SlotId).Count > 0)
+            {
+                var specialize = CommandButton("SPECIALIZE", Blue, 125);
+                string selectedSlot = slot.SlotId;
+                specialize.Pressed += () => ShowSpecializationOffers(state, selectedSlot);
+                row.AddChild(specialize);
+            }
+            if (slot.State == ProgressionSlotState.Mastered &&
+                state.GenerateAdvancementOffers(slot.SlotId).Count > 0)
+            {
+                var advance = CommandButton("ADVANCE", Green, 115);
+                string selectedSlot = slot.SlotId;
+                advance.Pressed += () => ShowAdvancementOffers(state, selectedSlot);
+                row.AddChild(advance);
+            }
+            if (slot.State == ProgressionSlotState.Empty)
+            {
+                var offers = CommandButton("OFFERS", Blue, 130);
+                string selectedSlot = slot.SlotId;
+                offers.Pressed += () => ShowProgressionOffers(
+                    state, ProgressionDomain.Class, selectedSlot);
+                row.AddChild(offers);
+            }
+            content.AddChild(row);
+        }
+
+        content.AddChild(new HSeparator());
+        content.AddChild(LabelOf("PROFESSIONS", 13, Green));
+        foreach (ProgressionSlot slot in hero.Progression.ProfessionSlots)
+        {
+            string description;
+            if (slot.State == ProgressionSlotState.Locked) description = "LOCKED";
+            else if (slot.Instance == null) description = "EMPTY";
+            else if (slot.State == ProgressionSlotState.Mastered)
+                description = $"{slot.Instance.Name.ToUpperInvariant()}" +
+                    (slot.Instance.Specialization == null ? "" :
+                        $"     [{slot.Instance.Specialization.Name.ToUpperInvariant()}]") +
+                    $"     LEVEL {slot.Instance.Level}     MASTERED";
+            else
+            {
+                int needed = ProgressionService.Instance.XpNeededForNext(slot.Instance);
+                description = $"{slot.Instance.Name.ToUpperInvariant()}     LEVEL {slot.Instance.Level}     " +
+                    $"{slot.Instance.CurrentXp}/{slot.Instance.CurrentXp + needed} XP" +
+                    (slot.Instance.Specialization == null ? "" :
+                        $"     [{slot.Instance.Specialization.Name.ToUpperInvariant()}]");
+            }
+            var row = new HBoxContainer { CustomMinimumSize = new Vector2(0, 38) };
+            var label = LabelOf(description, 14, slot.Instance == null ? Muted : Text);
+            label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            row.AddChild(label);
+            if (slot.State == ProgressionSlotState.Empty)
+            {
+                var offers = CommandButton("OFFERS", Blue, 130);
+                string selectedSlot = slot.SlotId;
+                offers.Pressed += () => ShowProgressionOffers(
+                    state, ProgressionDomain.Profession, selectedSlot);
+                row.AddChild(offers);
+            }
+            if (slot.Instance is { Level: >= 10, Specialization: null } &&
+                state.GenerateSpecializationOffers(slot.SlotId).Count > 0)
+            {
+                var specialize = CommandButton("SPECIALIZE", Blue, 125);
+                string selectedSlot = slot.SlotId;
+                specialize.Pressed += () => ShowSpecializationOffers(state, selectedSlot);
+                row.AddChild(specialize);
+            }
+            if (slot.State == ProgressionSlotState.Mastered &&
+                state.GenerateAdvancementOffers(slot.SlotId).Count > 0)
+            {
+                var advance = CommandButton("ADVANCE", Green, 115);
+                string selectedSlot = slot.SlotId;
+                advance.Pressed += () => ShowAdvancementOffers(state, selectedSlot);
+                row.AddChild(advance);
+            }
+            content.AddChild(row);
+        }
+
+        content.AddChild(new HSeparator());
+        content.AddChild(LabelOf("SKILLS", 13, Blue));
+        if (hero.Progression.Skills.Count == 0)
+            content.AddChild(LabelOf("NONE", 14, Muted));
+        else
+            foreach (SkillProgress skill in hero.Progression.Skills.Values.OrderBy(skill => skill.Name))
+                content.AddChild(LabelOf(
+                    $"{skill.Name.ToUpperInvariant()}     LEVEL {skill.Level}     {skill.CurrentXp} XP", 14, Text));
+
+        scroll.AddChild(content);
+        body.AddChild(scroll);
+    }
+
+    public void ShowProgressionOffers(GameState state, ProgressionDomain domain,
+        string slotId, string feedback = "")
+    {
+        IReadOnlyList<ProgressionOffer> offers = state.GenerateProgressionOffers(domain, slotId);
+        var body = ModalBody($"{domain.ToString().ToUpperInvariant()} OFFERS", Blue, new Vector2(700, 470));
+        var list = new ItemList
+        {
+            CustomMinimumSize = new Vector2(0, 210),
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            SelectMode = ItemList.SelectModeEnum.Single
+        };
+        foreach (ProgressionOffer offer in offers)
+            list.AddItem($"{offer.Name.ToUpperInvariant()}     LEVEL 1");
+        body.AddChild(list);
+        var details = DetailLabel(120);
+        details.Text = offers.Count == 0 ? "No paths are currently revealed for this slot." : "Select an offer.";
+        body.AddChild(details);
+        if (!string.IsNullOrWhiteSpace(feedback))
+            body.AddChild(LabelOf(feedback, 12, Red, HorizontalAlignment.Center));
+
+        int selected = -1;
+        list.ItemSelected += index =>
+        {
+            selected = (int)index;
+            ProgressionOffer offer = offers[selected];
+            string reasons = offer.Explanations.Count == 0
+                ? "" : "\n\n" + string.Join("\n", offer.Explanations);
+            details.Text = offer.Description + reasons;
+        };
+
+        var actions = ActionsRow();
+        var back = CommandButton("BACK", Muted, 150);
+        back.Pressed += () => ShowProgression(state);
+        var accept = CommandButton("ACCEPT", Gold, 170);
+        accept.Disabled = offers.Count == 0;
+        accept.Pressed += () =>
+        {
+            if (selected < 0 && offers.Count > 0) selected = 0;
+            if (selected < 0) return;
+            if (state.AcceptProgressionOffer(slotId, offers[selected], out string error))
+            {
+                SaveService.Save(state);
+                ShowProgression(state);
+            }
+            else
+                ShowProgressionOffers(state, domain, slotId, error);
+        };
+        actions.AddChild(back);
+        actions.AddChild(accept);
+        body.AddChild(actions);
+        if (offers.Count > 0)
+        {
+            list.Select(0);
+            selected = 0;
+            ProgressionOffer first = offers[0];
+            details.Text = first.Description + (first.Explanations.Count == 0
+                ? "" : "\n\n" + string.Join("\n", first.Explanations));
+        }
+        ShowModal(body, new Vector2(780, 590), backAction: () => ShowProgression(state));
+    }
+
+    public void ShowSpecializationOffers(GameState state, string slotId, string feedback = "")
+    {
+        IReadOnlyList<ProgressionSpecializationOffer> offers = state.GenerateSpecializationOffers(slotId);
+        var body = ModalBody("SPECIALIZATIONS", Blue, new Vector2(700, 470));
+        var list = new ItemList
+        {
+            CustomMinimumSize = new Vector2(0, 210),
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            SelectMode = ItemList.SelectModeEnum.Single
+        };
+        foreach (ProgressionSpecializationOffer offer in offers) list.AddItem(offer.Name.ToUpperInvariant());
+        body.AddChild(list);
+        var details = DetailLabel(120);
+        details.Text = offers.Count == 0 ? "No specializations are currently revealed." : "Select a specialization.";
+        body.AddChild(details);
+        if (!string.IsNullOrWhiteSpace(feedback))
+            body.AddChild(LabelOf(feedback, 12, Red, HorizontalAlignment.Center));
+
+        int selected = -1;
+        void Select(int index)
+        {
+            selected = index;
+            ProgressionSpecializationOffer offer = offers[index];
+            details.Text = offer.Description + (offer.Explanations.Count == 0
+                ? "" : "\n\n" + string.Join("\n", offer.Explanations));
+        }
+        list.ItemSelected += index => Select((int)index);
+
+        var actions = ActionsRow();
+        var back = CommandButton("BACK", Muted, 150);
+        back.Pressed += () => ShowProgression(state);
+        var accept = CommandButton("SPECIALIZE", Gold, 170);
+        accept.Disabled = offers.Count == 0;
+        accept.Pressed += () =>
+        {
+            if (selected < 0 && offers.Count > 0) Select(0);
+            if (selected < 0) return;
+            if (state.AcceptSpecializationOffer(slotId, offers[selected], out string error))
+            {
+                SaveService.Save(state);
+                ShowProgression(state);
+            }
+            else ShowSpecializationOffers(state, slotId, error);
+        };
+        actions.AddChild(back);
+        actions.AddChild(accept);
+        body.AddChild(actions);
+        if (offers.Count > 0)
+        {
+            list.Select(0);
+            Select(0);
+        }
+        ShowModal(body, new Vector2(780, 590), backAction: () => ShowProgression(state));
+    }
+
+    public void ShowAdvancementOffers(GameState state, string slotId, string feedback = "")
+    {
+        IReadOnlyList<ProgressionAdvancementOffer> offers = state.GenerateAdvancementOffers(slotId);
+        var body = ModalBody("ADVANCEMENTS", Green, new Vector2(700, 470));
+        var list = new ItemList
+        {
+            CustomMinimumSize = new Vector2(0, 210),
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            SelectMode = ItemList.SelectModeEnum.Single
+        };
+        foreach (ProgressionAdvancementOffer offer in offers)
+        {
+            string kind = offer.Kind == ProgressionAdvancementKind.SinglePath
+                ? "SINGLE PATH" : "CONVERGENCE";
+            list.AddItem($"{offer.Name.ToUpperInvariant()}     LEVEL 1     {kind}");
+        }
+        body.AddChild(list);
+        var details = DetailLabel(120);
+        details.Text = offers.Count == 0 ? "No advancements are currently revealed." : "Select an advancement.";
+        body.AddChild(details);
+        if (!string.IsNullOrWhiteSpace(feedback))
+            body.AddChild(LabelOf(feedback, 12, Red, HorizontalAlignment.Center));
+
+        int selected = -1;
+        void Select(int index)
+        {
+            selected = index;
+            ProgressionAdvancementOffer offer = offers[index];
+            details.Text = offer.Description + (offer.Explanations.Count == 0
+                ? "" : "\n\n" + string.Join("\n", offer.Explanations));
+        }
+        list.ItemSelected += index => Select((int)index);
+
+        var actions = ActionsRow();
+        var back = CommandButton("BACK", Muted, 150);
+        back.Pressed += () => ShowProgression(state);
+        var accept = CommandButton("ADVANCE", Gold, 170);
+        accept.Disabled = offers.Count == 0;
+        accept.Pressed += () =>
+        {
+            if (selected < 0 && offers.Count > 0) Select(0);
+            if (selected < 0) return;
+            if (state.AcceptAdvancementOffer(slotId, offers[selected], out string error))
+            {
+                SaveService.Save(state);
+                ShowProgression(state);
+            }
+            else ShowAdvancementOffers(state, slotId, error);
+        };
+        actions.AddChild(back);
+        actions.AddChild(accept);
+        body.AddChild(actions);
+        if (offers.Count > 0)
+        {
+            list.Select(0);
+            Select(0);
+        }
+        ShowModal(body, new Vector2(780, 590), backAction: () => ShowProgression(state));
     }
 
     private void BuildInventoryTab(GameState state, VBoxContainer body)

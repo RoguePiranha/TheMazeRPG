@@ -124,6 +124,50 @@ public class CharacterDataService
         if (characterClass.StartingStats.TryGetValue("Charisma", out var cha))
             hero.Charisma = cha;
 
+        ApplyRaceDetails(hero, race, characterClass.Affinities);
+    }
+
+    public void ApplyClasslessAndRace(Hero hero, string raceName)
+    {
+        if (!_races.TryGetValue(raceName, out CharacterRace? race)) return;
+        hero.Class = "Classless";
+        hero.ClassColor = "#808080";
+        hero.ClassData = null;
+        hero.Race = raceName;
+        hero.Strength = 4;
+        hero.Constitution = 4;
+        hero.Agility = 4;
+        hero.Dexterity = 4;
+        hero.Intelligence = 4;
+        hero.Wisdom = 4;
+        hero.Charisma = 4;
+        ApplyRaceDetails(hero, race, null);
+    }
+
+    /// <summary>Apply class identity after an offer is accepted without resetting earned stats.</summary>
+    public bool ApplyClassIdentity(Hero hero, string className)
+    {
+        if (!_classes.TryGetValue(className, out CharacterClass? characterClass)) return false;
+        hero.Class = className;
+        hero.ClassColor = characterClass.Color;
+        hero.ClassData = characterClass;
+        ApplyClassAffinities(hero, className);
+        return true;
+    }
+
+    /// <summary>Add a class's permanent affinity leanings without changing the primary identity.</summary>
+    public bool ApplyClassAffinities(Hero hero, string className)
+    {
+        if (!_classes.TryGetValue(className, out CharacterClass? characterClass)) return false;
+        AffinityService.SeedFrom(hero.Affinities, characterClass.Affinities);
+        return true;
+    }
+
+    private static void ApplyRaceDetails(Hero hero, CharacterRace race,
+        IReadOnlyDictionary<string, float>? classAffinities)
+    {
+        hero.RaceColor = race.Color;
+
         // Testing races (e.g. Debug) can flat-override base stats after the class stats.
         if (race.StatOverrides != null)
         {
@@ -139,7 +183,7 @@ public class CharacterDataService
         // Seed the hero's elemental affinity leanings from class + race (added over the neutral
         // baseline). Play shifts them from here via AffinityService.OnElementCast.
         hero.Affinities = new Affinities();
-        AffinityService.SeedFrom(hero.Affinities, characterClass.Affinities, race.Affinities);
+        AffinityService.SeedFrom(hero.Affinities, classAffinities, race.Affinities);
 
         // Apply racial effectiveness multipliers. These do NOT alter the base stats above;
         // they scale how effectively each stat translates into results (Info/Racial Effectiveness.md).
