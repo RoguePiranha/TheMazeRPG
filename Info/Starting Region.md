@@ -2,7 +2,7 @@
 
 Spec for the first Overworld region, authored 2026-07-24. Anchors the "dungeon entrance" point
 the player arrives at when leaving the Dungeon via a safe-room shrine (see
-[Implementation Plan.md](Implementation%20Plan.md), section 0a).
+[Implementation Plan.md](Planning/Implementation%20Plan.md), section 0a).
 
 ## Generation Approach
 
@@ -11,6 +11,15 @@ the permanent, fixed content going forward — not regenerated per playthrough. 
 generation is used as an authoring tool to produce a plausible layout quickly; the output is then
 fixed, so it can be hand-polished, balanced, and debugged like any other hand-authored content
 rather than needing to hold up across arbitrary re-generations.
+
+> **Amended 2026-08-05 (owner ruling):** this spec is now the **grammar** for every generated
+> world's starting region — same style, not the same town. Worlds are generated at
+> world-creation time from player options (seed, size, hostility) and each world's output is
+> frozen permanently into that world's save ("generate once, then fixed" now applies *per
+> world*). Every constraint below still binds every generated region; what varies per seed is
+> the concrete layout. Hand-polish lives in building **prefabs** rather than one fixed map.
+> See [Planning/12 - World Creation and Legacy.md](Planning/12%20-%20World%20Creation%20and%20Legacy.md)
+> and [Planning/08 - Town Generator.md](Planning/08%20-%20Town%20Generator.md).
 
 Kept deliberately small for this first slice — enough to prove the core loop (mine → craft →
 sell/build), not a sprawling open world yet.

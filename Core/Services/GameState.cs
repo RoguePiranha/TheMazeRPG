@@ -227,6 +227,46 @@ public class GameState
     public List<Projectile> Projectiles { get; set; } = new();
     public List<HitEffect> HitEffects { get; set; } = new();
 
+    /// <summary>World time-of-day (15-min real days/nights, owner ruling 2026-08-05). Ticks with
+    /// the sim, persists in saves, keeps running during dives.</summary>
+    public WorldClock Clock { get; } = new();
+
+    /// <summary>Rising/fading world-space combat feedback ("14", "Dodge!") — render-only.</summary>
+    public List<FloatingText> FloatingTexts { get; } = new();
+
+    /// <summary>Ambient creatures (dungeon rats/bats, the town dog and cat). Only populated when
+    /// EnableAmbience is on; simulated from their own RNG stream so gameplay stays deterministic.</summary>
+    public List<Critter> Critters { get; } = new();
+
+    /// <summary>Live-game-only atmosphere: ambient critters + occasional flavor lines in the
+    /// message log. Off by default so headless demos keep their exact RNG/log behavior; the
+    /// player-facing game turns it on at the ViewModel seam (same pattern as Manual control).</summary>
+    public bool EnableAmbience { get; set; }
+
+    private readonly Random _ambienceRandom = new(0x51D);
+    private Maze? _ambienceMaze;      // which maze Critters were spawned for
+    private int _nextAmbientLineTick = -1;
+
+    private void AddFloatingText(string text, float x, float y, FloatingTextKind kind)
+    {
+        if (FloatingTexts.Count > 40) FloatingTexts.RemoveAt(0);
+        FloatingTexts.Add(new FloatingText { Text = text, X = x, Y = y, Kind = kind });
+    }
+
+    // ---- Night & light (town lighting v1 — the dungeon's darkness is its fog; a unified light
+    // model incl. dungeon torches lands with the stealth/light work, Planning note 11) ----
+
+    /// <summary>Carrying a torch (anywhere in gear) pushes the hero's light pool out at night.</summary>
+    public bool HasTorch => Hero.Loadout.Concat(Hero.Inventory).Any(c => c.Id == "torch");
+
+    /// <summary>The Night Sight skill (owner ruling 2026-08-05): the whole screen brightens at
+    /// night, not just a radius. Ownership counts until the ability-slot system lands.</summary>
+    public bool HasNightSight => Hero.Loadout.Concat(Hero.Inventory).Any(c => c.Id == "night-sight");
+
+    /// <summary>How far the hero personally sees at night: darkvision races (D&D-mapped) see
+    /// their full vision range; a torch buys a decent pool; bare human eyes, barely arm's reach.</summary>
+    public float HeroLightRadius => Hero.HasDarkvision ? VisionRange : HasTorch ? 4.5f : 2.2f;
+
     // Track enemy pursuit persistence
     private Dictionary<Enemy, int> enemyPursuitTicks = new();
     // Where each enemy last saw the hero — pursued toward when line of sight is lost, so enemies
@@ -354,6 +394,10 @@ public class GameState
         Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
         GameLog.Debug($"Attacks assigned: {Hero.Attacks.Count}, Current: {Hero.CurrentAttack?.Name ?? "None"}");
 
+        // Every adventurer starts with a torch in their pack — at night, bare eyes without
+        // darkvision see barely past arm's reach (owner ruling 2026-08-05: night means night).
+        Hero.Inventory.Add(CombinableCatalog.Torch());
+
         StartNewFloor();
 
         // Debug flags from environment
@@ -396,7 +440,17 @@ public class GameState
         }
         
         TickCount++;
-        
+
+        // World time advances with the sim (pausing pauses time; a dive costs a slice of the day).
+        Clock.AdvanceTick(_ticksPerSecond);
+
+        // Bank any level-up unlocks as real inventory items (see Hero.PendingUnlocks — appending
+        // them straight to Hero.Attacks let RefreshAttacks silently wipe them).
+        if (Hero.PendingUnlocks.Count > 0) DrainPendingUnlocks();
+
+        // Live-game atmosphere: ambient critters + occasional flavor lines (no-op in headless demos).
+        if (EnableAmbience) UpdateAmbience();
+
         // Regenerate hero resources using fractional accumulation.
         // Per-second rates: Constitution/8 stamina, Intelligence/8 mana, Wisdom/8 faith.
         // Divide by ticks/sec so the real-time rate is correct at any tick rate.
@@ -816,6 +870,169 @@ public class GameState
         Projectiles.RemoveAll(p => !p.IsActive);
         // Update and prune hit effects
         UpdateHitEffects();
+        // Age out floating combat texts
+        foreach (var ft in FloatingTexts) ft.Age++;
+        FloatingTexts.RemoveAll(ft => ft.Expired);
+    }
+
+    /// <summary>Convert banked level-up unlocks into real inventory Combinables. Level-up used to
+    /// append these directly to Hero.Attacks, where the next RefreshAttacks (any equip/unequip or
+    /// load) silently wiped them since they had no backing Loadout item.</summary>
+    private void DrainPendingUnlocks()
+    {
+        while (Hero.PendingUnlocks.Count > 0)
+        {
+            var id = Hero.PendingUnlocks[0];
+            Hero.PendingUnlocks.RemoveAt(0);
+            // Already owned (e.g. a re-drain after load) — never grant duplicates.
+            if (Hero.Loadout.Concat(Hero.Inventory).Any(c => c.Id == id)) continue;
+            var item = CombinableCatalog.BuildUnlock(id);
+            if (item == null) continue;
+            Hero.Inventory.Add(item); // no-auto-equip rule: the player equips it themselves
+            LogMessage($"Unlocked: {item.Name} — added to your inventory.", MessageKind.LevelUp);
+        }
+    }
+
+    // ---- Ambience: critters + flavor lines (live game only; own RNG stream) ----
+
+    private static readonly string[] DungeonAmbientLines =
+    {
+        "Water drips somewhere in the dark.",
+        "A cold draft moves through the corridor.",
+        "Something skitters just beyond the light.",
+        "The stones groan overhead.",
+        "A distant echo... footsteps? Or your own?",
+        "The air tastes of dust and old iron.",
+        "Somewhere far below, something shifts its weight.",
+    };
+
+    private static readonly string[] TownAmbientLines =
+    {
+        "A breeze carries the smell of forge-smoke.",
+        "Faint hammering rings from the smithy.",
+        "The mountain looms silent over the town.",
+        "Somewhere, a dog barks.",
+        "Wind moves through the grass by the dungeon mouth.",
+    };
+
+    private void UpdateAmbience()
+    {
+        // (Re)populate critters whenever the current map changes (new floor, town, safe room).
+        if (!ReferenceEquals(_ambienceMaze, CurrentMaze))
+        {
+            _ambienceMaze = CurrentMaze;
+            SpawnCritters();
+        }
+        UpdateCritters();
+
+        // Occasional atmosphere line in the message log (out of combat, spaced 45–90s).
+        if (!Hero.InCombat && !IsInSafeRoom)
+        {
+            if (_nextAmbientLineTick < 0)
+            {
+                _nextAmbientLineTick = TickCount + _ticksPerSecond * (45 + _ambienceRandom.Next(46));
+            }
+            else if (TickCount >= _nextAmbientLineTick)
+            {
+                var lines = IsInOverworld ? TownAmbientLines : DungeonAmbientLines;
+                LogMessage(lines[_ambienceRandom.Next(lines.Length)], MessageKind.System);
+                _nextAmbientLineTick = TickCount + _ticksPerSecond * (45 + _ambienceRandom.Next(46));
+            }
+        }
+    }
+
+    private void SpawnCritters()
+    {
+        Critters.Clear();
+        if (IsInSafeRoom) return; // the one place that should feel truly still
+
+        if (IsInOverworld)
+        {
+            // The town's resident dog and cat (the first inhabitants — NPCs come later).
+            TryPlaceCritter(CritterKind.Dog);
+            TryPlaceCritter(CritterKind.Cat);
+        }
+        else
+        {
+            int count = 2 + _ambienceRandom.Next(3); // 2-4 vermin per floor
+            for (int i = 0; i < count; i++)
+                TryPlaceCritter(_ambienceRandom.NextDouble() < 0.65 ? CritterKind.Rat : CritterKind.Bat);
+        }
+    }
+
+    private void TryPlaceCritter(CritterKind kind)
+    {
+        for (int attempt = 0; attempt < 30; attempt++)
+        {
+            int x = _ambienceRandom.Next(1, CurrentMaze.Width - 1);
+            int y = _ambienceRandom.Next(1, CurrentMaze.Height - 1);
+            if (!CurrentMaze.IsWalkable(x, y)) continue;
+            // Not right on top of the hero's start.
+            float dx = x - Hero.X, dy = y - Hero.Y;
+            if (dx * dx + dy * dy < 16f) continue;
+            Critters.Add(new Critter { Kind = kind, X = x, Y = y, TargetX = x, TargetY = y });
+            return;
+        }
+    }
+
+    private void UpdateCritters()
+    {
+        foreach (var c in Critters)
+        {
+            // Rats bolt when the hero gets close — prey behavior sells "alive" more than wandering.
+            if (c.Kind == CritterKind.Rat)
+            {
+                float hdx = c.X - Hero.X, hdy = c.Y - Hero.Y;
+                if (hdx * hdx + hdy * hdy < 2.2f * 2.2f)
+                {
+                    float len = MathF.Max(0.001f, MathF.Sqrt(hdx * hdx + hdy * hdy));
+                    int fx = (int)MathF.Round(c.X + hdx / len * 3f);
+                    int fy = (int)MathF.Round(c.Y + hdy / len * 3f);
+                    if (CurrentMaze.IsWalkable(fx, fy)) { c.TargetX = fx; c.TargetY = fy; c.PauseTicks = 0; }
+                }
+            }
+
+            if (c.PauseTicks > 0) { c.PauseTicks--; continue; }
+
+            float tdx = c.TargetX - c.X, tdy = c.TargetY - c.Y;
+            float dist = MathF.Sqrt(tdx * tdx + tdy * tdy);
+            if (dist < 0.12f)
+            {
+                // Arrived: idle a while (bats never rest), then pick a new spot nearby.
+                c.PauseTicks = c.Kind switch
+                {
+                    CritterKind.Bat => 0,
+                    CritterKind.Rat => 20 + _ambienceRandom.Next(60),
+                    _ => 40 + _ambienceRandom.Next(120), // dog/cat linger
+                };
+                PickCritterTarget(c);
+                continue;
+            }
+
+            // Step toward the target with per-axis walkability (wall-slide like the hero).
+            float step = MathF.Min(c.Speed, dist);
+            float nx = c.X + tdx / dist * step;
+            float ny = c.Y + tdy / dist * step;
+            bool moved = false;
+            if (CurrentMaze.IsWalkable((int)MathF.Round(nx), (int)MathF.Round(c.Y))) { c.X = nx; moved = true; }
+            if (CurrentMaze.IsWalkable((int)MathF.Round(c.X), (int)MathF.Round(ny))) { c.Y = ny; moved = true; }
+            if (!moved) PickCritterTarget(c); // wedged — go somewhere else
+        }
+    }
+
+    private void PickCritterTarget(Critter c)
+    {
+        for (int attempt = 0; attempt < 12; attempt++)
+        {
+            int x = (int)MathF.Round(c.X) + _ambienceRandom.Next(-4, 5);
+            int y = (int)MathF.Round(c.Y) + _ambienceRandom.Next(-4, 5);
+            if (!CurrentMaze.IsWalkable(x, y)) continue;
+            // Keep paths sane in corridors: only dart toward spots it can "see".
+            if (!HasLineOfSight(c.X, c.Y, x, y)) continue;
+            c.TargetX = x;
+            c.TargetY = y;
+            return;
+        }
     }
 
     /// <summary>
@@ -892,6 +1109,7 @@ public class GameState
                         if (RollDodge(enemy.Agility, p.Accuracy))
                         {
                             LogMessage($"The {enemy.Race} {enemy.Class} dodges!", MessageKind.Combat);
+                            AddFloatingText("Dodge", enemy.X, enemy.Y - 0.4f, FloatingTextKind.Dodge);
                             p.ConsumedOnHit = true;
                             p.LifeTime = p.MaxLifeTime;
                             break;
@@ -903,6 +1121,7 @@ public class GameState
                             ? ResolveStatDamage(p.StatDamage, enemy, p.Type == AttackAnimation.Magic, p.Element)
                             : Math.Max(1, p.Damage);
                         enemy.Hp -= applied;
+                        AddFloatingText(applied.ToString(), enemy.X, enemy.Y - 0.4f, FloatingTextKind.EnemyDamage);
                         // Spawn tiny on-hit flash
                         HitEffects.Add(new HitEffect
                         {
@@ -956,12 +1175,15 @@ public class GameState
                     if (RollDodge(Hero.EffectiveAgility, p.Accuracy))
                     {
                         LogMessage("You dodge the attack!", MessageKind.System);
+                        AddFloatingText("Dodge!", Hero.X, Hero.Y - 0.4f, FloatingTextKind.Dodge);
                         p.ConsumedOnHit = true;
                         p.LifeTime = p.MaxLifeTime;
                         continue;
                     }
 
-                    Hero.CurrentHp -= Math.Max(1, p.Damage);
+                    int heroHit = Math.Max(1, p.Damage);
+                    Hero.CurrentHp -= heroHit;
+                    AddFloatingText(heroHit.ToString(), Hero.X, Hero.Y - 0.4f, FloatingTextKind.HeroDamage);
                     // Screen shake scales with the hit's severity relative to max HP, capped modestly.
                     ScreenShake = MathF.Max(ScreenShake, MathF.Min(5f, (p.Damage / (float)Hero.MaxHp) * 45f));
                     // Spawn tiny on-hit flash
@@ -1009,6 +1231,7 @@ public class GameState
         if (Hero.Level > levelBefore)
         {
             LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
+            AddFloatingText("LEVEL UP!", Hero.X, Hero.Y - 0.6f, FloatingTextKind.LevelUp);
         }
 
         // Loot now stays on the body — the hero loots the corpse (right-click → Loot) rather than
@@ -1193,6 +1416,7 @@ public class GameState
         if (Hero.Level > levelBefore)
         {
             LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
+            AddFloatingText("LEVEL UP!", Hero.X, Hero.Y - 0.6f, FloatingTextKind.LevelUp);
         }
         AcquireLoot(LootService.Roll(CurrentFloor, _random));
     }
@@ -1648,11 +1872,7 @@ public class GameState
         NearbyInteractable = null;
         ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
         CurrentMaze = OverworldGenerator.Generate();
-        var entrance = CurrentMaze.Features.First(f => f.Type == MazeFeatureType.DungeonEntrance);
-        // Placed one tile off the entrance so the hero isn't standing inside the structure they'd
-        // interact with; re-diving is now an explicit "Enter the Dungeon" action, not a walk-on.
-        Hero.X = entrance.X + 1;
-        Hero.Y = entrance.Y;
+        PlaceHeroAtOverworldArrival();
         LogMessage("You emerge into the town by the dungeon mouth. Progress saved.", MessageKind.System);
 
         // Auto-save checkpoint: the hero just survived leaving the dungeon, bank that progress
@@ -1693,6 +1913,21 @@ public class GameState
         Hero.Inventory = new List<Combinable>(data.Inventory);
         RefreshAttacks();
 
+        // Grow-with-use elemental progress survives the restart (saved entries overwrite the
+        // fresh class/race seed; elements absent from the save keep their seeded values).
+        if (data.Affinities is { Count: > 0 })
+        {
+            foreach (var kv in data.Affinities)
+            {
+                if (Enum.TryParse<MagicElement>(kv.Key, out var element))
+                    Hero.Affinities.Set(element, kv.Value);
+            }
+        }
+
+        // World time resumes where it was (0 = a save predating the clock; keep the default).
+        if (data.WorldGameMinutes > 0)
+            Clock.TotalGameMinutes = data.WorldGameMinutes;
+
         if (data.ResumePoint == ResumePoint.SafeRoom && data.SafeRoomFloor.HasValue)
         {
             // Resume at the safe-room checkpoint (e.g. floor "4.5"). EnterSafeRoom rebuilds the
@@ -1713,10 +1948,19 @@ public class GameState
             NearbyInteractable = null;
             ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
             CurrentMaze = OverworldGenerator.Generate();
-            var entrance = CurrentMaze.Features.First(f => f.Type == MazeFeatureType.DungeonEntrance);
-            Hero.X = entrance.X + 1;
-            Hero.Y = entrance.Y;
+            PlaceHeroAtOverworldArrival();
         }
+    }
+
+    /// <summary>Arrival spot when entering (or resuming in) the town: one tile off the dungeon
+    /// entrance, so the hero isn't standing inside the structure they'd interact with and the
+    /// return trip stays an explicit "Enter the Dungeon" action. The single authority for this —
+    /// when the generated town lands, only this method changes.</summary>
+    private void PlaceHeroAtOverworldArrival()
+    {
+        var entrance = CurrentMaze.Features.First(f => f.Type == MazeFeatureType.DungeonEntrance);
+        Hero.X = entrance.X + 1;
+        Hero.Y = entrance.Y;
     }
 
     /// <summary>The town structures the hero can interact with via Press-E (proximity-detected in
@@ -1888,6 +2132,8 @@ public class GameState
             ["shield-generator"] = () => CombinableCatalog.ShieldGenerator(),
             ["dense-musculature"] = () => CombinableCatalog.DenseMusculature(),
             ["mana-circuitry"] = () => CombinableCatalog.ManaCircuitry(),
+            ["torch"] = () => CombinableCatalog.Torch(),
+            ["night-sight"] = () => CombinableCatalog.NightSight(),
             ["iron-sword"] = () => CraftedItemCatalog.Build("iron-sword")!,
         };
 

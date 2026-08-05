@@ -54,6 +54,10 @@ public partial class MainWindowViewModel : ViewModelBase
         // which are fundamentally auto-play — so this preference lives here, at the live-game seam.
         _gameState.SetControlMode(ControlMode.Manual);
 
+        // Ambience (critters + flavor lines) is likewise a live-game-only concern: headless demos
+        // keep their exact RNG draws and message counts with this off.
+        _gameState.EnableAmbience = true;
+
         // Simulation tick loop at the configured rate (Data/Config/settings.json)
         int tickRate = Math.Max(1, GameSettings.Current.TickRate);
         _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(1000.0 / tickRate));

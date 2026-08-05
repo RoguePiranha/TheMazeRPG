@@ -109,7 +109,9 @@ public static class SaveService
             Gold = hero.Gold,
             Resources = new Dictionary<string, int>(hero.Resources),
             Loadout = new List<Combinable>(hero.Loadout),
-            Inventory = new List<Combinable>(hero.Inventory)
+            Inventory = new List<Combinable>(hero.Inventory),
+            Affinities = hero.Affinities.Values.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
+            WorldGameMinutes = gameState.Clock.TotalGameMinutes
         };
 
         try

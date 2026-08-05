@@ -150,6 +150,9 @@ public class CharacterDataService
         hero.IntelligenceEffectiveness = Effectiveness(race, "Intelligence");
         hero.WisdomEffectiveness = Effectiveness(race, "Wisdom");
         hero.CharismaEffectiveness = Effectiveness(race, "Charisma");
+
+        // Racial darkvision (D&D-mapped, races.json) — drives night visibility in town.
+        hero.HasDarkvision = race.Darkvision;
     }
 
     // Effectiveness multiplier for a stat, defaulting to 1.0 when the race doesn't specify one.

@@ -168,6 +168,9 @@ public class MazeRenderer
         // Draw features (chests, stairs)
         DrawFeatures(canvas, gameState.CurrentMaze, fog);
 
+        // Ambient critters (dungeon rats/bats, the town dog and cat) — under real entities
+        DrawCritters(canvas, gameState, fog);
+
         // Draw enemies (only the ones the hero can currently see, under fog)
         DrawEnemies(canvas, gameState, fog);
         
@@ -191,16 +194,25 @@ public class MazeRenderer
             canvas.DrawText("!", hx, hy, alertPaint);
         }
 
+        // Rising damage/dodge/level-up feedback (world space, above everything in-world)
+        DrawFloatingTexts(canvas, gameState);
+
     // Debug overlays (hitboxes, LOS) if enabled
     DrawDebugOverlay(canvas, gameState);
-        
+
         canvas.Restore();
+
+        // Town night lighting: dark layer with lamp/torch/darkvision light punched out
+        DrawTownLighting(canvas, gameState, viewportWidth, viewportHeight);
 
         // Low-health vignette (screen space, drawn before the HUD text/bars)
         DrawLowHealthVignette(canvas, gameState.Hero, viewportWidth, viewportHeight);
 
         // Draw HUD overlay
         DrawHUD(canvas, gameState, viewportWidth, viewportHeight);
+
+        // World-clock readout (town only, top-center)
+        DrawClock(canvas, gameState, viewportWidth);
 
         // Draw the player-facing message log (bottom-left, above the floor info line)
         DrawMessageLog(canvas, gameState, viewportHeight);
@@ -216,54 +228,71 @@ public class MazeRenderer
     /// </summary>
     private static void DrawHotbar(SKCanvas canvas, GameState gameState, int viewportWidth, int viewportHeight)
     {
-        var attacks = gameState.Hero.Attacks;
-        if (attacks.Count == 0) return;
-
-        const float slotW = 108f;
-        const float slotH = 30f;
+        // Fixed bar (owner request 2026-08-05): always HotbarCapacity uniform square slots —
+        // empty boxes render as empty boxes — instead of the old variable-width text buttons.
+        var hero = gameState.Hero;
+        int slots = Math.Max(1, hero.HotbarCapacity);
+        const float slotSize = 44f;
         const float gap = 6f;
-        int n = Math.Min(attacks.Count, 9);
-        float totalW = n * slotW + (n - 1) * gap;
+        float totalW = slots * slotSize + (slots - 1) * gap;
         float startX = (viewportWidth - totalW) / 2f;
-        float y = viewportHeight - slotH - 8f;
+        float y = viewportHeight - slotSize - 8f;
 
-        for (int i = 0; i < n; i++)
+        var keyLabels = GameSettings.Current.HotbarKeyLabels;
+
+        for (int i = 0; i < slots; i++)
         {
-            var attack = attacks[i];
-            bool selected = gameState.Hero.CurrentAttack == attack;
-            float x = startX + i * (slotW + gap);
+            var attack = i < hero.Attacks.Count ? hero.Attacks[i] : null;
+            bool selected = attack != null && hero.CurrentAttack == attack;
+            float x = startX + i * (slotSize + gap);
 
-            using var bg = new SKPaint { Color = new SKColor(0x1A, 0x1A, 0x1A, 0xE0), Style = SKPaintStyle.Fill, IsAntialias = true };
-            canvas.DrawRoundRect(x, y, slotW, slotH, 4, 4, bg);
+            using var bg = new SKPaint { Color = new SKColor(0x14, 0x14, 0x14, attack != null ? (byte)0xE6 : (byte)0x90), Style = SKPaintStyle.Fill, IsAntialias = true };
+            canvas.DrawRoundRect(x, y, slotSize, slotSize, 5, 5, bg);
 
             using var border = new SKPaint
             {
-                Color = selected ? new SKColor(0xFF, 0xCC, 0x00) : new SKColor(0x55, 0x55, 0x55),
+                Color = selected ? new SKColor(0xFF, 0xCC, 0x00) : attack != null ? new SKColor(0x66, 0x66, 0x66) : new SKColor(0x33, 0x33, 0x33),
                 Style = SKPaintStyle.Stroke,
                 StrokeWidth = selected ? 2f : 1f,
                 IsAntialias = true
             };
-            canvas.DrawRoundRect(x, y, slotW, slotH, 4, 4, border);
+            canvas.DrawRoundRect(x, y, slotSize, slotSize, 5, 5, border);
 
-            // Slot number (gold)
-            using var numPaint = new SKPaint { Color = new SKColor(0xFF, 0xCC, 0x00), TextSize = 12, IsAntialias = true, Typeface = GameTypeface };
-            canvas.DrawText($"{i + 1}", x + 5, y + 20, numPaint);
+            // Bound key, top-left (configurable via settings.json hotbarKeys)
+            string keyLabel = i < keyLabels.Length ? keyLabels[i] : (i + 1).ToString();
+            using var keyPaint = new SKPaint { Color = new SKColor(0xFF, 0xCC, 0x00, attack != null ? (byte)0xFF : (byte)0x70), TextSize = 10, IsAntialias = true, Typeface = GameTypeface };
+            canvas.DrawText(keyLabel, x + 4, y + 12, keyPaint);
 
-            // Attack name (white if selected, gray otherwise), truncated to fit
-            var nameColor = selected ? SKColors.White : new SKColor(0xAA, 0xAA, 0xAA);
-            using var namePaint = new SKPaint { Color = nameColor, TextSize = 11, IsAntialias = true, Typeface = GameTypeface };
-            string name = attack.Name.Length > 13 ? attack.Name.Substring(0, 12) + "…" : attack.Name;
-            canvas.DrawText(name, x + 18, y + 19, namePaint);
+            if (attack == null) continue;
 
-            // Heavy-attack resource cost (small, bottom-right of the slot)
+            // Compact attack monogram, centered ("Quick Slash" → QS)
+            var abbrevColor = selected ? SKColors.White : new SKColor(0xBB, 0xBB, 0xBB);
+            using var abbrevPaint = new SKPaint { Color = abbrevColor, TextSize = 16, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+            canvas.DrawText(AttackAbbrev(attack.Name), x + slotSize / 2f, y + slotSize / 2f + 7f, abbrevPaint);
+
+            // Element identity strip along the bottom (magic attacks), gray for physical
+            var element = MagicElements.For(attack);
+            var (stripColor, _) = MagicColors(element, new SKColor(0x77, 0x77, 0x77), SKColors.White);
+            using var strip = new SKPaint { Color = element == MagicElement.None ? new SKColor(0x55, 0x55, 0x55) : stripColor, Style = SKPaintStyle.Fill };
+            canvas.DrawRect(x + 4, y + slotSize - 6f, slotSize - 8f, 3f, strip);
+
+            // Heavy-attack resource cost, top-right
             if (attack.IsHeavyAttack)
             {
                 int cost = attack.StaminaCost > 0 ? attack.StaminaCost : attack.ManaCost > 0 ? attack.ManaCost : attack.FaithCost;
-                string costKind = attack.StaminaCost > 0 ? "SP" : attack.ManaCost > 0 ? "MP" : "FP";
-                using var costPaint = new SKPaint { Color = new SKColor(0x88, 0x88, 0x88), TextSize = 9, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Right };
-                canvas.DrawText($"{cost}{costKind}", x + slotW - 4, y + slotH - 4, costPaint);
+                using var costPaint = new SKPaint { Color = new SKColor(0x99, 0x99, 0x99), TextSize = 9, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Right };
+                canvas.DrawText(cost.ToString(), x + slotSize - 4f, y + 12f, costPaint);
             }
         }
+    }
+
+    /// <summary>Two-letter monogram for a hotbar slot: initials of the first two words, or the
+    /// first three letters of a single-word name ("Quick Slash" → QS, "Bow" → BOW).</summary>
+    private static string AttackAbbrev(string name)
+    {
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2) return $"{char.ToUpperInvariant(parts[0][0])}{char.ToUpperInvariant(parts[1][0])}";
+        return name.Length <= 3 ? name.ToUpperInvariant() : name[..3].ToUpperInvariant();
     }
 
     private static readonly SKColor MsgSystemColor = new(0xAA, 0xAA, 0xAA);
@@ -326,6 +355,207 @@ public class MazeRenderer
             canvas.DrawText(msg.Text, x + 1, y + 1, shadow);
             canvas.DrawText(msg.Text, x, y, paint);
         }
+    }
+
+    /// <summary>Ambient critters: dungeon rats (dart + pause, flee the hero) and bats (drift,
+    /// bob), the town's dog and cat. Fog rule matches enemies — dungeon critters render only on
+    /// currently-visible tiles.</summary>
+    private static void DrawCritters(SKCanvas canvas, GameState gameState, FogView fog)
+    {
+        if (gameState.Critters.Count == 0) return;
+        foreach (var c in gameState.Critters)
+        {
+            int cellX = (int)MathF.Round(c.X);
+            int cellY = (int)MathF.Round(c.Y);
+            if (fog.Enabled && !fog.VisibleFloors.Contains((cellX, cellY))) continue;
+
+            float px = c.X * CellSize + CellSize / 2f;
+            float py = c.Y * CellSize + CellSize / 2f;
+
+            switch (c.Kind)
+            {
+                case CritterKind.Rat:
+                {
+                    using var body = new SKPaint { Color = new SKColor(0x55, 0x4A, 0x42), IsAntialias = true };
+                    canvas.DrawOval(px, py + 4f, 5f, 3f, body);
+                    using var tail = new SKPaint { Color = new SKColor(0x77, 0x66, 0x5C), StrokeWidth = 1.2f, IsAntialias = true, Style = SKPaintStyle.Stroke };
+                    canvas.DrawLine(px - 5f, py + 4f, px - 10f, py + 6f, tail);
+                    break;
+                }
+                case CritterKind.Bat:
+                {
+                    // Wing flap + vertical bob driven by position so it animates as it moves.
+                    float flap = MathF.Sin((c.X + c.Y) * 9f) * 3f;
+                    float by = py - 12f + MathF.Sin((c.X - c.Y) * 6f) * 3f;
+                    using var wing = new SKPaint { Color = new SKColor(0x3A, 0x33, 0x44), StrokeWidth = 2f, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round };
+                    canvas.DrawLine(px - 6f, by - flap, px, by, wing);
+                    canvas.DrawLine(px, by, px + 6f, by - flap, wing);
+                    break;
+                }
+                case CritterKind.Dog:
+                {
+                    using var body = new SKPaint { Color = new SKColor(0x8B, 0x5A, 0x2B), IsAntialias = true };
+                    canvas.DrawRoundRect(px - 8f, py - 2f, 15f, 8f, 3f, 3f, body);
+                    canvas.DrawCircle(px + 9f, py - 1f, 4f, body);
+                    using var tail = new SKPaint { Color = new SKColor(0x8B, 0x5A, 0x2B), StrokeWidth = 2f, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round };
+                    canvas.DrawLine(px - 8f, py, px - 12f, py - 5f, tail);
+                    break;
+                }
+                case CritterKind.Cat:
+                {
+                    using var body = new SKPaint { Color = new SKColor(0x6E, 0x6E, 0x76), IsAntialias = true };
+                    canvas.DrawRoundRect(px - 6f, py, 11f, 6f, 3f, 3f, body);
+                    canvas.DrawCircle(px + 6f, py + 1f, 3f, body);
+                    using var tail = new SKPaint { Color = new SKColor(0x6E, 0x6E, 0x76), StrokeWidth = 1.6f, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round };
+                    canvas.DrawLine(px - 6f, py + 2f, px - 10f, py - 3f, tail);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>Rising, fading world-space combat feedback ("14", "Dodge!", "LEVEL UP!").</summary>
+    private static void DrawFloatingTexts(SKCanvas canvas, GameState gameState)
+    {
+        foreach (var ft in gameState.FloatingTexts)
+        {
+            float t = ft.LifeT;                       // 1 → 0 over lifetime
+            float rise = (1f - t) * 26f;              // px risen so far
+            float px = ft.X * CellSize + CellSize / 2f;
+            float py = ft.Y * CellSize + CellSize / 2f - rise;
+            byte alpha = (byte)(255 * (t < 0.35f ? t / 0.35f : 1f)); // fade out over the last third
+
+            (SKColor color, float size) = ft.Kind switch
+            {
+                FloatingTextKind.HeroDamage => (new SKColor(0xFF, 0x55, 0x55), 15f),
+                FloatingTextKind.Dodge => (new SKColor(0x66, 0xCC, 0xFF), 12f),
+                FloatingTextKind.LevelUp => (new SKColor(0x66, 0xDD, 0x66), 16f),
+                _ => (new SKColor(0xFF, 0xEE, 0xCC), 13f), // EnemyDamage
+            };
+
+            using var shadow = new SKPaint { Color = SKColors.Black.WithAlpha((byte)(alpha * 0.8f)), TextSize = size, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+            using var paint = new SKPaint { Color = color.WithAlpha(alpha), TextSize = size, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+            canvas.DrawText(ft.Text, px + 1f, py + 1f, shadow);
+            canvas.DrawText(ft.Text, px, py, paint);
+        }
+    }
+
+    /// <summary>Night in town (owner ruling 2026-08-05: "night to be night, mostly"): a heavy
+    /// dark layer with light punched out of it — the hero's own light (darkvision races see
+    /// their full range; a torch buys a pool; bare eyes barely arm's reach), street lamps, and
+    /// the smithy's forge glow. The Night Sight skill thins the whole layer instead of widening
+    /// a radius. Dungeon floors untouched — their darkness is the fog system.</summary>
+    private void DrawTownLighting(SKCanvas canvas, GameState gameState, int viewportWidth, int viewportHeight)
+    {
+        if (!gameState.IsInOverworld) return;
+        float darkness = gameState.Clock.Darkness;
+        if (darkness <= 0f) return;
+
+        // Night Sight brightens the entire screen — dark becomes dusk, everywhere.
+        byte maxAlpha = gameState.HasNightSight ? (byte)85 : (byte)215;
+        byte alpha = (byte)(maxAlpha * darkness);
+        if (alpha == 0) return;
+
+        // Fire flicker: organic per-light variation from render-clock Perlin noise — a slow
+        // wander plus a faster dance, out of phase per light so the town never pulses in sync.
+        // Render-side clock: flames keep moving while the sim is paused, and the sim can't be
+        // perturbed. Eyesight (darkvision / bare eyes) does not flicker — only fire does.
+        float now = _flickerClock.ElapsedMilliseconds / 1000f;
+        float Flicker(float phaseX, float phaseY, float amount)
+        {
+            float phase = phaseX * 7.31f + phaseY * 13.77f;
+            float fast = (float)_flickerNoise.Noise(now * 9f + phase, phase * 0.37f);
+            float slow = (float)_flickerNoise.Noise(now * 1.6f + phase * 0.5f, 42.0);
+            return 1f + amount * (0.6f * fast + 0.4f * slow);
+        }
+
+        canvas.SaveLayer(null);
+        using (var dark = new SKPaint { Color = new SKColor(0x07, 0x0D, 0x20, alpha) })
+            canvas.DrawRect(0, 0, viewportWidth, viewportHeight, dark);
+
+        // Punch a hole in the dark layer: a long, gradual falloff (bright core, slow tail)
+        // rather than the old plateau-then-linear edge.
+        void Punch(float wx, float wy, float radiusTiles, byte strength, float flicker)
+        {
+            float px = wx * CellSize + CellSize / 2f + _lastOffsetX;
+            float py = wy * CellSize + CellSize / 2f + _lastOffsetY;
+            float r = radiusTiles * CellSize * flicker;
+            byte s = (byte)Math.Clamp((int)(strength * (0.9f + 0.1f * flicker)), 0, 255);
+            using var hole = new SKPaint
+            {
+                BlendMode = SKBlendMode.DstOut,
+                Shader = SKShader.CreateRadialGradient(new SKPoint(px, py), r,
+                    new[]
+                    {
+                        SKColors.White.WithAlpha(s),
+                        SKColors.White.WithAlpha((byte)(s * 0.92f)),
+                        SKColors.White.WithAlpha((byte)(s * 0.72f)),
+                        SKColors.White.WithAlpha((byte)(s * 0.45f)),
+                        SKColors.White.WithAlpha((byte)(s * 0.20f)),
+                        SKColors.White.WithAlpha(0)
+                    },
+                    new[] { 0f, 0.30f, 0.50f, 0.68f, 0.84f, 1f }, SKShaderTileMode.Clamp)
+            };
+            canvas.DrawCircle(px, py, r, hole);
+        }
+
+        // Hero light: a carried torch is open flame (dances hardest); darkvision and plain
+        // eyesight are steady.
+        bool heroLightIsFire = gameState.HasTorch && !gameState.Hero.HasDarkvision;
+        Punch(gameState.Hero.X, gameState.Hero.Y, gameState.HeroLightRadius, 255,
+            heroLightIsFire ? Flicker(0f, 0f, 0.08f) : 1f);
+        foreach (var f in gameState.CurrentMaze.Features)
+        {
+            if (f.Type == MazeFeatureType.Lamp)
+                Punch(f.X, f.Y, 3.8f, 235, Flicker(f.X, f.Y, 0.035f)); // glass-caged: gentle
+            else if (f.Type == MazeFeatureType.Smithy)
+                Punch(f.X, f.Y, 2.4f, 190, Flicker(f.X, f.Y, 0.09f));  // open embers: lively
+        }
+        canvas.Restore();
+
+        // A faint warm wash over each lamp so night lighting reads as firelight, not gray fog —
+        // breathing with the same flicker as its own light pool.
+        foreach (var f in gameState.CurrentMaze.Features)
+        {
+            if (f.Type != MazeFeatureType.Lamp) continue;
+            float fl = Flicker(f.X, f.Y, 0.035f);
+            float px = f.X * CellSize + CellSize / 2f + _lastOffsetX;
+            float py = f.Y * CellSize + CellSize / 2f + _lastOffsetY;
+            using var warm = new SKPaint
+            {
+                BlendMode = SKBlendMode.Screen,
+                Color = new SKColor(0xFF, 0xA6, 0x3C, (byte)Math.Clamp(38 * darkness * fl, 0, 255)),
+                MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 18)
+            };
+            canvas.DrawCircle(px, py, CellSize * 1.4f * fl, warm);
+        }
+    }
+
+    // Fire-flicker machinery: render-only noise + clock (never touches sim state or RNG).
+    private static readonly PerlinNoise _flickerNoise = new(0xF1A3);
+    private static readonly System.Diagnostics.Stopwatch _flickerClock = System.Diagnostics.Stopwatch.StartNew();
+
+    /// <summary>A street lamp: iron post with a warm lantern head (the light itself is the
+    /// night layer's job — this is just the fixture).</summary>
+    private static void DrawLamp(SKCanvas canvas, float px, float py)
+    {
+        using var post = new SKPaint { Color = new SKColor(0x3A, 0x3A, 0x40), StrokeWidth = 3f, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round };
+        canvas.DrawLine(px, py + 14f, px, py - 12f, post);
+        using var head = new SKPaint { Color = new SKColor(0xFF, 0xD2, 0x7A), IsAntialias = true };
+        canvas.DrawCircle(px, py - 15f, 4.5f, head);
+        using var cap = new SKPaint { Color = new SKColor(0x3A, 0x3A, 0x40), StrokeWidth = 2f, IsAntialias = true, Style = SKPaintStyle.Stroke };
+        canvas.DrawLine(px - 5f, py - 19f, px + 5f, py - 19f, cap);
+    }
+
+    /// <summary>"Day 3, 14:20" — top-center, town only (the dungeon keeps time to itself).</summary>
+    private static void DrawClock(SKCanvas canvas, GameState gameState, int viewportWidth)
+    {
+        if (!gameState.IsInOverworld) return;
+        string text = gameState.Clock.TimeDisplay;
+        using var shadow = new SKPaint { Color = SKColors.Black.WithAlpha(200), TextSize = 13, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+        using var paint = new SKPaint { Color = new SKColor(0xFF, 0xCC, 0x00), TextSize = 13, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+        canvas.DrawText(text, viewportWidth / 2f + 1f, 21f, shadow);
+        canvas.DrawText(text, viewportWidth / 2f, 20f, paint);
     }
 
     /// <summary>Red radial vignette that creeps in as the hero's HP drops below 50%.</summary>
@@ -636,6 +866,10 @@ public class MazeRenderer
 
                 case MazeFeatureType.Stall:
                     DrawOverworldPoint(canvas, px, py, new SKColor(210, 180, 60), "$");
+                    break;
+
+                case MazeFeatureType.Lamp:
+                    DrawLamp(canvas, px, py);
                     break;
             }
 

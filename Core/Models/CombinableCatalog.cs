@@ -67,4 +67,48 @@ public static class CombinableCatalog
         Modifiers = { ["SpellCooldownPct"] = -0.1f, ["ManaRegen"] = 1f },
         Description = "Decreases spell cooldown and increases mana regen."
     };
+
+    public static Item Torch() => new()
+    {
+        Id = "torch", Name = "Torch", Rarity = Rarity.Common,
+        Attributes = { GameAttribute.Fire },
+        Description = "A burning brand. Carried, it pushes the night back a few paces."
+    };
+
+    public static Ability NightSight() => new()
+    {
+        Id = "night-sight", Name = "Night Sight", Rarity = Rarity.Rare,
+        Modifiers = { ["NightSight"] = 1f },
+        Description = "The dark thins to dusk — the whole world visible, not just a pool of light."
+    };
+
+    /// <summary>The level-milestone unlocks (L5/10/15), as real Combinables so they live in the
+    /// Loadout/Inventory like everything else and survive RefreshAttacks and save/load. Stats
+    /// mirror the old direct Attack appends; mana-bolt gains a small cost now that it's a real
+    /// spell. Null for an unknown id.</summary>
+    public static Combinable? BuildUnlock(string id) => id switch
+    {
+        "power-strike" => new Weapon
+        {
+            Id = "power-strike", Name = "Power Strike", Rarity = Rarity.Uncommon,
+            BaseDamage = 18, Range = 1.2f, Cooldown = 28, Animation = AttackAnimation.Heavy,
+            CritChance = 0.12f, Attributes = { GameAttribute.Heavy },
+            Description = "A heavy blow with bonus crit."
+        },
+        "quick-jab" => new Weapon
+        {
+            Id = "quick-jab", Name = "Quick Jab", Rarity = Rarity.Uncommon,
+            BaseDamage = 12, Range = 1.0f, Cooldown = 16, Animation = AttackAnimation.Quick,
+            CritChance = 0.18f, Attributes = { GameAttribute.Light },
+            Description = "A rapid jab with high crit chance."
+        },
+        "mana-bolt" => new Spell
+        {
+            Id = "mana-bolt", Name = "Mana Bolt", Rarity = Rarity.Uncommon,
+            BaseDamage = 22, Range = 2.0f, Cooldown = 32, ManaCost = 8,
+            CritChance = 0.10f, Attributes = { GameAttribute.Magic },
+            Description = "A ranged bolt of ordered mana."
+        },
+        _ => null
+    };
 }

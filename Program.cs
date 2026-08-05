@@ -115,7 +115,109 @@ sealed class Program
             return;
         }
 
+        // If TEST_ALIVE is set, verify the alive-world layer (world clock, floating combat text,
+        // ambience/critters + RNG isolation, affinity persistence, level-unlock banking) and exit
+        if (Environment.GetEnvironmentVariable("TEST_ALIVE") == "1")
+        {
+            RunAliveDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+
+    // Debug/test entrypoint: verify the alive-world layer.
+    public static void RunAliveDemo()
+    {
+        Console.WriteLine("=== World clock ===");
+        var clock = new WorldClock();
+        Console.WriteLine($"Fresh hero clock: {clock.TimeDisplay} (expect Day 1, 08:00)");
+        for (int t = 0; t < 600; t++) clock.AdvanceTick(10); // 60 real seconds at 10 tps
+        Console.WriteLine($"After 60 real seconds: {clock.TimeDisplay} (expect Day 1, 08:48 — 0.8 game-min/sec)");
+        clock.TotalGameMinutes = 12 * 60;
+        Console.WriteLine($"Darkness at noon: {clock.Darkness:0.00} (expect 0.00)");
+        clock.TotalGameMinutes = 0;
+        Console.WriteLine($"Darkness at midnight: {clock.Darkness:0.00} (expect 1.00), IsNight={clock.IsNight} (expect True)");
+        clock.TotalGameMinutes = 18 * 60;
+        Console.WriteLine($"Darkness at 18:00 (mid-dusk): {clock.Darkness:0.00} (expect 0.50)");
+
+        Console.WriteLine("\n=== Clock + affinity save/load round-trip ===");
+        var gs1 = new GameState(321, "Chrono", "Warrior", "Human");
+        gs1.Hero.Affinities.Set(MagicElement.Fire, 63f);
+        gs1.Clock.TotalGameMinutes = 3 * 1440 + 14 * 60 + 20; // Day 4, 14:20
+        SaveService.Save(gs1);
+        var loaded = SaveService.Load(gs1.SaveId)!;
+        var gs2 = new GameState(999, loaded.HeroName, loaded.ClassName, loaded.RaceName);
+        gs2.LoadFrom(loaded);
+        Console.WriteLine($"Fire affinity after load: {gs2.Hero.Affinities.Get(MagicElement.Fire):0} (expect 63)");
+        Console.WriteLine($"Clock after load: {gs2.Clock.TimeDisplay} (expect Day 4, 14:20)");
+        SaveService.Delete(gs1.SaveId);
+
+        Console.WriteLine("\n=== Level-unlock banking (RefreshAttacks can no longer wipe unlocks) ===");
+        var gsU = new GameState(5, "Climber", "Warrior", "Human");
+        gsU.IsRunning = true;
+        gsU.Hero.GainExperience(3000); // enough for level 5
+        gsU.Tick();                    // drain PendingUnlocks
+        var strike = gsU.Hero.Inventory.FirstOrDefault(c => c.Id == "power-strike");
+        Console.WriteLine($"Level {gsU.Hero.Level}: power-strike in inventory={strike != null} (expect True — not auto-equipped)");
+        bool equipped = strike != null && gsU.EquipFromInventory(strike);
+        bool inAttacks = gsU.Hero.Attacks.Any(a => a.Id == "power-strike");
+        Console.WriteLine($"Equipped: {equipped}, projects into Attacks: {inAttacks} (expect True/True)");
+        SaveService.Save(gsU);
+        var uLoaded = SaveService.Load(gsU.SaveId)!;
+        var gsU2 = new GameState(6, uLoaded.HeroName, uLoaded.ClassName, uLoaded.RaceName);
+        gsU2.LoadFrom(uLoaded);
+        gsU2.IsRunning = true;
+        gsU2.Tick(); // any re-drain must not duplicate
+        int copies = gsU2.Hero.Loadout.Concat(gsU2.Hero.Inventory).Count(c => c.Id == "power-strike");
+        bool survives = gsU2.Hero.Attacks.Any(a => a.Id == "power-strike");
+        Console.WriteLine($"After save/load: still in Attacks={survives} (expect True — the old bug wiped it), copies={copies} (expect 1)");
+        SaveService.Delete(gsU.SaveId);
+
+        Console.WriteLine("\n=== Floating combat text ===");
+        var gsF = new GameState(7, "Puncher", "Warrior", "Human");
+        gsF.IsRunning = true;
+        gsF.Projectiles.Add(new Projectile { Team = ProjectileTeam.Enemy, CurrentX = gsF.Hero.X, CurrentY = gsF.Hero.Y, TargetX = gsF.Hero.X, TargetY = gsF.Hero.Y, Damage = 9, Radius = 0.4f, MaxLifeTime = 30 });
+        gsF.Tick();
+        var ft = gsF.FloatingTexts.FirstOrDefault();
+        Console.WriteLine($"Hero hit for 9: floating text '{ft?.Text}' kind={ft?.Kind} (expect a damage number, HeroDamage)");
+        for (int t = 0; t < FloatingText.MaxAge + 2; t++) gsF.Tick();
+        Console.WriteLine($"After {FloatingText.MaxAge + 2} more ticks: {gsF.FloatingTexts.Count} texts remain (expect 0 — aged out)");
+
+        Console.WriteLine("\n=== Ambience: critters spawn, and NEVER perturb gameplay RNG ===");
+        var quiet = new GameState(777, "Twin", "Warrior", "Human");                     // ambience off (default)
+        var lively = new GameState(777, "Twin", "Warrior", "Human") { EnableAmbience = true };
+        quiet.IsRunning = true; lively.IsRunning = true;
+        for (int t = 0; t < 400; t++) { quiet.Tick(); lively.Tick(); }
+        Console.WriteLine($"Critters: quiet={quiet.Critters.Count} (expect 0), lively={lively.Critters.Count} (expect 2-4)");
+        bool identical = MathF.Abs(quiet.Hero.X - lively.Hero.X) < 0.0001f
+                      && MathF.Abs(quiet.Hero.Y - lively.Hero.Y) < 0.0001f
+                      && quiet.Enemies.Count == lively.Enemies.Count
+                      && quiet.Hero.CurrentHp == lively.Hero.CurrentHp;
+        Console.WriteLine($"Same seed, 400 ticks, ambience on vs off — hero/enemy state identical: {identical} (expect True: separate RNG stream)");
+
+        Console.WriteLine("\n=== Town critters (the dog and the cat) ===");
+        lively.ExecuteDebugCommand("moveplayer overworld");
+        lively.Tick();
+        var kinds = string.Join(", ", lively.Critters.Select(c => c.Kind).OrderBy(k => k));
+        Console.WriteLine($"Town critters: [{kinds}] (expect Dog, Cat)");
+        SaveService.Delete(lively.SaveId); // moveplayer overworld auto-saved; clean the slot
+
+        Console.WriteLine("\n=== Night, darkvision, torches, Night Sight ===");
+        var human = new GameState(11, "Norm", "Warrior", "Human");
+        var elf = new GameState(12, "Sylv", "Warrior", "Elf");
+        Console.WriteLine($"Darkvision: Human={human.Hero.HasDarkvision} (expect False), Elf={elf.Hero.HasDarkvision} (expect True)");
+        Console.WriteLine($"Starter torch in pack: {human.HasTorch} (expect True)");
+        Console.WriteLine($"Hero light radius: Elf={elf.HeroLightRadius:0.0} (expect {elf.VisionRange:0.0} — full range), Human w/ torch={human.HeroLightRadius:0.0} (expect 4.5)");
+        var torch = human.Hero.Inventory.First(c => c.Id == "torch");
+        human.Hero.Inventory.Remove(torch);
+        Console.WriteLine($"Human, torch dropped: {human.HeroLightRadius:0.0} (expect 2.2 — barely arm's reach)");
+        Console.WriteLine($"Night Sight before: {human.HasNightSight} (expect False)");
+        human.ExecuteDebugCommand("additem night-sight");
+        Console.WriteLine($"Night Sight after additem: {human.HasNightSight} (expect True — whole-screen brightening flag)");
+        var lamps = TheMazeRPG.Core.Systems.OverworldGenerator.Generate().Features.Count(f => f.Type == MazeFeatureType.Lamp);
+        Console.WriteLine($"Street lamps in town: {lamps} (expect 5)");
+        Console.WriteLine($"Hotbar bindings loaded: {GameSettings.Current.HotbarKeys.Length} keys, labels [{string.Join(",", GameSettings.Current.HotbarKeyLabels[..4])}] (expect 9 keys, labels 1,2,3,4)");
     }
 
     // Debug/test entrypoint: verify the Debug race's flat pool overrides and that it never

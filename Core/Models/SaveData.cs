@@ -74,4 +74,11 @@ public class SaveData
     public Dictionary<string, int> Resources { get; set; } = new();
     public List<Combinable> Loadout { get; set; } = new();
     public List<Combinable> Inventory { get; set; } = new();
+
+    /// <summary>Elemental affinity ratings (element name → 0–100), so grow-with-use progress
+    /// survives a restart. Null/empty for saves predating the field — the class/race seed applies.</summary>
+    public Dictionary<string, float>? Affinities { get; set; }
+
+    /// <summary>World-clock time (total game minutes). 0 for saves predating the clock.</summary>
+    public double WorldGameMinutes { get; set; }
 }

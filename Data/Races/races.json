@@ -13,6 +13,7 @@
     }
   },
   "Elf": {
+    "darkvision": true,
     "description": "Graceful and wise, gifted with magic and keen senses but physically slight.",
     "color": "#90EE90",
     "effectiveness": {
@@ -30,6 +31,7 @@
     }
   },
   "Dwarf": {
+    "darkvision": true,
     "description": "Sturdy and resilient with great strength and endurance, but slow and unarcane.",
     "color": "#D2691E",
     "effectiveness": {
@@ -60,6 +62,7 @@
     }
   },
   "Goblin": {
+    "darkvision": true,
     "description": "A Cursed Race: quick and cunning, but frail, dim, and widely mistrusted.",
     "color": "#708238",
     "effectiveness": {
@@ -73,6 +76,7 @@
     }
   },
   "Kobold": {
+    "darkvision": true,
     "description": "Small, deft reptilian scavengers with a knack for precision.",
     "color": "#B7410E",
     "effectiveness": {
@@ -102,6 +106,7 @@
     }
   },
   "Orc": {
+    "darkvision": true,
     "description": "A Cursed Race: immense strength and toughness, but crude, dim, and off-putting.",
     "color": "#6B8E23",
     "effectiveness": {
@@ -115,6 +120,7 @@
     }
   },
   "Tiefling": {
+    "darkvision": true,
     "description": "Infernal heritage grants cunning, arcane talent, and charm.",
     "color": "#DC143C",
     "effectiveness": {
@@ -132,6 +138,7 @@
     }
   },
   "Debug": {
+    "darkvision": true,
     "description": "TESTING ONLY: towering health/stamina/mana pools. Never spawns as an enemy.",
     "color": "#FF00FF",
     "debug": true,

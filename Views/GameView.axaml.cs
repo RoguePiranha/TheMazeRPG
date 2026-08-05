@@ -192,15 +192,32 @@ public partial class GameView : UserControl
         }
     }
 
-    /// <summary>Map a number-row or numpad key (1-9) to a zero-based hotbar slot index.</summary>
+    // Per-slot hotbar bindings from settings.json ("hotbarKeys"), parsed once. Unparseable
+    // entries are skipped (their slot falls back to the numpad only).
+    private static readonly Key[] HotbarBindings = ParseHotbarBindings();
+
+    private static Key[] ParseHotbarBindings()
+    {
+        var names = Core.Services.GameSettings.Current.HotbarKeys;
+        var keys = new Key[names.Length];
+        for (int i = 0; i < names.Length; i++)
+            keys[i] = Enum.TryParse<Key>(names[i], ignoreCase: true, out var k) ? k : Key.None;
+        return keys;
+    }
+
+    /// <summary>Map a pressed key to a zero-based hotbar slot: the configurable per-slot
+    /// bindings first (settings.json), then the numpad as an always-on fallback.</summary>
     private static bool TryGetHotbarIndex(Key k, out int index)
     {
-        index = k switch
+        for (int i = 0; i < HotbarBindings.Length; i++)
         {
-            >= Key.D1 and <= Key.D9 => k - Key.D1,
-            >= Key.NumPad1 and <= Key.NumPad9 => k - Key.NumPad1,
-            _ => -1
-        };
+            if (HotbarBindings[i] != Key.None && HotbarBindings[i] == k)
+            {
+                index = i;
+                return true;
+            }
+        }
+        index = k is >= Key.NumPad1 and <= Key.NumPad9 ? k - Key.NumPad1 : -1;
         return index >= 0;
     }
 

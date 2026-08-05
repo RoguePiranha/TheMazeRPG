@@ -121,6 +121,14 @@ public class Hero
     // Animation state for combat movement
     public float AnimationOffsetX { get; set; }
     public float AnimationOffsetY { get; set; }
+
+    // Level-up unlock ids waiting to be granted as real inventory items (drained each tick by
+    // GameState.DrainPendingUnlocks — Hero can't build Combinables or log messages itself).
+    public List<string> PendingUnlocks { get; } = new();
+
+    // Racial darkvision (set by ApplyClassAndRace from races.json) — at night this race sees
+    // normally out to its full vision range instead of a torch-or-worse pool of light.
+    public bool HasDarkvision { get; set; }
     
     public void GainExperience(int amount)
     {
@@ -148,22 +156,13 @@ public class Hero
         Attack += 2 + (int)(EffectiveStrength / 2) + (Level % 3 == 0 ? 2 : 0); // Bonus attack every 3 levels
         Defense += 1 + (int)(EffectiveConstitution / 3) + (Level % 4 == 0 ? 2 : 0); // Bonus defense every 4 levels
 
-        // Unlock new attack at milestones
-        if (Level == 5)
-        {
-            Attacks.Add(new Attack { Id = "power-strike", Name = "Power Strike", Damage = 18, Range = 1.2f, Cooldown = 28, Animation = AttackAnimation.Heavy, CritChance = 0.12f, Description = "A heavy blow with bonus crit." });
-        }
-        if (Level == 10)
-        {
-            Attacks.Add(new Attack { Id = "quick-jab", Name = "Quick Jab", Damage = 12, Range = 1.0f, Cooldown = 16, Animation = AttackAnimation.Quick, CritChance = 0.18f, Description = "A rapid jab with high crit chance." });
-        }
-        if (Level == 15)
-        {
-            // Basic "X Bolt" magic attack (naming convention: Mana Bolt / Fire Bolt / Ice Bolt).
-            // Distinct id from the Mage's "arcane-blast" so visuals/behavior keyed off Attack.Id
-            // don't conflate it with that AoE spell.
-            Attacks.Add(new Attack { Id = "mana-bolt", Name = "Mana Bolt", Damage = 22, Range = 2.0f, Cooldown = 32, Animation = AttackAnimation.Magic, CritChance = 0.10f, Description = "A ranged magic attack." });
-        }
+        // Milestone unlocks are banked as ids and granted by GameState.DrainPendingUnlocks as real
+        // inventory Combinables (see CombinableCatalog.BuildUnlock). Appending them straight to
+        // Attacks let RefreshAttacks — which rebuilds Attacks entirely from Loadout on any
+        // equip/unequip or load — silently wipe them.
+        if (Level == 5) PendingUnlocks.Add("power-strike");
+        if (Level == 10) PendingUnlocks.Add("quick-jab");
+        if (Level == 15) PendingUnlocks.Add("mana-bolt");
 
         // Core stats are no longer auto-allocated by class. Each level grants a pool of points
         // the player assigns by hand from the stats screen (GameState.SpendStatPoint). ClassData's

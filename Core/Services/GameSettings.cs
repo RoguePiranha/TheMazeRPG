@@ -19,6 +19,18 @@ public class GameSettings
     public int MazeHeight { get; set; } = 31;
     public int DefaultSeed { get; set; } = 12345;
 
+    /// <summary>Per-slot hotbar bindings (owner request 2026-08-05): Avalonia Key names, one per
+    /// slot, editable in settings.json (e.g. ["D1","D2","Q","R"]). Number-row defaults; the
+    /// numpad always works as a fallback. Rebinding UI comes with the Settings screen later.</summary>
+    public string[] HotbarKeys { get; set; } = { "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9" };
+
+    /// <summary>Display labels for the bindings ("D1" → "1", "NumPad3" → "N3", "Q" → "Q").</summary>
+    public string[] HotbarKeyLabels =>
+        System.Array.ConvertAll(HotbarKeys, k =>
+            k.StartsWith("D", StringComparison.Ordinal) && k.Length == 2 && char.IsDigit(k[1]) ? k[1..]
+            : k.StartsWith("NumPad", StringComparison.Ordinal) ? "N" + k[6..]
+            : k);
+
     private static GameSettings? _current;
 
     /// <summary>Lazily-loaded, cached settings instance.</summary>

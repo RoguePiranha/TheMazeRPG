@@ -5,5 +5,6 @@
   "tickRate": 30,
   "mazeWidth": 41,
   "mazeHeight": 31,
-  "defaultSeed": 12345
+  "defaultSeed": 12345,
+  "hotbarKeys": [ "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9" ]
 }

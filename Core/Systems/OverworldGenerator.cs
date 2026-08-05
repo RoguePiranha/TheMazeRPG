@@ -36,6 +36,15 @@ public static class OverworldGenerator
         maze.Features.Add(new MazeFeature { X = 20, Y = 4, Type = MazeFeatureType.Smithy });
         maze.Features.Add(new MazeFeature { X = 20, Y = 10, Type = MazeFeatureType.Stall });
 
+        // Street lamps (owner ruling 2026-08-05: night should be night — lit only in pools).
+        // One by the dungeon mouth (the guard station's brazier, eventually), one at the mine
+        // path, two flanking the smithy/stall lane, one mid-field on the walk between them.
+        maze.Features.Add(new MazeFeature { X = 4, Y = 5, Type = MazeFeatureType.Lamp });
+        maze.Features.Add(new MazeFeature { X = 9, Y = 9, Type = MazeFeatureType.Lamp });
+        maze.Features.Add(new MazeFeature { X = 14, Y = 7, Type = MazeFeatureType.Lamp });
+        maze.Features.Add(new MazeFeature { X = 22, Y = 4, Type = MazeFeatureType.Lamp });
+        maze.Features.Add(new MazeFeature { X = 22, Y = 10, Type = MazeFeatureType.Lamp });
+
         return maze;
     }
 }

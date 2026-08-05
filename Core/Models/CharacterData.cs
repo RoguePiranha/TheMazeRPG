@@ -32,6 +32,11 @@ public class CharacterRace
     /// from enemy generation and bestiary totals.</summary>
     public bool Debug { get; set; }
 
+    /// <summary>Whether this race sees normally in darkness within its usual range of vision
+    /// (owner ruling 2026-08-05: mapped from D&D — Elf/Dwarf/Goblin/Kobold/Orc/Tiefling yes;
+    /// Human/Halfling/Dragonborn no). Consumed by the night-lighting layer.</summary>
+    public bool Darkvision { get; set; }
+
     // Optional flat pool overrides for testing races: when set, they replace the normally
     // derived max pools (and fill the current value to match). Null = normal derivation.
     public int? HealthOverride { get; set; }

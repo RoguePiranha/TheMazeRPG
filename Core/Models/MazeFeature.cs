@@ -15,7 +15,8 @@ public enum MazeFeatureType
     DungeonEntrance, // touching this in the Overworld starts a fresh dungeon dive
     MineEntrance,    // start a MineOreActivity here
     Smithy,          // smelt/craft recipes, and (later) Forge-gated Combinable merging
-    Stall            // sell items for gold
+    Stall,           // sell items for gold
+    Lamp             // street lamp: scenery by day, a pool of light in the night layer
 }
 
 public class MazeFeature

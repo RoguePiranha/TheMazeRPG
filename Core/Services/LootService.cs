@@ -17,7 +17,9 @@ public static class LootService
         CombinableCatalog.Bow,
         CombinableCatalog.Fireball,
         CombinableCatalog.IceShard,
-        CombinableCatalog.ShieldGenerator
+        CombinableCatalog.ShieldGenerator,
+        CombinableCatalog.Torch,
+        CombinableCatalog.NightSight
     };
 
     public static Combinable Roll(int floor, Random rng)
