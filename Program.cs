@@ -156,6 +156,22 @@ sealed class Program
             return;
         }
 
+        // If TEST_HOTBAR is set, verify the positional hotbar (slot assignment/swap/clear,
+        // auto-placement rules, consumable quick-slots, persistence) and exit
+        if (Environment.GetEnvironmentVariable("TEST_HOTBAR") == "1")
+        {
+            RunHotbarDemo();
+            return;
+        }
+
+        // If TEST_RARITY is set, verify intrinsic rarity (fixed per definition, weighted drops,
+        // power scaling) and exit
+        if (Environment.GetEnvironmentVariable("TEST_RARITY") == "1")
+        {
+            RunRarityDemo();
+            return;
+        }
+
         // If TEST_SPRITES is set, validate the sprite manifest against the files on disk and exit
         if (Environment.GetEnvironmentVariable("TEST_SPRITES") == "1")
         {
@@ -170,6 +186,165 @@ sealed class Program
         }
 
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+
+    // Debug/test entrypoint: verify intrinsic rarity — fixed per definition, weighted selection,
+    // and the mechanical scaling that finally makes rarity matter.
+    public static void RunRarityDemo()
+    {
+        Console.WriteLine("=== Intrinsic rarity ===");
+
+        // (a) A definition's rarity is FIXED: 300 rolls never change any entry's rarity.
+        var rng = new Random(17);
+        bool anyMutated = false;
+        var seenRarities = new Dictionary<string, Rarity>();
+        for (int i = 0; i < 300; i++)
+        {
+            var item = LootService.Roll(3, rng);
+            if (seenRarities.TryGetValue(item.Id, out var prior) && prior != item.Rarity) anyMutated = true;
+            seenRarities[item.Id] = item.Rarity;
+        }
+        Console.WriteLine($"300 rolls, any definition's rarity varied: {anyMutated} (expect False — Iron is Iron)");
+        Console.WriteLine($"  e.g. sword={seenRarities.GetValueOrDefault("sword")}, ward-ring={seenRarities.GetValueOrDefault("ward-ring")}, night-sight={seenRarities.GetValueOrDefault("night-sight")}");
+
+        // (b) Depth shifts WHICH items drop: rare+ share rises with floor.
+        float RareShare(int floor)
+        {
+            var r = new Random(99);
+            int rare = 0, total = 2000;
+            for (int i = 0; i < total; i++)
+                if (LootService.Roll(floor, r).Rarity >= Rarity.Rare) rare++;
+            return rare / (float)total;
+        }
+        float shallow = RareShare(1), deep = RareShare(12);
+        Console.WriteLine($"Rare+ drop share: floor 1 = {shallow:P1}, floor 12 = {deep:P1} (expect rising)");
+
+        // (c) Rarity scales power at projection: same spell, higher rarity, harder hit.
+        var fire = CombinableCatalog.Fireball();
+        var common = fire.ToAttack();
+        fire.Rarity = Rarity.Epic;
+        var epic = fire.ToAttack();
+        Console.WriteLine($"Fireball Common: {common.Damage} dmg / cd {common.Cooldown}; Epic: {epic.Damage} dmg / cd {epic.Cooldown} (expect +24% dmg, -9% cd)");
+
+        // (d) Armor defense scales with rarity.
+        var gs = new GameState(21, "Wearer", "Warrior", "Human");
+        var coat = CombinableCatalog.LeatherCoat();
+        gs.Hero.Inventory.Add(coat);
+        gs.EquipFromInventory(coat);
+        int commonDef = gs.Hero.EquipmentDefenseBonus;
+        coat.Rarity = Rarity.Legendary;
+        int legendaryDef = gs.Hero.EquipmentDefenseBonus;
+        Console.WriteLine($"Equipped coat defense: Common={commonDef}, Legendary={legendaryDef} (expect +60%)");
+
+        // (e) Consumable effect scales with rarity.
+        var gsHeal = new GameState(22, "Drinker", "Warrior", "Human");
+        gsHeal.IsRunning = true;
+        var potion = CombinableCatalog.HealthPotion();
+        var epicPotion = CombinableCatalog.HealthPotion();
+        epicPotion.Rarity = Rarity.Epic;
+        gsHeal.Hero.Inventory.Add(potion);
+        gsHeal.Hero.Inventory.Add(epicPotion);
+        gsHeal.Hero.CurrentHp = 1;
+        gsHeal.UseConsumable(potion);
+        int afterCommon = gsHeal.Hero.CurrentHp;
+        gsHeal.Hero.CurrentHp = 1;
+        gsHeal.UseConsumable(epicPotion);
+        int afterEpic = gsHeal.Hero.CurrentHp;
+        Console.WriteLine($"Potion heal from 1 HP: Common -> {afterCommon} (expect 31), Epic -> {afterEpic} (expect 53 — round(30 x 1.75) + 1)");
+    }
+
+    // Debug/test entrypoint: verify the positional hotbar.
+    public static void RunHotbarDemo()
+    {
+        Console.WriteLine("=== Positional hotbar ===");
+        var gs = new GameState(9, "Slots", "Mage Apprentice", "Human");
+        var h = gs.Hero;
+        Console.WriteLine($"Capacity: {h.HotbarCapacity} (expect 6)");
+        string Bar() => string.Join(" | ", Enumerable.Range(0, h.HotbarCapacity)
+            .Select(i => gs.HotbarAttackAt(i)?.Name ?? "—"));
+        Console.WriteLine($"Auto-assigned on creation: [{Bar()}]");
+
+        // Slot a backpack spell directly onto a specific slot (replaces the occupant).
+        var fireball = CombinableCatalog.Fireball();
+        h.Inventory.Add(fireball);
+        bool ok = gs.AssignSpellToHotbar(fireball, 1, out string reason);
+        Console.WriteLine($"Assign Fireball to slot 2: ok={ok}{reason} -> slot 2 = {gs.HotbarAttackAt(1)?.Name} (expect Fireball)");
+
+        // SelectAttack is slot-based.
+        gs.SelectAttack(1);
+        Console.WriteLine($"SelectAttack(slot 2) -> {h.CurrentAttack?.Name} (expect Fireball)");
+
+        // Re-assigning an already-assigned action swaps the two slots.
+        var slotOne = gs.HotbarAttackAt(0)!;
+        gs.AssignAttackToHotbar(slotOne.Id, 1, out _);
+        Console.WriteLine($"Swap 1<->2: slot 1 = {gs.HotbarAttackAt(0)?.Name} (expect Fireball), slot 2 = {gs.HotbarAttackAt(1)?.Name} (expect {slotOne.Name})");
+
+        // Clearing a spell's slot returns it to the backpack.
+        gs.ClearHotbarSlot(0);
+        Console.WriteLine($"Clear slot 1: Fireball back in backpack = {h.Inventory.Contains(fireball)} (expect True), slot 1 = {gs.HotbarAttackAt(0)?.Name ?? "—"} (expect —)");
+
+        // A deliberately cleared class action stays cleared through an Attacks rebuild.
+        var classAction = gs.HotbarAttackAt(1)!;
+        gs.ClearHotbarSlot(1);
+        var iceShard = CombinableCatalog.IceShard();
+        h.Inventory.Add(iceShard);
+        gs.EquipFromInventory(iceShard);  // triggers RefreshAttacks + auto-place of the NEW spell
+        bool classActionStillCleared = Enumerable.Range(0, h.HotbarCapacity)
+            .All(i => gs.HotbarAttackAt(i)?.Id != classAction.Id);
+        Console.WriteLine($"Cleared class action stays off the bar after a rebuild: {classActionStillCleared} (expect True); Ice Shard landed at a free slot: {Enumerable.Range(0, h.HotbarCapacity).Any(i => gs.HotbarAttackAt(i)?.Id == "ice-shard")} (expect True)");
+
+        // Full-bar behavior: fill every free slot with distinct spells, then plain equip refuses.
+        int fillerIndex = 0;
+        while (Enumerable.Range(0, h.HotbarCapacity).Any(i => gs.HotbarAttackAt(i) == null) && fillerIndex < 12)
+        {
+            var filler = CombinableCatalog.Fireball();
+            filler.Id = $"fireball-variant-{fillerIndex}";
+            filler.Name = $"Fireball {++fillerIndex}";
+            h.Inventory.Add(filler);
+            if (!gs.EquipFromInventory(filler)) break;
+        }
+        var overflow = CombinableCatalog.Fireball();
+        overflow.Id = "fireball-overflow";
+        overflow.Name = "Overflow Fireball";
+        h.Inventory.Add(overflow);
+        bool refused = !gs.EquipFromInventory(overflow, out string fullReason);
+        Console.WriteLine($"Equip into a full bar refused: {refused} (expect True) — \"{fullReason}\"");
+
+        // Duplicate guard: a second copy of an already-slotted spell is refused by plain equip.
+        var dupe = CombinableCatalog.IceShard();
+        h.Inventory.Add(dupe);
+        bool dupeRefused = !gs.EquipFromInventory(dupe, out string dupeReason);
+        Console.WriteLine($"Duplicate of a slotted spell refused: {dupeRefused} (expect True) — \"{dupeReason}\"");
+
+        // Consumable quick-slots: a potion binds to a slot, the slot key uses one copy, and the
+        // binding survives while copies remain.
+        var potion1 = CombinableCatalog.HealthPotion();
+        var potion2 = CombinableCatalog.HealthPotion();
+        h.Inventory.Add(potion1);
+        h.Inventory.Add(potion2);
+        gs.ClearHotbarSlot(5);
+        bool potionOk = gs.AssignConsumableToHotbar(potion1, 5, out _);
+        Console.WriteLine($"Assign Health Potion to slot 6: {potionOk} (expect True), count badge = {gs.HotbarConsumableCount(5)} (expect 2)");
+        gs.IsRunning = true;
+        h.CurrentHp = 10;
+        gs.ActivateHotbarSlot(5);
+        Console.WriteLine($"Activate slot 6: HP 10 -> {h.CurrentHp} (expect 40), copies left = {gs.HotbarConsumableCount(5)} (expect 1)");
+        gs.ActivateHotbarSlot(5); // second copy
+        gs.ActivateHotbarSlot(5); // nothing left — must no-op
+        Console.WriteLine($"Drained: copies = {gs.HotbarConsumableCount(5)} (expect 0), slot resolves = {gs.HotbarConsumableAt(5) != null} (expect False), empty press was a no-op HP {h.CurrentHp}");
+
+        // Persistence: assignments + known-ids round-trip.
+        SaveService.Save(gs);
+        var loaded = SaveService.Load(gs.SaveId)!;
+        var gs2 = new GameState(10, loaded.HeroName, loaded.ClassName, loaded.RaceName);
+        gs2.LoadFrom(loaded);
+        string before = Bar();
+        string after = string.Join(" | ", Enumerable.Range(0, gs2.Hero.HotbarCapacity)
+            .Select(i => gs2.HotbarAttackAt(i)?.Name ?? "—"));
+        Console.WriteLine($"Round-trip match: {before == after} (expect True)");
+        Console.WriteLine($"  before: [{before}]");
+        Console.WriteLine($"  after:  [{after}]");
+        SaveService.Delete(gs.SaveId);
     }
 
     // Debug/test entrypoint: verify the alive-world layer.

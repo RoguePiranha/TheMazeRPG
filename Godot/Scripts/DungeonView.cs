@@ -622,6 +622,7 @@ public partial class DungeonView : Node2D
                 FloatingTextKind.HeroDamage => (new Color(1f, 0.33f, 0.33f), 14),
                 FloatingTextKind.Dodge => (new Color(0.4f, 0.8f, 1f), 11),
                 FloatingTextKind.LevelUp => (new Color(0.4f, 0.87f, 0.4f), 15),
+                FloatingTextKind.Heal => (new Color(0.45f, 0.9f, 0.5f), 13),
                 _ => (new Color(1f, 0.93f, 0.8f), 12) // EnemyDamage
             };
             Vector2 anchor = WorldToPixel(text.X, text.Y) +

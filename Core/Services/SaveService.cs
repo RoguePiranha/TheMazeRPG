@@ -116,7 +116,9 @@ public static class SaveService
             Equipment = new Dictionary<EquipmentSlot, Combinable>(hero.Equipment),
             WeaponTraining = new HashSet<WeaponType>(hero.WeaponTraining),
             Affinities = hero.Affinities.Clone(),
-            WorldGameMinutes = gameState.Clock.TotalGameMinutes
+            WorldGameMinutes = gameState.Clock.TotalGameMinutes,
+            HotbarAssignments = new List<string?>(hero.HotbarAssignments),
+            HotbarKnownIds = new List<string>(hero.HotbarKnownIds)
         };
 
         try

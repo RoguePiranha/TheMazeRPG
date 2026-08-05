@@ -6,7 +6,8 @@ public enum FloatingTextKind
     EnemyDamage,  // damage the hero deals — white
     HeroDamage,   // damage the hero takes — red
     Dodge,        // an evaded hit — cyan
-    LevelUp       // green, larger
+    LevelUp,      // green, larger
+    Heal          // restored HP — green
 }
 
 /// <summary>

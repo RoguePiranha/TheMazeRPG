@@ -265,11 +265,12 @@ public class MazeRenderer
 
         for (int i = 0; i < slots; i++)
         {
-            var attack = i < hero.Attacks.Count ? hero.Attacks[i] : null;
+            var attack = gameState.HotbarAttackAt(i);
+            var consumable = attack == null ? gameState.HotbarConsumableAt(i) : null;
             bool selected = attack != null && hero.CurrentAttack == attack;
             float x = startX + i * (slotSize + gap);
 
-            using var bg = new SKPaint { Color = new SKColor(0x14, 0x14, 0x14, attack != null ? (byte)0xE6 : (byte)0x90), Style = SKPaintStyle.Fill, IsAntialias = true };
+            using var bg = new SKPaint { Color = new SKColor(0x14, 0x14, 0x14, attack != null || consumable != null ? (byte)0xE6 : (byte)0x90), Style = SKPaintStyle.Fill, IsAntialias = true };
             canvas.DrawRoundRect(x, y, slotSize, slotSize, 5, 5, bg);
 
             using var border = new SKPaint
@@ -283,8 +284,18 @@ public class MazeRenderer
 
             // Bound key, top-left (configurable via settings.json hotbarKeys)
             string keyLabel = i < keyLabels.Length ? keyLabels[i] : (i + 1).ToString();
-            using var keyPaint = new SKPaint { Color = new SKColor(0xFF, 0xCC, 0x00, attack != null ? (byte)0xFF : (byte)0x70), TextSize = 10, IsAntialias = true, Typeface = GameTypeface };
+            using var keyPaint = new SKPaint { Color = new SKColor(0xFF, 0xCC, 0x00, attack != null || consumable != null ? (byte)0xFF : (byte)0x70), TextSize = 10, IsAntialias = true, Typeface = GameTypeface };
             canvas.DrawText(keyLabel, x + 4, y + 12, keyPaint);
+
+            if (consumable != null)
+            {
+                // Consumable quick-slot: green monogram + carried count; the key uses one copy.
+                using var monogram = new SKPaint { Color = new SKColor(0x73, 0xE6, 0x80), TextSize = 15, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+                canvas.DrawText(AttackAbbrev(consumable.Name), x + slotSize / 2f, y + slotSize / 2f + 5f, monogram);
+                using var countPaint = new SKPaint { Color = new SKColor(0xAA, 0xAA, 0xAA), TextSize = 10, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+                canvas.DrawText($"x{gameState.HotbarConsumableCount(i)}", x + slotSize / 2f, y + slotSize - 6f, countPaint);
+                continue;
+            }
 
             if (attack == null) continue;
 
@@ -453,6 +464,7 @@ public class MazeRenderer
                 FloatingTextKind.HeroDamage => (new SKColor(0xFF, 0x55, 0x55), 15f),
                 FloatingTextKind.Dodge => (new SKColor(0x66, 0xCC, 0xFF), 12f),
                 FloatingTextKind.LevelUp => (new SKColor(0x66, 0xDD, 0x66), 16f),
+                FloatingTextKind.Heal => (new SKColor(0x73, 0xE6, 0x80), 14f),
                 _ => (new SKColor(0xFF, 0xEE, 0xCC), 13f), // EnemyDamage
             };
 

@@ -10,7 +10,7 @@ namespace TheMazeRPG.GodotClient;
 /// <summary>Godot-facing menus and dungeon overlays. All mutations still go through Core APIs.</summary>
 public partial class GameUi : Control
 {
-    private enum CharacterTab { Inventory, Stats, Progression }
+    private enum CharacterTab { Inventory, Stats, Progression, Hotbar }
 
     private static readonly Color Ink = new("#0B0E11");
     private static readonly Color Panel = new("#171C20");
@@ -761,12 +761,19 @@ public partial class GameUi : Control
         stats.Pressed += () => ShowCharacterPanel(state, CharacterTab.Stats);
         var progression = CommandButton("PROGRESSION", selectedTab == CharacterTab.Progression ? Gold : Muted, 190);
         progression.Pressed += () => ShowCharacterPanel(state, CharacterTab.Progression);
+        var hotbarTab = CommandButton("HOTBAR", selectedTab == CharacterTab.Hotbar ? Gold : Muted, 160);
+        hotbarTab.Pressed += () => ShowCharacterPanel(state, CharacterTab.Hotbar);
         tabs.AddChild(inventoryTab);
         tabs.AddChild(stats);
         tabs.AddChild(progression);
+        tabs.AddChild(hotbarTab);
         body.AddChild(tabs);
 
-        if (selectedTab == CharacterTab.Stats)
+        if (selectedTab == CharacterTab.Hotbar)
+        {
+            BuildHotbarTab(state, body);
+        }
+        else if (selectedTab == CharacterTab.Stats)
         {
             BuildStatsTab(state, body);
             var close = CommandButton("CLOSE", Green, 160);
@@ -782,6 +789,116 @@ public partial class GameUi : Control
         }
         else BuildInventoryTab(state, body);
         ShowModal(body, new Vector2(920, 650));
+    }
+
+    /// <summary>Hotbar management (owner request 2026-08-05): every usable action and backpack
+    /// spell gets numbered ASSIGN buttons — "Assign to Slot [1-6]" — plus per-slot CLEAR.
+    /// (Drag-and-drop can layer on later; direct slot buttons are the always-works path.)</summary>
+    private void BuildHotbarTab(GameState state, VBoxContainer body)
+    {
+        Hero hero = state.Hero;
+        body.AddChild(LabelOf("CLICK A NUMBER TO ASSIGN THAT ACTION TO A SLOT — CLEAR EMPTIES A SLOT",
+            12, Muted, HorizontalAlignment.Center));
+
+        // The six slots as they currently stand.
+        var slotsRow = ActionsRow();
+        for (int i = 0; i < hero.HotbarAssignments.Count; i++)
+        {
+            int slot = i;
+            Attack? attack = state.HotbarAttackAt(i);
+            bool selected = attack != null && ReferenceEquals(hero.CurrentAttack, attack);
+            var cell = new VBoxContainer();
+            cell.AddThemeConstantOverride("separation", 3);
+            var slotButton = SmallButton($"{i + 1}\n{(attack == null ? "—" : AttackMonogram(attack.Name))}",
+                selected ? Gold : attack != null ? Text : Muted);
+            slotButton.CustomMinimumSize = new Vector2(66, 56);
+            slotButton.TooltipText = attack == null ? "Empty slot" : $"{attack.Name} — click to select";
+            slotButton.Pressed += () =>
+            {
+                state.SelectAttack(slot);
+                ShowCharacterPanel(state, CharacterTab.Hotbar);
+                RefreshGame(state);
+            };
+            cell.AddChild(slotButton);
+            var clear = SmallButton("CLEAR", attack != null ? Red : Muted);
+            clear.CustomMinimumSize = new Vector2(66, 26);
+            clear.Disabled = attack == null;
+            clear.Pressed += () =>
+            {
+                state.ClearHotbarSlot(slot);
+                ShowCharacterPanel(state, CharacterTab.Hotbar);
+                RefreshGame(state);
+            };
+            cell.AddChild(clear);
+            slotsRow.AddChild(cell);
+        }
+        body.AddChild(slotsRow);
+
+        // Everything assignable: usable actions first, then backpack spells (assigning one slots
+        // it onto the action bar in the same motion).
+        var scroll = new ScrollContainer
+        {
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 250)
+        };
+        var list = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        list.AddThemeConstantOverride("separation", 4);
+
+        void AddAssignRow(string name, string tooltip, Action<int> assign)
+        {
+            var row = new HBoxContainer();
+            row.AddThemeConstantOverride("separation", 5);
+            var label = LabelOf(name, 13, Text);
+            label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            label.TooltipText = tooltip;
+            row.AddChild(label);
+            for (int n = 0; n < hero.HotbarAssignments.Count; n++)
+            {
+                int target = n;
+                var assignButton = SmallButton((n + 1).ToString(), Blue);
+                assignButton.CustomMinimumSize = new Vector2(34, 28);
+                assignButton.TooltipText = $"Assign to slot {n + 1}";
+                assignButton.Pressed += () =>
+                {
+                    assign(target);
+                    ShowCharacterPanel(state, CharacterTab.Hotbar);
+                    RefreshGame(state);
+                };
+                row.AddChild(assignButton);
+            }
+            list.AddChild(row);
+        }
+
+        foreach (Attack attack in hero.Attacks)
+        {
+            int atSlot = hero.HotbarAssignments.FindIndex(id =>
+                string.Equals(id, attack.Id, StringComparison.OrdinalIgnoreCase));
+            string suffix = atSlot >= 0 ? $"   [SLOT {atSlot + 1}]" : "   [UNASSIGNED]";
+            string attackId = attack.Id;
+            AddAssignRow(attack.Name.ToUpperInvariant() + suffix, attack.Description,
+                target => state.AssignAttackToHotbar(attackId, target, out _));
+        }
+        foreach (Combinable spell in hero.Inventory.Where(item => item is Spell).ToList())
+        {
+            Combinable captured = spell;
+            AddAssignRow(spell.Name.ToUpperInvariant() + "   [BACKPACK]", spell.Description,
+                target => state.AssignSpellToHotbar(captured, target, out _));
+        }
+        foreach (var consumableGroup in hero.Inventory.OfType<Item>()
+                     .Where(item => item.Consumable)
+                     .GroupBy(item => item.Id, StringComparer.OrdinalIgnoreCase).ToList())
+        {
+            Item captured = consumableGroup.First();
+            AddAssignRow($"{captured.Name.ToUpperInvariant()} x{consumableGroup.Count()}   [CONSUMABLE]",
+                captured.Description,
+                target => state.AssignConsumableToHotbar(captured, target, out _));
+        }
+
+        scroll.AddChild(list);
+        body.AddChild(scroll);
+        var close = CommandButton("CLOSE", Green, 160);
+        close.Pressed += () => CloseModal();
+        body.AddChild(Centered(close));
     }
 
     private void BuildStatsTab(GameState state, VBoxContainer body)
@@ -1857,28 +1974,47 @@ public partial class GameUi : Control
         string equipment = string.Join('|', state.Hero.Equipment.Values.OfType<Weapon>()
             .Select(weapon => $"{weapon.Id}:{weapon.WeaponType}"));
         string training = string.Join('|', state.Hero.WeaponTraining.OrderBy(type => type));
-        string signature = string.Join('|', state.Hero.Attacks.Select(attack => attack.Id)) + ":" +
-            state.Hero.CurrentAttack?.Id + ":" + equipment + ":" + training + ":" + state.Hero.HotbarCapacity;
+        string counts = string.Join('|', Enumerable.Range(0, state.Hero.HotbarAssignments.Count)
+            .Select(state.HotbarConsumableCount));
+        string signature = string.Join('|', state.Hero.HotbarAssignments.Select(id => id ?? "·")) + ":" +
+            state.Hero.CurrentAttack?.Id + ":" + equipment + ":" + training + ":" +
+            state.Hero.HotbarCapacity + ":" + counts;
         if (signature == _hotbarSignature) return;
         _hotbarSignature = signature;
         ClearChildren(_hotbar);
 
-        // Fixed bar (matches the Avalonia rework): always HotbarCapacity uniform square slots —
-        // empty slots render as empty boxes. Each shows its bound key (settings.json hotbarKeys,
-        // shared with the Avalonia client) and a compact monogram; details live in the tooltip.
+        // Fixed bar: always HotbarCapacity uniform square slots rendered from the positional
+        // assignments (managed on the character menu's Hotbar tab) — empty slots render as empty
+        // boxes. Each shows its bound key (settings.json hotbarKeys, shared with the Avalonia
+        // client) and a compact monogram; details live in the tooltip.
         string[] keyLabels = GameSettings.Current.HotbarKeyLabels;
-        int slots = Math.Max(1, state.Hero.HotbarCapacity);
+        int slots = Math.Max(1, state.Hero.HotbarAssignments.Count);
         for (int index = 0; index < slots; index++)
         {
             int slot = index;
             string keyLabel = index < keyLabels.Length ? keyLabels[index] : (index + 1).ToString();
-            Attack? attack = index < state.Hero.Attacks.Count ? state.Hero.Attacks[index] : null;
+            Attack? attack = state.HotbarAttackAt(index);
 
             if (attack == null)
             {
+                // Consumable quick-slot: monogram + carried count; pressing uses one copy.
+                Item? consumable = state.HotbarConsumableAt(index);
+                if (consumable != null)
+                {
+                    int count = state.HotbarConsumableCount(index);
+                    var useButton = SmallButton($"{keyLabel}\n{AttackMonogram(consumable.Name)} x{count}", Green);
+                    useButton.CustomMinimumSize = new Vector2(52, 52);
+                    useButton.FocusMode = FocusModeEnum.None;
+                    useButton.TooltipText = $"{consumable.Name} — press to use ({count} carried)";
+                    useButton.Pressed += () => { state.ActivateHotbarSlot(slot); _hotbarSignature = ""; RefreshGame(state); };
+                    _hotbar.AddChild(useButton);
+                    continue;
+                }
+
                 var empty = SmallButton(keyLabel, Muted with { A = 0.45f });
                 empty.CustomMinimumSize = new Vector2(52, 52);
                 empty.Disabled = true;
+                empty.FocusMode = FocusModeEnum.None;
                 _hotbar.AddChild(empty);
                 continue;
             }
@@ -1886,6 +2022,9 @@ public partial class GameUi : Control
             bool selected = ReferenceEquals(attack, state.Hero.CurrentAttack) || attack.Id == state.Hero.CurrentAttack?.Id;
             var button = SmallButton($"{keyLabel}\n{AttackMonogram(attack.Name)}", selected ? Gold : Muted);
             button.CustomMinimumSize = new Vector2(52, 52);
+            // HUD buttons never take keyboard focus — a focused Control eats Tab (focus-next)
+            // before the game can open the character sheet with it.
+            button.FocusMode = FocusModeEnum.None;
             WeaponUseProfile weaponUse = WeaponProficiencyService.Evaluate(state.Hero, attack);
             string cost = attack.IsHeavyAttack
                 ? attack.StaminaCost > 0 ? $"\nCost: {attack.StaminaCost} stamina"

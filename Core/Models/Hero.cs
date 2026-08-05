@@ -101,7 +101,16 @@ public class Hero
 
     // Inventory = carried gear that is not worn, held, or slotted as a spell.
     public List<Combinable> Inventory { get; set; } = new();
-    public int HotbarCapacity { get; set; } = 4;
+    public int HotbarCapacity { get; set; } = 6;
+
+    // Positional hotbar (owner request 2026-08-05): each slot holds an Attack.Id or null. New
+    // attacks auto-fill free slots (see GameState.ReconcileHotbar); deliberate clears stick via
+    // HotbarKnownIds. The player rearranges from the character menu's Hotbar tab.
+    public List<string?> HotbarAssignments { get; set; } = new();
+
+    // Every attack id that has ever been offered to the hotbar — auto-placement only happens for
+    // ids NOT in this set, so clearing a slot doesn't get undone by the next RefreshAttacks.
+    public HashSet<string> HotbarKnownIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Dictionary<EquipmentSlot, Combinable> Equipment { get; set; } = new();
 
@@ -111,8 +120,8 @@ public class Hero
 
     public int EquipmentDefenseBonus => Equipment.Values.Sum(item => item switch
     {
-        Armor armor => armor.DefenseBonus,
-        Item accessory => accessory.DefenseBonus,
+        Armor armor => RarityScaling.ScaleDefense(armor.DefenseBonus, armor.Rarity),
+        Item accessory => RarityScaling.ScaleDefense(accessory.DefenseBonus, accessory.Rarity),
         _ => 0
     });
 

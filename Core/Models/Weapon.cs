@@ -35,14 +35,15 @@ public class Weapon : Combinable
     /// <summary>Number of held-item slots occupied. Bows and large weapons require both hands.</summary>
     public int HandsRequired { get; set; } = 1;
 
-    /// <summary>Project this weapon into an Attack the combat system can execute.</summary>
+    /// <summary>Project this weapon into an Attack the combat system can execute. Rarity applies
+    /// here (see RarityScaling), so a combined/crafted higher-rarity weapon actually hits harder.</summary>
     public Attack ToAttack() => new()
     {
         Id = Id,
         Name = Name,
-        Damage = BaseDamage,
+        Damage = RarityScaling.ScaleDamage(BaseDamage, Rarity),
         Range = Range,
-        Cooldown = Cooldown,
+        Cooldown = RarityScaling.ScaleCooldown(Cooldown, Rarity),
         Animation = Animation,
         Description = Description,
         CritChance = CritChance,

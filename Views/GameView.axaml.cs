@@ -179,8 +179,8 @@ public partial class GameView : UserControl
             }
             else if (TryGetHotbarIndex(e.Key, out int slot))
             {
-                // Number keys 1-9 select the hotbar attack.
-                gs.SelectAttack(slot);
+                // Hotbar keys: attack slots select; consumable slots use one copy.
+                gs.ActivateHotbarSlot(slot);
                 e.Handled = true;
             }
             else if (IsMoveKey(e.Key))

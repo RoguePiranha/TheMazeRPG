@@ -456,24 +456,43 @@ public class GameState
     {
         if (!CanTakeTacticalPlayerAction() || !TacticalTurn.BonusActionAvailable) return false;
         if (!Hero.Inventory.Contains(item)) return false;
-
-        switch (item.UseEffect)
-        {
-            case ItemUseEffect.RestoreHealth:
-                if (Hero.CurrentHp >= Hero.MaxHp) return false;
-                int amount = item.EffectPower + (int)item.Rarity * 5;
-                int restored = Math.Min(amount, Hero.MaxHp - Hero.CurrentHp);
-                Hero.CurrentHp += restored;
-                LogMessage($"Drank {item.Name} (+{restored} HP).", MessageKind.Loot);
-                break;
-            default:
-                return false;
-        }
+        if (!ApplyConsumableEffect(item)) return false;
 
         if (item.Consumable)
             Hero.Inventory.Remove(item);
         TacticalTurn.BonusActionAvailable = false;
         EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    /// <summary>Apply a consumable's effect (rarity-scaled — see RarityScaling.Effect). Returns
+    /// false when it would do nothing (e.g. drinking a health potion at full HP), so the item
+    /// isn't wasted. Shared by tactical bonus-item use and real-time hotbar use.</summary>
+    private bool ApplyConsumableEffect(Item item)
+    {
+        switch (item.UseEffect)
+        {
+            case ItemUseEffect.RestoreHealth:
+                if (Hero.CurrentHp >= Hero.MaxHp) return false;
+                int amount = RarityScaling.ScaleEffect(item.EffectPower, item.Rarity);
+                int restored = Math.Min(amount, Hero.MaxHp - Hero.CurrentHp);
+                Hero.CurrentHp += restored;
+                LogMessage($"Drank {item.Name} (+{restored} HP).", MessageKind.Loot);
+                AddFloatingText($"+{restored}", Hero.X, Hero.Y - 0.4f, FloatingTextKind.Heal);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>Use a consumable in real time (the hotbar path). No turn-economy gating — just
+    /// alive, running, and carrying it.</summary>
+    public bool UseConsumable(Item item)
+    {
+        if (IsHeroDead || !IsRunning) return false;
+        if (!Hero.Inventory.Contains(item)) return false;
+        if (!ApplyConsumableEffect(item)) return false;
+        if (item.Consumable) Hero.Inventory.Remove(item);
         return true;
     }
 
@@ -1052,25 +1071,25 @@ public class GameState
         _combatSystem.PerformHeroDirectionalAttack(Hero, dirX, dirY, Projectiles);
     }
 
-    /// <summary>Select a hotbar attack by index into Hero.Attacks (the equipped/usable attacks).
-    /// Ignored if out of range.</summary>
-    public void SelectAttack(int index)
+    /// <summary>Select the attack assigned to a hotbar slot (0-based). Empty slots no-op, so a
+    /// number key never "selects nothing".</summary>
+    public void SelectAttack(int slot)
     {
-        if (index >= 0 && index < Hero.Attacks.Count)
-        {
-            Hero.CurrentAttack = Hero.Attacks[index];
-        }
+        var attack = HotbarAttackAt(slot);
+        if (attack != null) Hero.CurrentAttack = attack;
     }
 
-    /// <summary>Cycle the selected hotbar attack by <paramref name="delta"/> slots, wrapping around
-    /// Hero.Attacks (the scroll wheel steps by ±1).</summary>
+    /// <summary>Cycle the selected attack through the occupied hotbar slots, wrapping (the
+    /// scroll wheel steps by ±1). Empty slots are skipped.</summary>
     public void CycleAttack(int delta)
     {
-        int count = Hero.Attacks.Count;
-        if (count == 0) return;
-        int current = Hero.CurrentAttack != null ? Hero.Attacks.IndexOf(Hero.CurrentAttack) : -1;
-        int next = (((current + delta) % count) + count) % count;
-        Hero.CurrentAttack = Hero.Attacks[next];
+        var occupied = new List<int>();
+        for (int i = 0; i < Hero.HotbarAssignments.Count; i++)
+            if (HotbarAttackAt(i) != null) occupied.Add(i);
+        if (occupied.Count == 0) return;
+        int currentPos = occupied.FindIndex(slot => ReferenceEquals(HotbarAttackAt(slot), Hero.CurrentAttack));
+        int next = (((currentPos + delta) % occupied.Count) + occupied.Count) % occupied.Count;
+        Hero.CurrentAttack = HotbarAttackAt(occupied[next]);
     }
 
     public bool EquipFromInventory(Combinable item) => EquipFromInventory(item, out _);
@@ -1087,14 +1106,21 @@ public class GameState
 
         if (item is Spell)
         {
-            if (Hero.Attacks.Count >= Hero.HotbarCapacity)
+            if (Hero.Loadout.Any(c => string.Equals(c.Id, item.Id, StringComparison.OrdinalIgnoreCase)))
             {
-                reason = "The action bar is full.";
+                reason = $"{item.Name} is already on the action bar.";
+                return false;
+            }
+            int free = FirstFreeHotbarSlot();
+            if (free < 0)
+            {
+                reason = "The action bar is full — clear a slot from the Hotbar tab first.";
                 return false;
             }
             Hero.Inventory.Remove(item);
             Hero.Loadout.Add(item);
             RefreshAttacks();
+            AssignAttackToHotbar(item.Id, free, out _);
             LogMessage($"Slotted {item.Name} on the action bar.", MessageKind.System);
             return true;
         }
@@ -2446,6 +2472,177 @@ public class GameState
         }
         Hero.Attacks.AddRange(AttackFactory.GetSlottedSpellAttacks(Hero.Loadout));
         Hero.CurrentAttack = Hero.Attacks.FirstOrDefault(a => a.Id == currentId) ?? Hero.Attacks.FirstOrDefault();
+        ReconcileHotbar();
+    }
+
+    /// <summary>Keep the positional hotbar honest after any Attacks rebuild: size to capacity,
+    /// drop ids that no longer project, dedupe, then auto-place attacks the hotbar has never
+    /// seen into free slots (fresh heroes fill 1..N; a deliberately cleared action stays cleared
+    /// because its id is in HotbarKnownIds).</summary>
+    private void ReconcileHotbar()
+    {
+        var slots = Hero.HotbarAssignments;
+        int capacity = Math.Max(1, Hero.HotbarCapacity);
+        while (slots.Count < capacity) slots.Add(null);
+        if (slots.Count > capacity) slots.RemoveRange(capacity, slots.Count - capacity);
+
+        var assigned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < slots.Count; i++)
+        {
+            string? id = slots[i];
+            if (id == null) continue;
+            bool projects = Hero.Attacks.Any(a => string.Equals(a.Id, id, StringComparison.OrdinalIgnoreCase));
+            bool carriedConsumable = Hero.Inventory.Any(c =>
+                c is Item { Consumable: true } && string.Equals(c.Id, id, StringComparison.OrdinalIgnoreCase));
+            if ((!projects && !carriedConsumable) || !assigned.Add(id)) slots[i] = null;
+        }
+
+        foreach (Attack attack in Hero.Attacks)
+        {
+            if (assigned.Contains(attack.Id) || Hero.HotbarKnownIds.Contains(attack.Id)) continue;
+            int free = slots.IndexOf(null);
+            if (free < 0) break;
+            slots[free] = attack.Id;
+            assigned.Add(attack.Id);
+        }
+        foreach (Attack attack in Hero.Attacks) Hero.HotbarKnownIds.Add(attack.Id);
+    }
+
+    /// <summary>The attack assigned to a hotbar slot (0-based), or null for empty/out-of-range.</summary>
+    public Attack? HotbarAttackAt(int slot)
+    {
+        if (slot < 0 || slot >= Hero.HotbarAssignments.Count) return null;
+        string? id = Hero.HotbarAssignments[slot];
+        if (id == null) return null;
+        return Hero.Attacks.FirstOrDefault(a => string.Equals(a.Id, id, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private int FirstFreeHotbarSlot() => Hero.HotbarAssignments.IndexOf(null);
+
+    /// <summary>The carried consumable a hotbar slot points at (null if the slot holds an attack,
+    /// is empty, or the last copy was used up).</summary>
+    public Item? HotbarConsumableAt(int slot)
+    {
+        if (slot < 0 || slot >= Hero.HotbarAssignments.Count) return null;
+        string? id = Hero.HotbarAssignments[slot];
+        if (id == null) return null;
+        return Hero.Inventory.OfType<Item>().FirstOrDefault(item =>
+            item.Consumable && string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>How many copies of a consumable slot's item the hero carries (for the slot badge).</summary>
+    public int HotbarConsumableCount(int slot)
+    {
+        if (slot < 0 || slot >= Hero.HotbarAssignments.Count) return 0;
+        string? id = Hero.HotbarAssignments[slot];
+        if (id == null) return 0;
+        return Hero.Inventory.Count(c =>
+            c is Item { Consumable: true } && string.Equals(c.Id, id, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Put a carried consumable on a hotbar slot (it stays in the backpack; the slot is
+    /// a quick-use binding, decremented as copies are consumed).</summary>
+    public bool AssignConsumableToHotbar(Item item, int slot, out string reason)
+    {
+        reason = "";
+        if (slot < 0 || slot >= Hero.HotbarAssignments.Count) { reason = "No such slot."; return false; }
+        if (!item.Consumable || !Hero.Inventory.Contains(item))
+        {
+            reason = "That item can't be quick-slotted.";
+            return false;
+        }
+        int existing = Hero.HotbarAssignments.FindIndex(id =>
+            string.Equals(id, item.Id, StringComparison.OrdinalIgnoreCase));
+        string? displaced = Hero.HotbarAssignments[slot];
+        Hero.HotbarAssignments[slot] = item.Id;
+        if (existing >= 0 && existing != slot) Hero.HotbarAssignments[existing] = displaced;
+        LogMessage($"{item.Name} assigned to slot {slot + 1}.", MessageKind.System);
+        return true;
+    }
+
+    /// <summary>The one hotbar entry point for slot keys/clicks: an attack slot selects that
+    /// attack; a consumable slot uses one copy; an empty slot does nothing.</summary>
+    public void ActivateHotbarSlot(int slot)
+    {
+        var attack = HotbarAttackAt(slot);
+        if (attack != null)
+        {
+            Hero.CurrentAttack = attack;
+            return;
+        }
+        var consumable = HotbarConsumableAt(slot);
+        if (consumable != null) UseConsumable(consumable);
+    }
+
+    /// <summary>Assign a currently-usable attack (class action, basic, or slotted spell) to a
+    /// hotbar slot. If it already sits on another slot the two slots swap; otherwise the target's
+    /// previous occupant becomes unassigned (still reachable from the Hotbar tab).</summary>
+    public bool AssignAttackToHotbar(string attackId, int slot, out string reason)
+    {
+        reason = "";
+        if (slot < 0 || slot >= Hero.HotbarAssignments.Count) { reason = "No such slot."; return false; }
+        var attack = Hero.Attacks.FirstOrDefault(a => string.Equals(a.Id, attackId, StringComparison.OrdinalIgnoreCase));
+        if (attack == null) { reason = "That action is not usable right now."; return false; }
+
+        int existing = Hero.HotbarAssignments.FindIndex(id =>
+            string.Equals(id, attackId, StringComparison.OrdinalIgnoreCase));
+        string? displaced = Hero.HotbarAssignments[slot];
+        Hero.HotbarAssignments[slot] = attack.Id;
+        if (existing >= 0 && existing != slot) Hero.HotbarAssignments[existing] = displaced;
+        LogMessage($"{attack.Name} assigned to slot {slot + 1}.", MessageKind.System);
+        return true;
+    }
+
+    /// <summary>Slot a spell straight onto a specific hotbar slot, moving it from the backpack
+    /// onto the action bar first if needed.</summary>
+    public bool AssignSpellToHotbar(Combinable spell, int slot, out string reason)
+    {
+        reason = "";
+        if (spell is not Spell) { reason = "Only spells can be slotted."; return false; }
+        if (Hero.Inventory.Contains(spell))
+        {
+            // A copy of this spell is already slotted — treat the assign as a move of that copy.
+            if (Hero.Loadout.Any(c => string.Equals(c.Id, spell.Id, StringComparison.OrdinalIgnoreCase)))
+                return AssignAttackToHotbar(spell.Id, slot, out reason);
+            Hero.Inventory.Remove(spell);
+            Hero.Loadout.Add(spell);
+            RefreshAttacks();
+        }
+        else if (!Hero.Loadout.Contains(spell))
+        {
+            reason = "That spell is not in your backpack.";
+            return false;
+        }
+        return AssignAttackToHotbar(spell.Id, slot, out reason);
+    }
+
+    /// <summary>Empty a hotbar slot. A slotted spell no longer assigned anywhere returns to the
+    /// backpack; class actions just leave the bar (reassignable from the Hotbar tab).</summary>
+    public bool ClearHotbarSlot(int slot)
+    {
+        if (slot < 0 || slot >= Hero.HotbarAssignments.Count) return false;
+        string? id = Hero.HotbarAssignments[slot];
+        if (id == null) return false;
+        Hero.HotbarAssignments[slot] = null;
+
+        var loadoutSpell = Hero.Loadout.FirstOrDefault(c =>
+            string.Equals(c.Id, id, StringComparison.OrdinalIgnoreCase));
+        if (loadoutSpell != null)
+        {
+            Hero.Loadout.Remove(loadoutSpell);
+            Hero.Inventory.Add(loadoutSpell);
+            RefreshAttacks();
+            LogMessage($"Removed {loadoutSpell.Name} from the action bar.", MessageKind.System);
+            return true;
+        }
+
+        if (string.Equals(Hero.CurrentAttack?.Id, id, StringComparison.OrdinalIgnoreCase))
+        {
+            Hero.CurrentAttack = Enumerable.Range(0, Hero.HotbarAssignments.Count)
+                .Select(HotbarAttackAt).FirstOrDefault(a => a != null) ?? Hero.Attacks.FirstOrDefault();
+        }
+        LogMessage($"Cleared hotbar slot {slot + 1}.", MessageKind.System);
+        return true;
     }
 
     /// <summary>Begin a new multi-tick activity. Cancels and replaces any activity already
@@ -3275,6 +3472,11 @@ public class GameState
         Hero.Inventory = new List<Combinable>(data.Inventory);
         Hero.Equipment = new Dictionary<EquipmentSlot, Combinable>(data.Equipment ?? new());
         Hero.WeaponTraining = new HashSet<WeaponType>(data.WeaponTraining ?? new());
+        Hero.HotbarAssignments = data.HotbarAssignments != null
+            ? new List<string?>(data.HotbarAssignments) : new List<string?>();
+        Hero.HotbarKnownIds = data.HotbarKnownIds != null
+            ? new HashSet<string>(data.HotbarKnownIds, StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // Grow-with-use elemental progress survives the restart (remote's typed Affinities model
         // supersedes the local string-dict version — one restore path, not two).
         if (data.Affinities != null) Hero.Affinities = data.Affinities.Clone();

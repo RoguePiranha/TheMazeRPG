@@ -254,6 +254,20 @@ public partial class GameHost : Node
         }
     }
 
+    /// <summary>Tab is Godot's focus-next key: any focused Control (a clicked button, a list)
+    /// consumes it before _UnhandledInput ever sees it, which made the character sheet fail to
+    /// open while focus walked the HUD instead. Intercept it ahead of GUI focus handling while
+    /// playing; inside modals and the console, Tab keeps its normal UI meaning.</summary>
+    public override void _Input(InputEvent @event)
+    {
+        if (_inGame && !_ui.IsModalOpen && !_ui.IsFrontEndOpen && !_ui.IsConsoleOpen &&
+            @event is InputEventKey { Pressed: true, Echo: false, PhysicalKeycode: Key.Tab })
+        {
+            _ui.ShowCharacterSheet(_gameState);
+            GetViewport().SetInputAsHandled();
+        }
+    }
+
     public override void _UnhandledInput(InputEvent @event)
     {
         if (_ui.IsModalOpen)
@@ -324,15 +338,10 @@ public partial class GameHost : Node
                 GetViewport().SetInputAsHandled();
                 return;
             }
-            if (pressedKey.PhysicalKeycode == Key.Tab)
-            {
-                _ui.ShowCharacterSheet(_gameState);
-                GetViewport().SetInputAsHandled();
-                return;
-            }
             if (TryGetHotbarIndex(pressedKey.PhysicalKeycode, out int slot))
             {
-                _gameState.SelectAttack(slot);
+                // Attack slots select; consumable slots use one copy.
+                _gameState.ActivateHotbarSlot(slot);
                 _ui.RefreshGame(_gameState);
                 GetViewport().SetInputAsHandled();
                 return;

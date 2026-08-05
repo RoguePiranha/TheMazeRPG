@@ -84,4 +84,10 @@ public class SaveData
 
     /// <summary>World-clock time (total game minutes). 0 for saves predating the clock.</summary>
     public double WorldGameMinutes { get; set; }
+
+    /// <summary>Positional hotbar (attack ids per slot, null = empty) and the ids the hotbar has
+    /// already offered (deliberate clears survive a load). Null for older saves — auto-placement
+    /// rebuilds a sensible default.</summary>
+    public List<string?>? HotbarAssignments { get; set; }
+    public List<string>? HotbarKnownIds { get; set; }
 }

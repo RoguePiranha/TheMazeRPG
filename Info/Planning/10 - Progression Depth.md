@@ -49,9 +49,9 @@ private float AbilityMult(string key) =>
 - **Ability slots**: `Hero.EquippedAbilities` (≤ `AbilitySlots`, from races.json — Human 3 per Game Idea.md; add the field, default 3). Equip at the inventory screen; **combining abilities still requires a Shrine** (`CombinationEngine` location gating already enforces this).
 - Recompute pools (`UpdateHeroResourcePools`) on ability equip/unequip, same as stat spends.
 
-### 3. Rarity → power
+### 3. Rarity → power — **IMPLEMENTED 2026-08-05** (with a model ruling)
 
-At `ToAttack()`: `damage × (1 + 0.08 × (int)Rarity)`, `cooldown × (1 − 0.03 × (int)Rarity)` (Common=0 … Mythic=5 → +40% dmg / −15% cd at Mythic). Armor-ish items scale their modifiers the same way when armor lands. Sell prices already scale via `RarityPoints` — untouched. Re-baseline `TEST_BALANCE` (loot floors get stronger; intended).
+**Owner ruling: rarity is intrinsic to the definition** — plain Iron gear is Common forever; loot never re-rolls rarity (LootService selects *which* entry drops, rarity-weighted and floor-boosted); rarity climbs only through combining/crafting. Scaling lives in `Core/Models/RarityScaling.cs`, applied at the projection/consumption seams: `ToAttack()` damage ×(1+0.08·tier) and cooldown ×(1−0.03·tier, floored at 0.70); `EquipmentDefenseBonus` ×(1+0.15·tier); consumable effects ×(1+0.25·tier). Verified by `TEST_RARITY`. Sell prices already scaled via `RarityPoints` — untouched.
 
 ### TEST_PROGRESSION (PR 10 exit)
 
