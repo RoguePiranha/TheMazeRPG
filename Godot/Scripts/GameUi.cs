@@ -1701,26 +1701,58 @@ public partial class GameUi : Control
             .Select(weapon => $"{weapon.Id}:{weapon.WeaponType}"));
         string training = string.Join('|', state.Hero.WeaponTraining.OrderBy(type => type));
         string signature = string.Join('|', state.Hero.Attacks.Select(attack => attack.Id)) + ":" +
-            state.Hero.CurrentAttack?.Id + ":" + equipment + ":" + training;
+            state.Hero.CurrentAttack?.Id + ":" + equipment + ":" + training + ":" + state.Hero.HotbarCapacity;
         if (signature == _hotbarSignature) return;
         _hotbarSignature = signature;
         ClearChildren(_hotbar);
-        for (int index = 0; index < state.Hero.Attacks.Count; index++)
+
+        // Fixed bar (matches the Avalonia rework): always HotbarCapacity uniform square slots —
+        // empty slots render as empty boxes. Each shows its bound key (settings.json hotbarKeys,
+        // shared with the Avalonia client) and a compact monogram; details live in the tooltip.
+        string[] keyLabels = GameSettings.Current.HotbarKeyLabels;
+        int slots = Math.Max(1, state.Hero.HotbarCapacity);
+        for (int index = 0; index < slots; index++)
         {
             int slot = index;
-            Attack attack = state.Hero.Attacks[index];
+            string keyLabel = index < keyLabels.Length ? keyLabels[index] : (index + 1).ToString();
+            Attack? attack = index < state.Hero.Attacks.Count ? state.Hero.Attacks[index] : null;
+
+            if (attack == null)
+            {
+                var empty = SmallButton(keyLabel, Muted with { A = 0.45f });
+                empty.CustomMinimumSize = new Vector2(52, 52);
+                empty.Disabled = true;
+                _hotbar.AddChild(empty);
+                continue;
+            }
+
             bool selected = ReferenceEquals(attack, state.Hero.CurrentAttack) || attack.Id == state.Hero.CurrentAttack?.Id;
-            var button = SmallButton($"{index + 1}  {attack.Name.ToUpperInvariant()}", selected ? Gold : Muted);
-            button.CustomMinimumSize = new Vector2(150, 38);
+            var button = SmallButton($"{keyLabel}\n{AttackMonogram(attack.Name)}", selected ? Gold : Muted);
+            button.CustomMinimumSize = new Vector2(52, 52);
             WeaponUseProfile weaponUse = WeaponProficiencyService.Evaluate(state.Hero, attack);
-            button.TooltipText = attack.Description + (weaponUse.UsesWeapon && !weaponUse.IsTrained
-                ? $"\nUntrained {weaponUse.WeaponNames}: " +
-                  $"{(1f - weaponUse.DamageMultiplier):P0} damage, " +
-                  $"{(1f - weaponUse.AccuracyMultiplier):P0} accuracy penalty."
-                : "");
+            string cost = attack.IsHeavyAttack
+                ? attack.StaminaCost > 0 ? $"\nCost: {attack.StaminaCost} stamina"
+                    : attack.ManaCost > 0 ? $"\nCost: {attack.ManaCost} mana"
+                    : $"\nCost: {attack.FaithCost} faith"
+                : "";
+            button.TooltipText = attack.Name + "\n" + attack.Description + cost +
+                (weaponUse.UsesWeapon && !weaponUse.IsTrained
+                    ? $"\nUntrained {weaponUse.WeaponNames}: " +
+                      $"{(1f - weaponUse.DamageMultiplier):P0} damage, " +
+                      $"{(1f - weaponUse.AccuracyMultiplier):P0} accuracy penalty."
+                    : "");
             button.Pressed += () => { state.SelectAttack(slot); _hotbarSignature = ""; RefreshGame(state); };
             _hotbar.AddChild(button);
         }
+    }
+
+    /// <summary>Compact slot label: initials of the first two words, or the first three letters
+    /// of a single-word name ("Quick Slash" → QS, "Bow" → BOW) — same rule as the Avalonia bar.</summary>
+    private static string AttackMonogram(string name)
+    {
+        string[] parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2) return $"{char.ToUpperInvariant(parts[0][0])}{char.ToUpperInvariant(parts[1][0])}";
+        return name.Length <= 3 ? name.ToUpperInvariant() : name[..3].ToUpperInvariant();
     }
 
     private void AddFrontPanel(Control content, Vector2 size)

@@ -60,9 +60,11 @@ public partial class DungeonView : Node2D
         DrawTacticalPathPreview(State);
         DrawDungeonDetails(maze, palette);
         DrawMazeFeatures(maze, palette);
+        DrawCritters(State);
         DrawProjectiles(State, palette);
         DrawEnemies(State, palette);
         DrawHero(State, palette);
+        DrawFloatingTexts(State);
     }
 
     public static Vector2 WorldToPixel(float x, float y) =>
@@ -510,6 +512,74 @@ public partial class DungeonView : Node2D
                 DrawRect(back, palette.HealthBack);
                 DrawRect(new Rect2(back.Position, new Vector2(back.Size.X * fraction, back.Size.Y)), palette.Health);
             }
+        }
+    }
+
+    // Ambient critters (Core-simulated when GameState.EnableAmbience is on): dungeon rats dart
+    // and flee, bats drift and bob; the dog/cat cases wait for the overworld scene. Same
+    // visibility rule as enemies — only currently-visible cells. Colors match the Avalonia
+    // renderer; sizes scaled for the 48px cell.
+    private void DrawCritters(GameState state)
+    {
+        foreach (Critter critter in state.Critters)
+        {
+            if (!IsCellVisibleCached((int)MathF.Round(critter.X), (int)MathF.Round(critter.Y)))
+                continue;
+            Vector2 center = WorldToPixel(critter.X, critter.Y);
+            switch (critter.Kind)
+            {
+                case CritterKind.Rat:
+                    var ratBody = new Color(0.33f, 0.29f, 0.26f);
+                    DrawCircle(center + new Vector2(0f, 3f), 3.5f, ratBody);
+                    DrawLine(center + new Vector2(-3.5f, 3f), center + new Vector2(-8f, 4.5f),
+                        new Color(0.47f, 0.4f, 0.36f), 1f);
+                    break;
+                case CritterKind.Bat:
+                    float flap = MathF.Sin((critter.X + critter.Y) * 9f) * 2.2f;
+                    Vector2 batCenter = center + new Vector2(0f, -9f + MathF.Sin((critter.X - critter.Y) * 6f) * 2.2f);
+                    var wing = new Color(0.23f, 0.2f, 0.27f);
+                    DrawLine(batCenter + new Vector2(-4.5f, -flap), batCenter, wing, 1.6f);
+                    DrawLine(batCenter, batCenter + new Vector2(4.5f, -flap), wing, 1.6f);
+                    break;
+                case CritterKind.Dog:
+                    var dogBody = new Color(0.55f, 0.35f, 0.17f);
+                    DrawRect(new Rect2(center + new Vector2(-6f, -1.5f), new Vector2(11f, 6f)), dogBody);
+                    DrawCircle(center + new Vector2(6.5f, -0.5f), 3f, dogBody);
+                    DrawLine(center + new Vector2(-6f, 0f), center + new Vector2(-9f, -4f), dogBody, 1.5f);
+                    break;
+                case CritterKind.Cat:
+                    var catBody = new Color(0.43f, 0.43f, 0.46f);
+                    DrawRect(new Rect2(center + new Vector2(-4.5f, 0f), new Vector2(8f, 4.5f)), catBody);
+                    DrawCircle(center + new Vector2(4.5f, 1f), 2.2f, catBody);
+                    DrawLine(center + new Vector2(-4.5f, 1.5f), center + new Vector2(-7.5f, -2f), catBody, 1.2f);
+                    break;
+            }
+        }
+    }
+
+    // Rising, fading combat feedback ("14", "Dodge!", "LEVEL UP!") — Core spawns these at every
+    // damage/dodge/level-up beat; colors match the Avalonia renderer.
+    private void DrawFloatingTexts(GameState state)
+    {
+        foreach (FloatingText text in state.FloatingTexts)
+        {
+            if (!IsCellVisibleCached((int)MathF.Round(text.X), (int)MathF.Round(text.Y)))
+                continue;
+            float life = text.LifeT; // 1 → 0 over lifetime
+            float alpha = life < 0.35f ? life / 0.35f : 1f;
+            (Color color, int size) = text.Kind switch
+            {
+                FloatingTextKind.HeroDamage => (new Color(1f, 0.33f, 0.33f), 14),
+                FloatingTextKind.Dodge => (new Color(0.4f, 0.8f, 1f), 11),
+                FloatingTextKind.LevelUp => (new Color(0.4f, 0.87f, 0.4f), 15),
+                _ => (new Color(1f, 0.93f, 0.8f), 12) // EnemyDamage
+            };
+            Vector2 anchor = WorldToPixel(text.X, text.Y) +
+                new Vector2(-60f, -(1f - life) * 20f);
+            DrawString(ThemeDB.FallbackFont, anchor + new Vector2(1f, 1f), text.Text,
+                HorizontalAlignment.Center, 120f, size, new Color(0f, 0f, 0f, alpha * 0.8f));
+            DrawString(ThemeDB.FallbackFont, anchor, text.Text,
+                HorizontalAlignment.Center, 120f, size, color with { A = alpha });
         }
     }
 

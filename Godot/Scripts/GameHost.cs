@@ -510,6 +510,9 @@ public partial class GameHost : Node
         if (_gameState != null && !ReferenceEquals(_gameState, state))
             _gameState.IsRunning = false;
         _gameState = state;
+        // Live-game-only ambience (critters + flavor lines) — the same seam rule the Avalonia
+        // client uses: headless demos stay silent, real play gets the alive layer.
+        state.EnableAmbience = true;
         _secondsPerTick = 1.0 / Math.Max(1, GameSettings.Current.TickRate);
         _simulationAccumulator = 0;
         _inGame = true;
@@ -1124,11 +1127,41 @@ public partial class GameHost : Node
         return _gameState.TryTacticalMove(direction.X, direction.Y);
     }
 
+    // Per-slot hotbar bindings shared with the Avalonia client via settings.json ("hotbarKeys",
+    // Avalonia Key names). Digit names map to the top row; anything else parses as a Godot key
+    // name ("Q" → Key.Q); unparseable entries fall back to the numpad only.
+    private static readonly Key[] HotbarBindings = ParseHotbarBindings();
+
+    private static Key[] ParseHotbarBindings()
+    {
+        string[] names = GameSettings.Current.HotbarKeys;
+        var keys = new Key[names.Length];
+        for (int i = 0; i < names.Length; i++) keys[i] = TranslateBinding(names[i]);
+        return keys;
+    }
+
+    private static Key TranslateBinding(string name)
+    {
+        if (name.Length == 2 && name[0] == 'D' && char.IsDigit(name[1]))
+            return Key.Key0 + (name[1] - '0');
+        if (name.StartsWith("NumPad", StringComparison.OrdinalIgnoreCase) &&
+            name.Length == 7 && char.IsDigit(name[6]))
+            return Key.Kp0 + (name[6] - '0');
+        return Enum.TryParse(name, ignoreCase: true, out Key parsed) ? parsed : Key.None;
+    }
+
     private static bool TryGetHotbarIndex(Key key, out int index)
     {
+        for (int i = 0; i < HotbarBindings.Length; i++)
+        {
+            if (HotbarBindings[i] != Key.None && HotbarBindings[i] == key)
+            {
+                index = i;
+                return true;
+            }
+        }
         index = key switch
         {
-            >= Key.Key1 and <= Key.Key9 => (int)(key - Key.Key1),
             >= Key.Kp1 and <= Key.Kp9 => (int)(key - Key.Kp1),
             _ => -1
         };
