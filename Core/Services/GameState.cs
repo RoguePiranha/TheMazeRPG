@@ -56,8 +56,25 @@ public class GameState
     /// preference, not saved. Forced to Manual while in the Overworld (the town is player-driven).</summary>
     public ControlMode ControlMode { get; private set; } = ControlMode.Auto;
 
-    /// <summary>While in the Overworld, the town structure the hero is standing close enough to
-    /// interact with (Press-E), or null. Recomputed each tick by UpdateOverworldInteractable.</summary>
+    /// <summary>The optional tactical clock is player-controlled and never activates implicitly.</summary>
+    public SimulationMode SimulationMode { get; private set; } = SimulationMode.RealTime;
+    public TacticalTurnState TacticalTurn { get; } = new();
+    public const int TacticalMovementCap = 8;
+    private ControlMode _controlModeBeforeTactical = ControlMode.Manual;
+    private readonly Queue<Enemy> _tacticalEnemyQueue = new();
+    private Enemy? _tacticalMovingEnemy;
+    private float _tacticalMoveStartX;
+    private float _tacticalMoveStartY;
+    private float _tacticalMoveTargetX;
+    private float _tacticalMoveTargetY;
+    private int _tacticalMoveTicksRemaining;
+    private int _tacticalActionDelayTicks;
+    private int _tacticalEffectSafetyTicks;
+    private const int TacticalMoveAnimationTicks = 5;
+    private const int TacticalActionDelayTicks = 3;
+    private const int TacticalEffectSafetyLimit = 90;
+
+    /// <summary>The nearby chest or town structure available through the Press-E interaction.</summary>
     public MazeFeature? NearbyInteractable { get; private set; }
 
     // Player movement intent for Manual mode, set by the UI from held keys (each component in
@@ -134,6 +151,892 @@ public class GameState
     public void ToggleControlMode() =>
         SetControlMode(ControlMode == ControlMode.Auto ? ControlMode.Manual : ControlMode.Auto);
 
+    public void SetSimulationMode(SimulationMode mode)
+    {
+        if (SimulationMode == mode) return;
+
+        _manualMoveX = 0f;
+        _manualMoveY = 0f;
+        _dashTicksRemaining = 0;
+
+        if (mode == SimulationMode.TurnBased)
+        {
+            _controlModeBeforeTactical = ControlMode;
+            SimulationMode = mode;
+            SetControlMode(ControlMode.Manual);
+            Hero.X = Hero.GridX;
+            Hero.Y = Hero.GridY;
+            foreach (Enemy enemy in Enemies.Where(enemy => enemy.IsAlive))
+            {
+                enemy.X = MathF.Round(enemy.X);
+                enemy.Y = MathF.Round(enemy.Y);
+            }
+            ResetTacticalResolution();
+            TacticalTurn.TurnNumber = 0;
+            BeginTacticalPlayerTurn();
+            LogMessage("Turn-based mode engaged.", MessageKind.System);
+            return;
+        }
+
+        SimulationMode = mode;
+        TacticalTurn.IsPlayerTurn = false;
+        TacticalTurn.ResolutionTicksRemaining = 0;
+        TacticalTurn.MovementRemaining = 0;
+        TacticalTurn.ActionAvailable = false;
+        TacticalTurn.BonusActionAvailable = false;
+        ResetTacticalResolution();
+        SetControlMode(IsInOverworld ? ControlMode.Manual : _controlModeBeforeTactical);
+        LogMessage("Real-time mode resumed.", MessageKind.System);
+    }
+
+    public void ToggleSimulationMode() =>
+        SetSimulationMode(SimulationMode == SimulationMode.RealTime
+            ? SimulationMode.TurnBased
+            : SimulationMode.RealTime);
+
+    /// <summary>Agility grants a modest tactical movement increase without allowing extreme
+    /// stat values to dominate the whole map.</summary>
+    public int CalculateTacticalMovementAllowance()
+    {
+        int agilityBonus = (int)MathF.Floor(MathF.Max(0f, Hero.EffectiveAgility - 1f) / 3f);
+        return Math.Clamp(3 + agilityBonus, 3, TacticalMovementCap);
+    }
+
+    /// <summary>Spend one movement point to enter an adjacent cardinal tile.</summary>
+    public bool TryTacticalMove(int dx, int dy)
+    {
+        if (!CanTakeTacticalPlayerAction() || TacticalTurn.MovementRemaining <= 0) return false;
+        if (Math.Abs(dx) + Math.Abs(dy) != 1) return false;
+
+        int targetX = Hero.GridX + dx;
+        int targetY = Hero.GridY + dy;
+        if (!CurrentMaze.IsWalkable(targetX, targetY) || IsEnemyOccupyingCell(targetX, targetY))
+            return false;
+
+        Hero.X = targetX;
+        Hero.Y = targetY;
+        _lastMoveDirX = dx;
+        _lastMoveDirY = dy;
+        CurrentMaze.Explored[targetX, targetY] = true;
+        TacticalTurn.MovementRemaining--;
+        RefreshTacticalIntentPreview(rememberObserved: true);
+        UpdateNearbyInteractable();
+        EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    /// <summary>Return the shortest currently legal tactical path to an empty destination. The
+    /// hero's starting cell is omitted, so the result count is also the movement cost.</summary>
+    public IReadOnlyList<(int x, int y)> GetTacticalPathTo(int targetX, int targetY)
+    {
+        if (!CanTakeTacticalPlayerAction() || TacticalTurn.MovementRemaining <= 0)
+            return Array.Empty<(int x, int y)>();
+
+        var start = (x: Hero.GridX, y: Hero.GridY);
+        var target = (x: targetX, y: targetY);
+        if (target == start || !CurrentMaze.IsWalkable(targetX, targetY) ||
+            IsEnemyOccupyingCell(targetX, targetY))
+            return Array.Empty<(int x, int y)>();
+
+        var queue = new Queue<(int x, int y)>();
+        var previous = new Dictionary<(int x, int y), (int x, int y)> { [start] = start };
+        var distance = new Dictionary<(int x, int y), int> { [start] = 0 };
+        queue.Enqueue(start);
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (current == target) break;
+            if (distance[current] >= TacticalTurn.MovementRemaining) continue;
+
+            foreach (var next in CardinalCells(current.x, current.y))
+            {
+                if (previous.ContainsKey(next) || !CurrentMaze.IsWalkable(next.x, next.y) ||
+                    IsEnemyOccupyingCell(next.x, next.y))
+                    continue;
+                previous[next] = current;
+                distance[next] = distance[current] + 1;
+                queue.Enqueue(next);
+            }
+        }
+
+        if (!previous.ContainsKey(target)) return Array.Empty<(int x, int y)>();
+        var path = new List<(int x, int y)>();
+        for (var cursor = target; cursor != start; cursor = previous[cursor])
+            path.Add(cursor);
+        path.Reverse();
+        return path;
+    }
+
+    /// <summary>Traverse a previewed tactical path as one destination command, spending one
+    /// movement point per cell and preserving every normal movement-side effect.</summary>
+    public bool TryTacticalMoveTo(int targetX, int targetY)
+    {
+        IReadOnlyList<(int x, int y)> path = GetTacticalPathTo(targetX, targetY);
+        if (path.Count == 0) return false;
+
+        int previousX = Hero.GridX;
+        int previousY = Hero.GridY;
+        foreach (var cell in path)
+        {
+            _lastMoveDirX = cell.x - previousX;
+            _lastMoveDirY = cell.y - previousY;
+            Hero.X = cell.x;
+            Hero.Y = cell.y;
+            CurrentMaze.Explored[cell.x, cell.y] = true;
+            previousX = cell.x;
+            previousY = cell.y;
+            TacticalTurn.MovementRemaining--;
+            RefreshTacticalIntentPreview(rememberObserved: true);
+        }
+
+        UpdateNearbyInteractable();
+        EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    public TacticalAttackPreview GetTacticalAttackPreview(int targetX, int targetY)
+    {
+        Attack attack = Hero.CurrentAttack ?? new Attack
+        {
+            Name = "Unarmed Strike",
+            Range = 1f,
+            Animation = AttackAnimation.Melee
+        };
+        bool sameCell = targetX == Hero.GridX && targetY == Hero.GridY;
+        bool targetWalkable = CurrentMaze.IsWalkable(targetX, targetY);
+        Enemy? targetEnemy = Enemies.FirstOrDefault(enemy => enemy.IsAlive &&
+            (int)MathF.Round(enemy.X) == targetX && (int)MathF.Round(enemy.Y) == targetY);
+        float centerDistance = Distance(Hero.X, Hero.Y, targetX, targetY);
+        float effectiveDistance = MathF.Max(0f, centerDistance - (targetEnemy?.Radius ?? 0f));
+        bool inRange = !sameCell && effectiveDistance <= attack.Range + 0.01f;
+        bool hasLineOfSight = targetWalkable && HasLineOfSight(Hero.X, Hero.Y, targetX, targetY);
+        bool canAfford = CanAffordCurrentAttack();
+        bool canControl = SimulationMode == SimulationMode.TurnBased && TacticalTurn.IsPlayerTurn &&
+            IsRunning && !IsHeroDead && CurrentActivity == null;
+
+        string status = !canControl ? "UNAVAILABLE"
+            : !TacticalTurn.ActionAvailable ? "ACTION SPENT"
+            : !canAfford ? "NO RESOURCES"
+            : sameCell ? "SELECT TARGET"
+            : !targetWalkable ? "INVALID TARGET"
+            : !inRange ? "OUT OF RANGE"
+            : !hasLineOfSight ? "BLOCKED"
+            : "READY";
+        bool canCommit = status == "READY";
+        (int x, int y) impact = canCommit
+            ? (targetX, targetY)
+            : FindTacticalAttackImpact(targetX, targetY, attack.Range);
+
+        var rangeCells = new List<(int x, int y)>();
+        int rangeExtent = (int)MathF.Ceiling(attack.Range);
+        for (int x = Hero.GridX - rangeExtent; x <= Hero.GridX + rangeExtent; x++)
+        {
+            for (int y = Hero.GridY - rangeExtent; y <= Hero.GridY + rangeExtent; y++)
+            {
+                if ((x != Hero.GridX || y != Hero.GridY) && CurrentMaze.IsWalkable(x, y) &&
+                    Distance(Hero.X, Hero.Y, x, y) <= attack.Range + 0.01f)
+                    rangeCells.Add((x, y));
+            }
+        }
+
+        float areaRadius = attack.Id == "arcane-blast" ? 1.75f : 0f;
+        var affectedCells = new List<(int x, int y)>();
+        int affectedEnemies = 0;
+        if (targetWalkable && areaRadius > 0f)
+        {
+            int areaExtent = (int)MathF.Ceiling(areaRadius);
+            for (int x = targetX - areaExtent; x <= targetX + areaExtent; x++)
+            {
+                for (int y = targetY - areaExtent; y <= targetY + areaExtent; y++)
+                {
+                    if (CurrentMaze.IsWalkable(x, y) &&
+                        Distance(targetX, targetY, x, y) <= areaRadius + 0.01f)
+                        affectedCells.Add((x, y));
+                }
+            }
+            affectedEnemies = Enemies.Count(enemy => enemy.IsAlive &&
+                Distance(targetX, targetY, enemy.X, enemy.Y) <= areaRadius + enemy.Radius);
+        }
+
+        return new TacticalAttackPreview(attack.Name, targetX, targetY, impact.x, impact.y,
+            attack.Range, areaRadius, targetWalkable, inRange, hasLineOfSight, canAfford,
+            canCommit, affectedEnemies, status, rangeCells, affectedCells);
+    }
+
+    public bool TryTacticalAttackAt(int targetX, int targetY)
+    {
+        TacticalAttackPreview preview = GetTacticalAttackPreview(targetX, targetY);
+        if (!preview.CanCommit) return false;
+
+        _combatSystem.PerformHeroTacticalAttack(Hero, targetX, targetY, Projectiles);
+        TacticalTurn.ActionAvailable = false;
+        EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    /// <summary>Compatibility directional command for non-mouse frontends. Direction is projected
+    /// to the furthest cell within the current attack's authored tactical range.</summary>
+    public bool TryTacticalAttack(float dirX, float dirY)
+    {
+        float length = MathF.Sqrt(dirX * dirX + dirY * dirY);
+        if (length < 0.001f) return false;
+        float range = Hero.CurrentAttack?.Range ?? 1f;
+        int targetX = (int)MathF.Round(Hero.X + dirX / length * range);
+        int targetY = (int)MathF.Round(Hero.Y + dirY / length * range);
+        return TryTacticalAttackAt(targetX, targetY);
+    }
+
+    private (int x, int y) FindTacticalAttackImpact(int targetX, int targetY, float range)
+    {
+        var impact = (x: Hero.GridX, y: Hero.GridY);
+        foreach (var cell in GridLineCells(Hero.GridX, Hero.GridY, targetX, targetY).Skip(1))
+        {
+            if (Distance(Hero.X, Hero.Y, cell.x, cell.y) > range + 0.01f ||
+                !CurrentMaze.IsWalkable(cell.x, cell.y))
+                break;
+            impact = cell;
+        }
+        return impact;
+    }
+
+    private static IEnumerable<(int x, int y)> GridLineCells(int startX, int startY,
+        int endX, int endY)
+    {
+        int dx = Math.Abs(endX - startX);
+        int dy = Math.Abs(endY - startY);
+        int sx = startX < endX ? 1 : -1;
+        int sy = startY < endY ? 1 : -1;
+        int error = dx - dy;
+        int x = startX;
+        int y = startY;
+        while (true)
+        {
+            yield return (x, y);
+            if (x == endX && y == endY) yield break;
+            int doubled = error * 2;
+            if (doubled > -dy) { error -= dy; x += sx; }
+            if (doubled < dx) { error += dx; y += sy; }
+        }
+    }
+
+    /// <summary>Spend the primary action on a short two-cell cardinal dash. Normal movement is
+    /// left untouched, making dash a positioning trade for the attack action.</summary>
+    public bool TryTacticalDash(int dx, int dy)
+    {
+        if (!CanTakeTacticalPlayerAction() || !TacticalTurn.ActionAvailable) return false;
+        if (Math.Abs(dx) + Math.Abs(dy) != 1) return false;
+
+        int moved = 0;
+        for (int i = 0; i < 2; i++)
+        {
+            int targetX = Hero.GridX + dx;
+            int targetY = Hero.GridY + dy;
+            if (!CurrentMaze.IsWalkable(targetX, targetY) || IsEnemyOccupyingCell(targetX, targetY))
+                break;
+            Hero.X = targetX;
+            Hero.Y = targetY;
+            CurrentMaze.Explored[targetX, targetY] = true;
+            moved++;
+        }
+
+        if (moved == 0) return false;
+        _lastMoveDirX = dx;
+        _lastMoveDirY = dy;
+        TacticalTurn.ActionAvailable = false;
+        LogMessage("Dashed.", MessageKind.System);
+        RefreshTacticalIntentPreview(rememberObserved: true);
+        UpdateNearbyInteractable();
+        EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    /// <summary>Consume a small item without spending the primary action.</summary>
+    public bool TryUseTacticalBonusItem(Item item)
+    {
+        if (!CanTakeTacticalPlayerAction() || !TacticalTurn.BonusActionAvailable) return false;
+        if (!Hero.Inventory.Contains(item)) return false;
+
+        switch (item.UseEffect)
+        {
+            case ItemUseEffect.RestoreHealth:
+                if (Hero.CurrentHp >= Hero.MaxHp) return false;
+                int amount = item.EffectPower + (int)item.Rarity * 5;
+                int restored = Math.Min(amount, Hero.MaxHp - Hero.CurrentHp);
+                Hero.CurrentHp += restored;
+                LogMessage($"Drank {item.Name} (+{restored} HP).", MessageKind.Loot);
+                break;
+            default:
+                return false;
+        }
+
+        if (item.Consumable)
+            Hero.Inventory.Remove(item);
+        TacticalTurn.BonusActionAvailable = false;
+        EndTacticalTurnIfSpent();
+        return true;
+    }
+
+    /// <summary>Finish the player phase. Pending player effects resolve first, then each engaged
+    /// enemy receives exactly one ordered decision.</summary>
+    public bool EndTacticalTurn()
+    {
+        if (SimulationMode != SimulationMode.TurnBased || !TacticalTurn.IsPlayerTurn ||
+            !IsRunning || IsHeroDead)
+            return false;
+
+        _manualMoveX = 0f;
+        _manualMoveY = 0f;
+        ResetTacticalResolution();
+        TacticalTurn.IsPlayerTurn = false;
+        TacticalTurn.Phase = TacticalPhase.PlayerEffects;
+        TacticalTurn.ResolutionTicksRemaining = 1;
+        TacticalTurn.LastEnemyAction = Projectiles.Any(projectile => projectile.IsActive)
+            ? "Resolving player action"
+            : "Enemies assess the field";
+        return true;
+    }
+
+    public bool AdvanceTacticalTurnTick()
+    {
+        if (SimulationMode != SimulationMode.TurnBased || TacticalTurn.IsPlayerTurn ||
+            TacticalTurn.ResolutionTicksRemaining <= 0)
+            return false;
+
+        switch (TacticalTurn.Phase)
+        {
+            case TacticalPhase.PlayerEffects:
+                if (Projectiles.Any(projectile => projectile.IsActive) &&
+                    _tacticalEffectSafetyTicks < TacticalEffectSafetyLimit)
+                {
+                    _tacticalEffectSafetyTicks++;
+                    AdvanceTacticalEffectsTick();
+                    return FinishTacticalDeathIfNeeded();
+                }
+
+                PrepareTacticalEnemyPhase();
+                if (_tacticalEnemyQueue.Count == 0)
+                    FinishTacticalWorldPhase();
+                return true;
+
+            case TacticalPhase.EnemyActions:
+                if (_tacticalMovingEnemy != null)
+                {
+                    AdvanceTacticalEnemyMotion();
+                    AdvanceTacticalEffectsTick();
+                    return FinishTacticalDeathIfNeeded();
+                }
+
+                if (Projectiles.Any(projectile => projectile.IsActive) &&
+                    _tacticalEffectSafetyTicks < TacticalEffectSafetyLimit)
+                {
+                    _tacticalEffectSafetyTicks++;
+                    AdvanceTacticalEffectsTick();
+                    return FinishTacticalDeathIfNeeded();
+                }
+
+                if (_tacticalActionDelayTicks > 0)
+                {
+                    _tacticalActionDelayTicks--;
+                    AdvanceTacticalEffectsTick();
+                    return FinishTacticalDeathIfNeeded();
+                }
+
+                while (_tacticalEnemyQueue.Count > 0)
+                {
+                    Enemy enemy = _tacticalEnemyQueue.Dequeue();
+                    if (!enemy.IsAlive)
+                    {
+                        TacticalTurn.EnemyActionsRemaining = _tacticalEnemyQueue.Count;
+                        continue;
+                    }
+                    ExecuteTacticalEnemyAction(enemy);
+                    return true;
+                }
+
+                FinishTacticalWorldPhase();
+                return true;
+
+            default:
+                FinishTacticalWorldPhase();
+                return true;
+        }
+    }
+
+    private void ResetTacticalResolution()
+    {
+        if (_tacticalMovingEnemy != null)
+        {
+            _tacticalMovingEnemy.X = _tacticalMoveTargetX;
+            _tacticalMovingEnemy.Y = _tacticalMoveTargetY;
+        }
+        _tacticalEnemyQueue.Clear();
+        _tacticalMovingEnemy = null;
+        _tacticalMoveTicksRemaining = 0;
+        _tacticalActionDelayTicks = 0;
+        _tacticalEffectSafetyTicks = 0;
+        TacticalTurn.EnemyActionsTotal = 0;
+        TacticalTurn.EnemyActionsRemaining = 0;
+        TacticalTurn.ActiveEnemy = "";
+        TacticalTurn.LastEnemyAction = "";
+        TacticalTurn.ResolutionTicksRemaining = 0;
+        TacticalTurn.MutableEnemyIntents.Clear();
+    }
+
+    private void PrepareTacticalEnemyPhase()
+    {
+        List<Enemy> actors = SelectTacticalActors(out HashSet<Enemy> observed,
+            out HashSet<Enemy> encounterAlerted);
+        RememberTacticalObservation(observed, encounterAlerted);
+
+        foreach (Enemy enemy in actors)
+        {
+            if (!enemy.InCombat)
+            {
+                enemy.InCombat = true;
+                CodexService.Instance.RecordEncounter(enemy, CurrentFloor);
+            }
+            _tacticalEnemyQueue.Enqueue(enemy);
+        }
+        BuildTacticalIntents(actors);
+
+        var activeActors = actors.ToHashSet();
+        foreach (Enemy enemy in Enemies.Where(enemy => enemy.IsAlive && !activeActors.Contains(enemy)))
+            enemy.InCombat = false;
+
+        Hero.InCombat = actors.Count > 0;
+        TacticalTurn.Phase = TacticalPhase.EnemyActions;
+        TacticalTurn.EnemyActionsTotal = actors.Count;
+        TacticalTurn.EnemyActionsRemaining = actors.Count;
+        TacticalTurn.ActiveEnemy = "";
+        TacticalTurn.LastEnemyAction = actors.Count == 0
+            ? "The dungeon holds"
+            : $"{actors.Count} enem{(actors.Count == 1 ? "y" : "ies")} act";
+        _tacticalEffectSafetyTicks = 0;
+    }
+
+    public void RefreshTacticalIntentPreview() =>
+        RefreshTacticalIntentPreview(rememberObserved: false);
+
+    private void RefreshTacticalIntentPreview(bool rememberObserved)
+    {
+        TacticalTurn.MutableEnemyIntents.Clear();
+        if (SimulationMode != SimulationMode.TurnBased || !TacticalTurn.IsPlayerTurn || IsHeroDead)
+            return;
+        List<Enemy> actors = SelectTacticalActors(out HashSet<Enemy> observed,
+            out HashSet<Enemy> encounterAlerted);
+        if (rememberObserved) RememberTacticalObservation(observed, encounterAlerted);
+        BuildTacticalIntents(actors);
+    }
+
+    private void RememberTacticalObservation(IEnumerable<Enemy> observed,
+        IEnumerable<Enemy> encounterAlerted)
+    {
+        foreach (Enemy enemy in observed.Concat(encounterAlerted))
+        {
+            enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+            _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+        }
+    }
+
+    private List<Enemy> SelectTacticalActors(out HashSet<Enemy> observed,
+        out HashSet<Enemy> encounterAlerted)
+    {
+        var actors = new List<Enemy>();
+        observed = new HashSet<Enemy>();
+        encounterAlerted = new HashSet<Enemy>();
+        foreach (Enemy enemy in Enemies.Where(enemy => enemy.IsAlive))
+        {
+            float distance = Distance(enemy.X, enemy.Y, Hero.X, Hero.Y);
+            bool hasLineOfSight = HasLineOfSight(enemy.X, enemy.Y, Hero.X, Hero.Y);
+            bool persistent = distance < AgroRadius &&
+                enemyPursuitTicks.TryGetValue(enemy, out int pursuit) && pursuit > 0;
+            bool immediateThreat = hasLineOfSight &&
+                distance <= MathF.Max(VisionRange, enemy.AttackRange + 1f);
+            bool seesHero = EnemyCanSeeHero(enemy) || immediateThreat;
+            if (persistent || seesHero) actors.Add(enemy);
+            if (seesHero) observed.Add(enemy);
+        }
+
+        var alertedEncounters = actors.Where(enemy => enemy.EncounterId >= 0)
+            .Select(enemy => enemy.EncounterId)
+            .ToHashSet();
+        foreach (Enemy enemy in Enemies.Where(enemy => enemy.IsAlive &&
+                     alertedEncounters.Contains(enemy.EncounterId) && !actors.Contains(enemy)))
+        {
+            if (Distance(enemy.X, enemy.Y, Hero.X, Hero.Y) > 12f) continue;
+            actors.Add(enemy);
+            encounterAlerted.Add(enemy);
+        }
+
+        var stableOrder = Enemies.Select((enemy, index) => (enemy, index))
+            .ToDictionary(pair => pair.enemy, pair => pair.index);
+        return actors.Distinct()
+            .OrderByDescending(enemy => enemy.Agility)
+            .ThenBy(enemy => Distance(enemy.X, enemy.Y, Hero.X, Hero.Y))
+            .ThenBy(enemy => stableOrder[enemy])
+            .ToList();
+    }
+
+    private void BuildTacticalIntents(IReadOnlyList<Enemy> actors)
+    {
+        TacticalTurn.MutableEnemyIntents.Clear();
+        var positions = Enemies.Where(enemy => enemy.IsAlive).ToDictionary(
+            enemy => enemy,
+            enemy => (x: (int)MathF.Round(enemy.X), y: (int)MathF.Round(enemy.Y)));
+
+        for (int index = 0; index < actors.Count; index++)
+        {
+            Enemy enemy = actors[index];
+            TacticalEnemyIntent intent = PlanTacticalEnemyIntent(enemy, index + 1, positions);
+            TacticalTurn.MutableEnemyIntents.Add(intent);
+            if (intent.TargetX.HasValue && intent.TargetY.HasValue &&
+                intent.Kind is TacticalIntentKind.Advance or TacticalIntentKind.Reposition)
+            {
+                positions[enemy] = (intent.TargetX.Value, intent.TargetY.Value);
+            }
+        }
+    }
+
+    private void ExecuteTacticalEnemyAction(Enemy enemy)
+    {
+        TacticalTurn.ActiveEnemy = $"{enemy.Race} {enemy.Class}";
+        TacticalTurn.EnemyActionsRemaining = _tacticalEnemyQueue.Count;
+        _tacticalEffectSafetyTicks = 0;
+        TacticalEnemyIntent? intent = TacticalTurn.EnemyIntents
+            .FirstOrDefault(candidate => ReferenceEquals(candidate.Actor, enemy));
+        intent ??= PlanTacticalEnemyIntent(enemy,
+            TacticalTurn.EnemyActionsTotal - TacticalTurn.EnemyActionsRemaining,
+            CurrentEnemyPositions());
+
+        if (intent.Kind == TacticalIntentKind.Attack &&
+            _combatSystem.TryPerformTacticalEnemyAttack(Hero, enemy, Projectiles, CurrentMaze))
+        {
+            TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: {intent.Detail}";
+            LogMessage($"{TacticalTurn.ActiveEnemy} uses {intent.Detail}.", MessageKind.Combat);
+            _tacticalActionDelayTicks = TacticalActionDelayTicks;
+            return;
+        }
+
+        if (intent.Kind is TacticalIntentKind.Advance or TacticalIntentKind.Reposition &&
+            intent.TargetX.HasValue && intent.TargetY.HasValue)
+        {
+            BeginTacticalEnemyMotion(enemy, intent.TargetX.Value, intent.TargetY.Value);
+            TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: {intent.Detail}";
+            return;
+        }
+
+        TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: holds";
+        _tacticalActionDelayTicks = TacticalActionDelayTicks;
+    }
+
+    private TacticalEnemyIntent PlanTacticalEnemyIntent(Enemy enemy, int order,
+        IReadOnlyDictionary<Enemy, (int x, int y)> positions)
+    {
+        (int x, int y) start = positions.TryGetValue(enemy, out var planned)
+            ? planned
+            : ((int)MathF.Round(enemy.X), (int)MathF.Round(enemy.Y));
+        string actorName = $"{enemy.Race} {enemy.Class}";
+        bool hasMove = TryPlanTacticalEnemyMove(enemy, start.x, start.y, positions,
+            out (int x, int y) target, out bool retreating);
+        if (hasMove && retreating)
+        {
+            return new TacticalEnemyIntent(order, enemy, actorName, TacticalIntentKind.Reposition,
+                start.x, start.y, target.x, target.y, "repositions");
+        }
+        if (_combatSystem.CanPerformTacticalEnemyAttack(Hero, enemy, CurrentMaze))
+        {
+            return new TacticalEnemyIntent(order, enemy, actorName, TacticalIntentKind.Attack,
+                start.x, start.y, Hero.GridX, Hero.GridY, enemy.CurrentAttack?.Name ?? "Attack");
+        }
+
+        if (hasMove)
+        {
+            return new TacticalEnemyIntent(order, enemy, actorName, TacticalIntentKind.Advance,
+                start.x, start.y, target.x, target.y, "advances");
+        }
+
+        return new TacticalEnemyIntent(order, enemy, actorName, TacticalIntentKind.Hold,
+            start.x, start.y, null, null, "holds");
+    }
+
+    private bool TryPlanTacticalEnemyMove(Enemy enemy, int startX, int startY,
+        IReadOnlyDictionary<Enemy, (int x, int y)> positions,
+        out (int x, int y) targetCell, out bool retreating)
+    {
+        targetCell = default;
+        retreating = false;
+        int heroX = Hero.GridX;
+        int heroY = Hero.GridY;
+        float distance = Distance(startX, startY, Hero.X, Hero.Y);
+
+        if (enemy.AttackRange > 1.5f && distance < MathF.Max(1.5f, enemy.AttackRange * 0.55f) &&
+            HasLineOfSight(startX, startY, Hero.X, Hero.Y))
+        {
+            var retreats = CardinalCells(startX, startY)
+                .Where(cell => CanEnemyOccupyCell(cell.x, cell.y, enemy, positions))
+                .OrderByDescending(cell => Distance(cell.x, cell.y, Hero.X, Hero.Y))
+                .ThenBy(cell => cell.y)
+                .ThenBy(cell => cell.x)
+                .ToList();
+            if (retreats.Count > 0 &&
+                Distance(retreats[0].x, retreats[0].y, Hero.X, Hero.Y) > distance)
+            {
+                retreating = true;
+                targetCell = retreats[0];
+                return true;
+            }
+        }
+
+        (float x, float y) target = _enemyLastKnownHeroPos.TryGetValue(enemy, out var lastKnown)
+            ? lastKnown
+            : (Hero.X, Hero.Y);
+        (int x, int y)? step = FindTacticalPathStep(startX, startY,
+            (int)MathF.Round(target.x), (int)MathF.Round(target.y), enemy, positions);
+        if (!step.HasValue || (step.Value.x == heroX && step.Value.y == heroY)) return false;
+        targetCell = step.Value;
+        return true;
+    }
+
+    private Dictionary<Enemy, (int x, int y)> CurrentEnemyPositions() =>
+        Enemies.Where(enemy => enemy.IsAlive).ToDictionary(
+            enemy => enemy,
+            enemy => (x: (int)MathF.Round(enemy.X), y: (int)MathF.Round(enemy.Y)));
+
+    private void BeginTacticalEnemyMotion(Enemy enemy, int targetX, int targetY)
+    {
+        _tacticalMovingEnemy = enemy;
+        _tacticalMoveStartX = enemy.X;
+        _tacticalMoveStartY = enemy.Y;
+        _tacticalMoveTargetX = targetX;
+        _tacticalMoveTargetY = targetY;
+        _tacticalMoveTicksRemaining = TacticalMoveAnimationTicks;
+        enemy.TargetX = targetX;
+        enemy.TargetY = targetY;
+    }
+
+    private void AdvanceTacticalEnemyMotion()
+    {
+        if (_tacticalMovingEnemy == null) return;
+        int elapsed = TacticalMoveAnimationTicks - _tacticalMoveTicksRemaining + 1;
+        float progress = Math.Clamp(elapsed / (float)TacticalMoveAnimationTicks, 0f, 1f);
+        _tacticalMovingEnemy.X = _tacticalMoveStartX + (_tacticalMoveTargetX - _tacticalMoveStartX) * progress;
+        _tacticalMovingEnemy.Y = _tacticalMoveStartY + (_tacticalMoveTargetY - _tacticalMoveStartY) * progress;
+        _tacticalMoveTicksRemaining--;
+        if (_tacticalMoveTicksRemaining > 0) return;
+
+        _tacticalMovingEnemy.X = _tacticalMoveTargetX;
+        _tacticalMovingEnemy.Y = _tacticalMoveTargetY;
+        _tacticalMovingEnemy = null;
+        _tacticalActionDelayTicks = TacticalActionDelayTicks;
+    }
+
+    private (int x, int y)? FindTacticalPathStep(int startX, int startY, int targetX, int targetY,
+        Enemy actor, IReadOnlyDictionary<Enemy, (int x, int y)> positions)
+    {
+        var queue = new Queue<(int x, int y)>();
+        var previous = new Dictionary<(int x, int y), (int x, int y)>();
+        var start = (x: startX, y: startY);
+        var target = (x: targetX, y: targetY);
+        if (start == target) return null;
+        queue.Enqueue(start);
+        previous[start] = start;
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (current == target) break;
+            foreach (var next in CardinalCells(current.x, current.y))
+            {
+                if (previous.ContainsKey(next) || !CurrentMaze.IsWalkable(next.x, next.y)) continue;
+                bool isHeroTarget = next == target && next == (Hero.GridX, Hero.GridY);
+                if (!isHeroTarget && !CanEnemyOccupyCell(next.x, next.y, actor, positions)) continue;
+                previous[next] = current;
+                queue.Enqueue(next);
+            }
+        }
+
+        if (!previous.ContainsKey(target)) return null;
+        var step = target;
+        while (previous[step] != start)
+            step = previous[step];
+        return step;
+    }
+
+    private bool CanEnemyOccupyCell(int x, int y, Enemy actor,
+        IReadOnlyDictionary<Enemy, (int x, int y)> positions)
+    {
+        if (!CurrentMaze.IsWalkable(x, y) || (Hero.GridX == x && Hero.GridY == y)) return false;
+        return !positions.Any(pair => pair.Key != actor && pair.Key.IsAlive &&
+            pair.Value.x == x && pair.Value.y == y);
+    }
+
+    private static IEnumerable<(int x, int y)> CardinalCells(int x, int y)
+    {
+        yield return (x, y - 1);
+        yield return (x + 1, y);
+        yield return (x, y + 1);
+        yield return (x - 1, y);
+    }
+
+    private void AdvanceTacticalEffectsTick()
+    {
+        if (ScreenShake > 0f)
+        {
+            ScreenShake *= 0.8f;
+            if (ScreenShake < 0.1f) ScreenShake = 0f;
+        }
+        Hero.AnimationOffsetX *= 0.8f;
+        Hero.AnimationOffsetY *= 0.8f;
+        foreach (Enemy enemy in Enemies)
+        {
+            enemy.AnimationOffsetX *= 0.8f;
+            enemy.AnimationOffsetY *= 0.8f;
+        }
+        UpdateProjectilesAndEffects();
+        RegisterHeroDeathIfNeeded();
+        ApplyPendingGuardianVictory();
+    }
+
+    private void RegisterHeroDeathIfNeeded()
+    {
+        if (Hero.IsAlive || IsHeroDead) return;
+
+        Hero.CurrentHp = 0;
+        IsHeroDead = true;
+        DeathTimer = 0;
+        CodexService.Instance.RecordDeath(CurrentFloor);
+        LogMessage($"{Hero.Name} has died on floor {CurrentFloor}.", MessageKind.Warning);
+        SaveService.Delete(SaveId);
+    }
+
+    private void ApplyPendingGuardianVictory()
+    {
+        if (!_pendingGuardianVictory) return;
+
+        _pendingGuardianVictory = false;
+        IsInSafeRoom = false;
+        LogMessage("The Guardian falls! The way deeper opens.", MessageKind.Combat);
+        StartNewFloor();
+        _tacticalEnemyQueue.Clear();
+        _tacticalMovingEnemy = null;
+        TacticalTurn.Phase = TacticalPhase.WorldUpkeep;
+    }
+
+    private bool FinishTacticalDeathIfNeeded()
+    {
+        if (IsHeroDead) SetSimulationMode(SimulationMode.RealTime);
+        return true;
+    }
+
+    private void FinishTacticalWorldPhase()
+    {
+        TacticalTurn.Phase = TacticalPhase.WorldUpkeep;
+        TickCount += _tacticalResolutionTicksPerTurn;
+        RegenerateTacticalResources(_tacticalResolutionTicksPerTurn);
+        for (int tick = 0; tick < _tacticalResolutionTicksPerTurn && CurrentActivity != null; tick++)
+            UpdateCurrentActivity();
+        if (_heroAlertTicks > 0)
+            _heroAlertTicks = Math.Max(0, _heroAlertTicks - _tacticalResolutionTicksPerTurn);
+        foreach (Enemy enemy in Enemies)
+        {
+            if (enemyPursuitTicks.TryGetValue(enemy, out int pursuit) && pursuit > 0)
+                enemyPursuitTicks[enemy] = Math.Max(0, pursuit - _tacticalResolutionTicksPerTurn);
+        }
+        for (int tick = 0; tick < _tacticalResolutionTicksPerTurn; tick++) UpdatePerception();
+        UpdateDungeonThemeFeatures();
+
+        Hero.InCombat = Enemies.Any(enemy => enemy.IsAlive && enemy.InCombat);
+        if (!Hero.InCombat) CheckFeatures();
+        ApplyPendingGuardianVictory();
+        RegisterHeroDeathIfNeeded();
+
+        if (IsHeroDead)
+        {
+            SetSimulationMode(SimulationMode.RealTime);
+            return;
+        }
+        BeginTacticalPlayerTurn();
+    }
+
+    private void RegenerateTacticalResources(int ticks)
+    {
+        float combatModifier = Hero.InCombat ? 0.7f : 1f;
+        if (IsInSafeRoom && Boss == null) combatModifier = 3f;
+        _accumulatedStaminaRegen += Hero.EffectiveConstitution / (8f * _ticksPerSecond) * combatModifier * ticks;
+        _accumulatedManaRegen += Hero.EffectiveIntelligence / (8f * _ticksPerSecond) * combatModifier * ticks;
+        _accumulatedFaithRegen += Hero.EffectiveWisdom / (8f * _ticksPerSecond) * combatModifier * ticks;
+        Hero.CurrentStamina = RestoreAccumulated(ref _accumulatedStaminaRegen,
+            Hero.CurrentStamina, Hero.MaxStamina);
+        Hero.CurrentMana = RestoreAccumulated(ref _accumulatedManaRegen,
+            Hero.CurrentMana, Hero.MaxMana);
+        Hero.CurrentFaith = RestoreAccumulated(ref _accumulatedFaithRegen,
+            Hero.CurrentFaith, Hero.MaxFaith);
+
+        float healthModifier = IsInSafeRoom && Boss == null ? 3f : 1f;
+        _accumulatedHealthRegen += Hero.EffectiveConstitution / (16f * _ticksPerSecond) * healthModifier * ticks;
+        Hero.CurrentHp = RestoreAccumulated(ref _accumulatedHealthRegen,
+            Hero.CurrentHp, Hero.MaxHp);
+    }
+
+    private static int RestoreAccumulated(ref float accumulated, int current, int maximum)
+    {
+        if (accumulated < 1f) return current;
+        int amount = (int)accumulated;
+        current = Math.Min(maximum, current + amount);
+        accumulated -= amount;
+        return current;
+    }
+
+    private static float Distance(float ax, float ay, float bx, float by)
+    {
+        float dx = ax - bx;
+        float dy = ay - by;
+        return MathF.Sqrt(dx * dx + dy * dy);
+    }
+
+    private bool CanTakeTacticalPlayerAction() =>
+        SimulationMode == SimulationMode.TurnBased && TacticalTurn.IsPlayerTurn &&
+        IsRunning && !IsHeroDead && CurrentActivity == null;
+
+    private bool CanAffordCurrentAttack()
+    {
+        var attack = Hero.CurrentAttack;
+        return attack == null || !attack.IsHeavyAttack ||
+            (Hero.CurrentStamina >= attack.StaminaCost &&
+             Hero.CurrentMana >= AffinityService.EffectiveManaCost(Hero.Affinities, MagicElements.For(attack), attack.ManaCost) &&
+             Hero.CurrentFaith >= attack.FaithCost);
+    }
+
+    private bool IsEnemyOccupyingCell(int x, int y) =>
+        Enemies.Any(enemy => enemy.IsAlive &&
+            (int)MathF.Round(enemy.X) == x && (int)MathF.Round(enemy.Y) == y);
+
+    private void BeginTacticalPlayerTurn()
+    {
+        TacticalTurn.TurnNumber++;
+        TacticalTurn.MovementAllowance = CalculateTacticalMovementAllowance();
+        TacticalTurn.MovementRemaining = TacticalTurn.MovementAllowance;
+        TacticalTurn.ActionAvailable = true;
+        TacticalTurn.BonusActionAvailable = true;
+        TacticalTurn.IsPlayerTurn = true;
+        TacticalTurn.Phase = TacticalPhase.Player;
+        TacticalTurn.ResolutionTicksRemaining = 0;
+        TacticalTurn.ActiveEnemy = "";
+        TacticalTurn.LastEnemyAction = "";
+        TacticalTurn.EnemyActionsRemaining = 0;
+        Hero.AttackCooldown = 0;
+        RefreshTacticalIntentPreview(rememberObserved: true);
+        UpdateNearbyInteractable();
+    }
+
+    private void EndTacticalTurnIfSpent()
+    {
+        if (TacticalTurn.MovementRemaining == 0 && !TacticalTurn.ActionAvailable &&
+            !TacticalTurn.BonusActionAvailable)
+            EndTacticalTurn();
+    }
+
     /// <summary>
     /// Fire the hero's current attack toward a world direction (Manual click-to-fire). No-op in
     /// Auto mode, while dead/paused, on cooldown, or when a heavy attack can't be afforded. The
@@ -144,14 +1047,7 @@ public class GameState
         if (ControlMode != ControlMode.Manual || IsHeroDead || !IsRunning) return;
         if (Hero.AttackCooldown > 0) return;
 
-        var attack = Hero.CurrentAttack;
-        if (attack != null && attack.IsHeavyAttack &&
-            (Hero.CurrentStamina < attack.StaminaCost ||
-             Hero.CurrentMana < AffinityService.EffectiveManaCost(Hero.Affinities, MagicElements.For(attack), attack.ManaCost) ||
-             Hero.CurrentFaith < attack.FaithCost))
-        {
-            return; // can't afford this attack right now
-        }
+        if (!CanAffordCurrentAttack()) return;
 
         _combatSystem.PerformHeroDirectionalAttack(Hero, dirX, dirY, Projectiles);
     }
@@ -177,31 +1073,121 @@ public class GameState
         Hero.CurrentAttack = Hero.Attacks[next];
     }
 
-    /// <summary>Move an attack-bearing item from Inventory into the equipped Loadout (hotbar), if
-    /// there's a free hotbar slot. Refreshes projected attacks. Returns true on success.</summary>
-    public bool EquipFromInventory(Combinable item)
+    public bool EquipFromInventory(Combinable item) => EquipFromInventory(item, out _);
+
+    /// <summary>Equip physical gear into its body slot, or place a spell on the action bar.</summary>
+    public bool EquipFromInventory(Combinable item, out string reason)
     {
-        if (!Hero.Inventory.Contains(item)) return false;
-        bool isAttackGear = item is Weapon || item is Spell;
-        if (!isAttackGear) return false;
-        int equipped = Hero.Loadout.Count(c => c is Weapon || c is Spell);
-        if (equipped >= Hero.HotbarCapacity) return false;
+        reason = "";
+        if (!Hero.Inventory.Contains(item))
+        {
+            reason = "That item is not in your backpack.";
+            return false;
+        }
+
+        if (item is Spell)
+        {
+            if (Hero.Attacks.Count >= Hero.HotbarCapacity)
+            {
+                reason = "The action bar is full.";
+                return false;
+            }
+            Hero.Inventory.Remove(item);
+            Hero.Loadout.Add(item);
+            RefreshAttacks();
+            LogMessage($"Slotted {item.Name} on the action bar.", MessageKind.System);
+            return true;
+        }
+
+        EquipmentSlot? slot = item switch
+        {
+            Armor armor => armor.Slot,
+            Item accessory when accessory.EquipSlot.HasValue => accessory.EquipSlot,
+            Weapon => FirstFreeHand(item as Weapon),
+            _ => null
+        };
+        if (!slot.HasValue)
+        {
+            reason = item is Weapon ? "Both hands are occupied." : "That item cannot be equipped.";
+            return false;
+        }
+
+        if (item is Item ring && ring.EquipSlot is EquipmentSlot.RingLeft or EquipmentSlot.RingRight)
+        {
+            slot = !Hero.Equipment.ContainsKey(EquipmentSlot.RingLeft) ? EquipmentSlot.RingLeft
+                : !Hero.Equipment.ContainsKey(EquipmentSlot.RingRight) ? EquipmentSlot.RingRight
+                : null;
+            if (!slot.HasValue)
+            {
+                reason = "Both ring slots are occupied.";
+                return false;
+            }
+        }
+
+        if (slot == EquipmentSlot.OffHand && IsOffHandBlocked)
+        {
+            reason = "The off hand is reserved by a two-handed weapon.";
+            return false;
+        }
+
+        if (item is Weapon weapon && weapon.HandsRequired >= 2)
+        {
+            if (Hero.Equipment.ContainsKey(EquipmentSlot.MainHand) ||
+                Hero.Equipment.ContainsKey(EquipmentSlot.OffHand))
+            {
+                reason = "A two-handed weapon requires both hands to be free.";
+                return false;
+            }
+            slot = EquipmentSlot.MainHand;
+        }
+        else if (Hero.Equipment.ContainsKey(slot.Value))
+        {
+            reason = $"{EquipmentSlots.Label(slot.Value)} is already occupied.";
+            return false;
+        }
 
         Hero.Inventory.Remove(item);
-        Hero.Loadout.Add(item);
-        RefreshAttacks();
-        LogMessage($"Equipped {item.Name} to the hotbar", MessageKind.System);
+        Hero.Equipment[slot.Value] = item;
+        if (item is Weapon) RefreshAttacks();
+        LogMessage($"Equipped {item.Name} in {EquipmentSlots.Label(slot.Value)}.", MessageKind.System);
+        if (item is Weapon equippedWeapon && !WeaponProficiencyService.IsTrained(Hero, equippedWeapon))
+        {
+            LogMessage($"{equippedWeapon.Name} is unfamiliar: " +
+                $"{(1f - WeaponProficiencyService.UntrainedDamageMultiplier):P0} damage and " +
+                $"{(1f - WeaponProficiencyService.UntrainedAccuracyMultiplier):P0} accuracy penalty.",
+                MessageKind.Warning);
+        }
         return true;
     }
 
-    /// <summary>Move an item from the equipped Loadout (hotbar) back into Inventory. Refreshes
-    /// projected attacks. Returns true on success.</summary>
+    private EquipmentSlot? FirstFreeHand(Weapon? weapon)
+    {
+        if (weapon == null) return null;
+        if (Hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) is Weapon main && main.HandsRequired >= 2)
+            return null;
+        if (!Hero.Equipment.ContainsKey(EquipmentSlot.MainHand)) return EquipmentSlot.MainHand;
+        return !Hero.Equipment.ContainsKey(EquipmentSlot.OffHand) ? EquipmentSlot.OffHand : null;
+    }
+
+    public bool IsOffHandBlocked =>
+        Hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) is Weapon { HandsRequired: >= 2 };
+
+    /// <summary>Return an equipped item or slotted spell to the backpack.</summary>
     public bool UnequipToInventory(Combinable item)
     {
-        if (!Hero.Loadout.Remove(item)) return false;
+        if (Hero.Loadout.Remove(item))
+        {
+            Hero.Inventory.Add(item);
+            RefreshAttacks();
+            LogMessage($"Removed {item.Name} from the action bar.", MessageKind.System);
+            return true;
+        }
+
+        var equipped = Hero.Equipment.FirstOrDefault(pair => ReferenceEquals(pair.Value, item));
+        if (equipped.Value == null || !Hero.Equipment.Remove(equipped.Key)) return false;
         Hero.Inventory.Add(item);
-        RefreshAttacks();
-        LogMessage($"Unequipped {item.Name}", MessageKind.System);
+        if (item is Weapon) RefreshAttacks();
+        LogMessage($"Unequipped {item.Name}.", MessageKind.System);
         return true;
     }
 
@@ -214,7 +1200,7 @@ public class GameState
     // reaches a point where Enemies/Projectiles are safe to clear.
     private bool _pendingGuardianVictory;
 
-    /// <summary>The hero's current multi-tick task (opening a chest, mining, crafting, ...).
+    /// <summary>The hero's current multi-tick task (mining, crafting, ...).
     /// Only one at a time — see StartActivity. Advanced once per Tick().</summary>
     public Activity? CurrentActivity { get; private set; }
 
@@ -279,9 +1265,9 @@ public class GameState
     private readonly int _ticksPerSecond;
     private readonly int _pursuitTimeoutTicks;   // ~3s pursuit persistence
     private readonly int _autoRestartTicks;      // ~5s until auto-restart after death
-    private readonly int _chestOpeningTicks;     // ~3s to open a chest
     private readonly int _combatStartWindupTicks; // ~0.3s wind-up before first attack on engage
     private readonly int _attackSwitchTicks;     // ~2s between smart attack-rotation switches
+    private readonly int _tacticalResolutionTicksPerTurn;
 
     public int Seed { get; set; }
     public int TickCount { get; private set; }
@@ -292,6 +1278,7 @@ public class GameState
     /// a new character, or restored from the loaded SaveData in LoadFrom so re-saving overwrites
     /// the same file rather than multiplying save slots.</summary>
     public string SaveId { get; private set; } = Guid.NewGuid().ToString();
+    public CharacterCreationSelection? CreationSelection => _creationSelection?.Clone();
 
     // Playtime accumulated in prior sessions (from a loaded save); TotalPlaytimeSeconds adds the
     // current session's elapsed ticks on top so it stays accurate without a per-tick save write.
@@ -325,6 +1312,7 @@ public class GameState
     private string _characterName = "Hero";
     private string _className = "Wanderer";
     private string _raceName = "Human";
+    private CharacterCreationSelection? _creationSelection;
 
     // Not readonly: RestartGame reseeds these with a fresh seed.
     private MazeGenerator _mazeGenerator;
@@ -348,9 +1336,9 @@ public class GameState
         _ticksPerSecond = Math.Max(1, GameSettings.Current.TickRate);
         _pursuitTimeoutTicks = GameSettings.Current.SecondsToTicks(3f);
         _autoRestartTicks = GameSettings.Current.SecondsToTicks(5f);
-        _chestOpeningTicks = GameSettings.Current.SecondsToTicks(3f);
         _combatStartWindupTicks = GameSettings.Current.SecondsToTicks(0.3f);
         _attackSwitchTicks = GameSettings.Current.SecondsToTicks(2f);
+        _tacticalResolutionTicksPerTurn = GameSettings.Current.SecondsToTicks(0.5f);
         _dashTicks = GameSettings.Current.SecondsToTicks(0.2f);
         _dashCooldownTicks = GameSettings.Current.SecondsToTicks(1f);
         _alertTicks = GameSettings.Current.SecondsToTicks(1.2f);
@@ -375,6 +1363,8 @@ public class GameState
         
         // Apply class and race stats
         _characterDataService.ApplyClassAndRace(Hero, className, raceName);
+        Hero.Progression = ProgressionService.Instance.CreateCompatibilityState(className);
+        ProgressionService.Instance.Normalize(Hero);
 
         // Update resource pools based on attributes
         UpdateHeroResourcePools();
@@ -384,14 +1374,14 @@ public class GameState
         Hero.CurrentMana = Hero.MaxMana;
         Hero.CurrentFaith = Hero.MaxFaith;
 
-        Console.WriteLine($"Character Created: {Hero.Name} - {Hero.Race} {Hero.Class}");
+        GameLog.Debug($"Character Created: {Hero.Name} - {Hero.Race} {Hero.Class}");
         GameLog.Debug($"Colors - Race: {Hero.RaceColor}, Class: {Hero.ClassColor}");
         GameLog.Debug($"Base Str {Hero.Strength} -> Effective {Hero.EffectiveStrength:0.0}; Con {Hero.Constitution} -> {Hero.EffectiveConstitution:0.0} (MaxStamina {Hero.MaxStamina}); Int {Hero.Intelligence} -> {Hero.EffectiveIntelligence:0.0} (MaxMana {Hero.MaxMana})");
 
-        // Equip the class starting loadout and project it into executable attacks
-        Hero.Loadout = AttackFactory.GetStartingLoadout(className);
-        Hero.Attacks = AttackFactory.ToAttacks(Hero.Loadout);
-        Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
+        // Class actions and physical equipment are separate systems.
+        Hero.Loadout = new List<Combinable>();
+        Hero.Equipment = AttackFactory.GetStartingEquipment(className);
+        RefreshAttacks();
         GameLog.Debug($"Attacks assigned: {Hero.Attacks.Count}, Current: {Hero.CurrentAttack?.Name ?? "None"}");
 
         // Every adventurer starts with a torch in their pack — at night, bare eyes without
@@ -404,10 +1394,49 @@ public class GameState
         DebugDrawHitboxes = (Environment.GetEnvironmentVariable("DEBUG_HITBOXES") == "1");
         DebugDrawLOS = (Environment.GetEnvironmentVariable("DEBUG_LOS") == "1");
     }
+
+    public GameState(int seed, CharacterCreationSelection creation)
+        : this(seed,
+            string.IsNullOrWhiteSpace(creation.Name) ? "Wayfarer" : creation.Name.Trim(),
+            "Wanderer",
+            creation.RaceName)
+    {
+        _creationSelection = creation.Clone();
+        _characterName = Hero.Name;
+        _raceName = creation.RaceName;
+        _className = "Classless";
+
+        _characterDataService.ApplyClasslessAndRace(Hero, creation.RaceName);
+        Hero.Progression = ProgressionService.Instance.CreateEmptyState();
+        ProgressionService.Instance.Normalize(Hero);
+
+        IEnumerable<string> itemIds = creation.ItemIds;
+        if (!creation.IsCustom && creation.ItemIds.Count == 0)
+            itemIds = StarterLoadoutService.Instance.SelectionFromKit(
+                Hero.Name, creation.RaceName, creation.KitId).ItemIds;
+        _creationSelection.ItemIds = itemIds.ToList();
+        StarterLoadoutService.Instance.ApplyToHero(Hero, itemIds);
+        UpdateHeroResourcePools();
+        Hero.CurrentHp = Hero.MaxHp;
+        Hero.CurrentStamina = Hero.MaxStamina;
+        Hero.CurrentMana = Hero.MaxMana;
+        Hero.CurrentFaith = Hero.MaxFaith;
+        RefreshAttacks();
+    }
+
+    public static GameState FromSave(int seed, SaveData data)
+    {
+        GameState state = data.CreationSelection != null
+            ? new GameState(seed, data.CreationSelection)
+            : new GameState(seed, data.HeroName, data.ClassName, data.RaceName);
+        state.LoadFrom(data);
+        return state;
+    }
     
     public void Tick()
     {
         if (!IsRunning) return;
+        if (SimulationMode == SimulationMode.TurnBased) return;
 
         // Decay screen shake regardless of death/combat state so it always settles.
         if (ScreenShake > 0f)
@@ -537,15 +1566,8 @@ public class GameState
                 }
                 else if (IsInSafeRoom)
                 {
-                    // Default auto-play behavior in a safe room: push toward the Guardian gate
-                    // rather than retreat to the shrine. This is a stand-in for a real player
-                    // choice (shrine vs. guardian) until a pause/manual-control system exists —
-                    // see Implementation Plan section 0a.
-                    var guardianDoor = CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.GuardianDoor);
-                    if (guardianDoor != null)
-                    {
-                        _movementSystem.MoveHeroTowardTarget(Hero, guardianDoor.X, guardianDoor.Y, CurrentMaze);
-                    }
+                    // Safe rooms are a genuine player choice. Never auto-select the Guardian door
+                    // or shrine on the player's behalf.
                 }
                 else if (StairsLocation.HasValue)
                 {
@@ -578,7 +1600,7 @@ public class GameState
                 // Idle wander (BFS waypoint) when not in combat, throttled for a calmer pace
                 if (TickCount % 2 == 0)
                 {
-                    _movementSystem.MoveEnemySmoothRandom(enemy, CurrentMaze);
+                    _movementSystem.MoveEnemyIdle(enemy, CurrentMaze);
                 }
             }
             else
@@ -606,6 +1628,10 @@ public class GameState
         if (_heroAlertTicks > 0) _heroAlertTicks--;
         UpdatePerception();
 
+        // Theme landmarks are visible, fixed-orientation world features. Handle their contact
+        // effects before combat discovery so alarms can wake the room's encounter this tick.
+        UpdateDungeonThemeFeatures();
+
         // Check for new combat encounters and process existing combat
         CheckCombat();
 
@@ -622,7 +1648,7 @@ public class GameState
             StartNewFloor();
         }
 
-        // Advance the hero's current activity (chest-opening, mining, crafting, ...), if any
+        // Advance the hero's current long-running activity (mining, crafting, ...), if any
         UpdateCurrentActivity();
 
         // Check for features (stairs, chests, shrine, guardian door, traps) - only if not in combat
@@ -631,11 +1657,8 @@ public class GameState
             CheckFeatures();
         }
 
-        // Overworld: track which town structure (if any) is in Press-E range, for the prompt/menu.
-        if (IsInOverworld)
-        {
-            UpdateOverworldInteractable();
-        }
+        // Track a chest or town structure in Press-E range for the contextual prompt.
+        UpdateNearbyInteractable();
 
         // Auto mode auto-collects loot off nearby corpses (the manual player loots deliberately via
         // right-click instead), preserving auto-play's loot collection now that drops stay on bodies.
@@ -781,6 +1804,34 @@ public class GameState
                         enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
                         _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
                     }
+                }
+            }
+        }
+
+        // Alert nearby members of the same generated encounter. Packs respond together, but the
+        // distance cap prevents a patroller on the far side of the floor from gaining omniscience.
+        var alertedEncounterIds = engagedEnemies
+            .Where(enemy => enemy.EncounterId >= 0)
+            .Select(enemy => enemy.EncounterId)
+            .ToHashSet();
+        if (alertedEncounterIds.Count > 0)
+        {
+            foreach (var enemy in Enemies.Where(enemy =>
+                         enemy.IsAlive && alertedEncounterIds.Contains(enemy.EncounterId) &&
+                         !engagedEnemies.Contains(enemy)))
+            {
+                float dx = Hero.X - enemy.X;
+                float dy = Hero.Y - enemy.Y;
+                float distance = MathF.Sqrt(dx * dx + dy * dy);
+                if (distance > 12f) continue;
+
+                engagedEnemies.Add(enemy);
+                enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+                _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+                if (distance < closestDistance)
+                {
+                    closestDistance = distance;
+                    primaryTarget = enemy;
                 }
             }
         }
@@ -1225,9 +2276,12 @@ public class GameState
     private void HandleEnemyDefeated(Enemy enemy)
     {
         int xpGain = (int)((10 + enemy.MaxHp / 4) * enemy.XpMultiplier);
+        // Merge resolution: remote's shared-XP progression path wins (XP banks for player
+        // allocation), with the local level-up feedback kept — it fires whenever allocation
+        // (or a legacy path) actually raises Hero.Level during this call.
         int levelBefore = Hero.Level;
-        Hero.GainExperience(xpGain);
-        LogMessage($"Slew the {enemy.Race} {enemy.Class} (+{xpGain} XP)", MessageKind.Combat);
+        int awarded = ProgressionService.Instance.GrantSharedXp(Hero, xpGain);
+        LogMessage($"Slew the {enemy.Race} {enemy.Class} (+{awarded} shared XP)", MessageKind.Combat);
         if (Hero.Level > levelBefore)
         {
             LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
@@ -1254,7 +2308,7 @@ public class GameState
         // from inside a live `foreach (var p in Projectiles)` (ProcessProjectileCollisions), so
         // we can't mutate Enemies/Projectiles here (StartNewFloor clears both) — defer it and
         // apply it once that enumeration has finished (see Tick()).
-        if (IsInSafeRoom && enemy == Boss)
+        if (enemy == Boss)
         {
             _pendingGuardianVictory = true;
         }
@@ -1365,8 +2419,8 @@ public class GameState
     }
     
     /// <summary>
-    /// Give the hero found loot. Everything goes to the inventory — the player equips weapons/spells
-    /// to the hotbar themselves (see the inventory screen); nothing is auto-equipped.
+    /// Give the hero found loot. Everything goes to the backpack until the player equips physical
+    /// gear or slots a spell from the Character screen.
     /// </summary>
     public void AcquireLoot(Combinable loot)
     {
@@ -1374,11 +2428,23 @@ public class GameState
         LogMessage($"Found {loot.Name} ({loot.Rarity})", MessageKind.Loot);
     }
 
-    /// <summary>Re-project attacks from the current loadout, keeping the current attack if it survives.</summary>
+    /// <summary>Rebuild the equipment-derived basic attack, class techniques, and slotted spells.</summary>
     private void RefreshAttacks()
     {
         var currentId = Hero.CurrentAttack?.Id;
-        Hero.Attacks = AttackFactory.ToAttacks(Hero.Loadout);
+        Hero.Attacks = new List<Attack> { AttackFactory.GetBasicAttack(Hero) };
+        foreach (ProgressionInstance activeClass in Hero.Progression.ClassSlots
+                     .Where(slot => !slot.IsLocked && slot.Instance != null)
+                     .Select(slot => slot.Instance!))
+        {
+            foreach (Attack attack in AttackFactory.GetClassAttacks(activeClass.Name, activeClass.Level))
+                if (Hero.Attacks.All(existing => existing.Id != attack.Id)) Hero.Attacks.Add(attack);
+            foreach (ProgressionLineageEntry lineage in activeClass.Lineage)
+                foreach (Attack attack in AttackFactory.GetClassAttacks(
+                             lineage.Name, Math.Max(1, lineage.LevelAtConsumption)))
+                    if (Hero.Attacks.All(existing => existing.Id != attack.Id)) Hero.Attacks.Add(attack);
+        }
+        Hero.Attacks.AddRange(AttackFactory.GetSlottedSpellAttacks(Hero.Loadout));
         Hero.CurrentAttack = Hero.Attacks.FirstOrDefault(a => a.Id == currentId) ?? Hero.Attacks.FirstOrDefault();
     }
 
@@ -1406,20 +2472,9 @@ public class GameState
         }
     }
 
-    /// <summary>XP + loot for a fully-opened chest. Kept on GameState (not ChestOpenActivity)
-    /// so the shared RNG (_random) stays private to this class.</summary>
-    internal void GrantChestRewards()
-    {
-        int levelBefore = Hero.Level;
-        Hero.GainExperience(25);
-        LogMessage("Opened a chest (+25 XP)", MessageKind.Loot);
-        if (Hero.Level > levelBefore)
-        {
-            LogMessage($"Level up! Now level {Hero.Level}.", MessageKind.LevelUp);
-            AddFloatingText("LEVEL UP!", Hero.X, Hero.Y - 0.6f, FloatingTextKind.LevelUp);
-        }
-        AcquireLoot(LootService.Roll(CurrentFloor, _random));
-    }
+    // Merge resolution: GrantChestRewards removed in favor of the remote chest rework — chest
+    // XP flows through OpenChest's shared-XP grant, and chest loot now lives in the chest's own
+    // Inventory (filled at floor generation), so nothing is lost.
 
     /// <summary>The single validated write path for Hero.Resources — checks the material id
     /// against MaterialDataService before adding, so a typo'd id in recipes.json is caught here
@@ -1441,18 +2496,21 @@ public class GameState
     /// <summary>How close (tiles) the hero must be to a town structure to interact with it.</summary>
     private const float InteractRadius = 1.3f;
 
-    /// <summary>Refresh NearbyInteractable: the nearest in-range town structure, or null. Skipped
-    /// while mid-Activity (mining/crafting) so the prompt doesn't invite a second overlapping
-    /// action. Called each tick from Tick() while in the Overworld.</summary>
-    private void UpdateOverworldInteractable()
+    /// <summary>Refresh the nearest in-range chest or town structure for the contextual prompt.</summary>
+    public void UpdateNearbyInteractable()
     {
-        if (CurrentActivity != null) { NearbyInteractable = null; return; }
+        if (CurrentActivity != null || Hero.InCombat) { NearbyInteractable = null; return; }
 
         MazeFeature? nearest = null;
         float nearestSq = InteractRadius * InteractRadius;
         foreach (var f in CurrentMaze.Features)
         {
-            if (!IsOverworldInteractable(f.Type)) continue;
+            bool interactable = IsInOverworld
+                ? IsOverworldInteractable(f.Type)
+                : IsInSafeRoom
+                    ? f.Type is MazeFeatureType.Shrine or MazeFeatureType.GuardianDoor
+                    : f.Type == MazeFeatureType.Chest && !f.IsUsed;
+            if (!interactable) continue;
             float dx = f.X - Hero.X, dy = f.Y - Hero.Y;
             float d2 = dx * dx + dy * dy;
             if (d2 <= nearestSq) { nearestSq = d2; nearest = f; }
@@ -1507,6 +2565,34 @@ public class GameState
         return CombinationEngine.Combine(a, b);
     }
 
+    /// <summary>Combine two distinct things the hero owns, consuming both only after every
+    /// location and ownership check passes. The result is placed in Inventory; callers may equip
+    /// a result through the normal inventory flow.</summary>
+    public Combinable? CombineOwned(Combinable a, Combinable b, CombineLocation location, out string reason)
+    {
+        if (!CombinationEngine.CanCombine(a, b, location, out reason)) return null;
+
+        bool ownsA = Hero.Inventory.Contains(a) || Hero.Loadout.Contains(a);
+        bool ownsB = Hero.Inventory.Contains(b) || Hero.Loadout.Contains(b);
+        if (!ownsA || !ownsB)
+        {
+            reason = "Both components must be owned by the hero.";
+            return null;
+        }
+
+        Combinable result = CombinationEngine.Combine(a, b);
+        bool loadoutChanged = Hero.Loadout.Remove(a);
+        loadoutChanged |= Hero.Loadout.Remove(b);
+        Hero.Inventory.Remove(a);
+        Hero.Inventory.Remove(b);
+        Hero.Inventory.Add(result);
+        if (loadoutChanged) RefreshAttacks();
+
+        reason = "";
+        LogMessage($"Combined {a.Name} and {b.Name} into {result.Name}.", MessageKind.Loot);
+        return result;
+    }
+
     private const int GoldPerRarityPoint = 10;
 
     /// <summary>
@@ -1555,18 +2641,14 @@ public class GameState
         var heroVisibleCells = GetDirectionalSightCone(Hero.X, Hero.Y, heroFacing, heroSightRange, heroConeRad);
 
         // Automatically pick up nearby items (larger pickup radius than interaction)
-        foreach (var feature in CurrentMaze.Features.Where(f => !f.IsUsed && !f.IsOpening).ToList())
+        foreach (var feature in CurrentMaze.Features.Where(f => !f.IsUsed).ToList())
         {
             float dx = Hero.X - feature.X;
             float dy = Hero.Y - feature.Y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
 
-            // Auto-pickup radius of 0.7 tiles
-            if (distance < 0.7f && feature.Type == MazeFeatureType.Chest)
-            {
-                StartActivity(new ChestOpenActivity(feature, _chestOpeningTicks));
-                continue; // Skip to next feature
-            }
+            // Chests never auto-open. Proximity is handled by UpdateNearbyInteractable and E.
+            if (feature.Type == MazeFeatureType.Chest) continue;
 
             if (feature.Type == MazeFeatureType.Trap && distance < 0.5f)
             {
@@ -1578,29 +2660,11 @@ public class GameState
             // Overworld structures (DungeonEntrance / MineEntrance / Smithy / Stall) are no longer
             // triggered by walking onto them — they're used via the player's Press-E interaction
             // (see MineOre/Craft/EnterDungeon and GameView's structure menus). Proximity detection
-            // for the E prompt is UpdateOverworldInteractable, not this feature-trigger loop.
+            // for the E prompt is UpdateNearbyInteractable, not this feature-trigger loop.
 
-            if (feature.Type == MazeFeatureType.Shrine)
-            {
-                // Only meaningful in a safe room; touching it exits the dungeon.
-                if (distance < 0.6f && IsInSafeRoom)
-                {
-                    feature.IsUsed = true;
-                    EnterOverworld();
-                    return; // state just reset — stop processing this tick's features
-                }
-                continue;
-            }
-
-            if (feature.Type == MazeFeatureType.GuardianDoor)
-            {
-                if (distance < 0.9f)
-                {
-                    feature.IsUsed = true;
-                    SpawnGuardian(feature.X, feature.Y);
-                }
-                continue;
-            }
+            // Safe-room exits are deliberate Press-E choices. Proximity only exposes the
+            // contextual prompt; walking into either feature does nothing.
+            if (feature.Type is MazeFeatureType.Shrine or MazeFeatureType.GuardianDoor) continue;
 
             // For stairs, allow close interaction regardless of cone visibility. No key needed —
             // reaching the stairs is enough; the challenge is the maze distance to get there.
@@ -1662,6 +2726,114 @@ public class GameState
         });
         GameLog.Debug($"Trap triggered! {damage} damage.");
         LogMessage($"A trap springs! -{damage} HP", MessageKind.Warning);
+    }
+
+    private void UpdateDungeonThemeFeatures()
+    {
+        var features = CurrentMaze?.Dungeon?.ThemeFeatures;
+        if (features == null || IsInOverworld || IsInSafeRoom) return;
+
+        foreach (var feature in features)
+        {
+            if (feature.CooldownTicks > 0) feature.CooldownTicks--;
+
+            float dx = Hero.X - feature.X;
+            float dy = Hero.Y - feature.Y;
+            if (dx * dx + dy * dy > 0.36f) continue;
+
+            switch (feature.Type)
+            {
+                case DungeonThemeFeatureType.CastleAlarm when !feature.IsTriggered:
+                    feature.IsTriggered = true;
+                    AlertEncounterInRoom(feature, "An alarm bell rings through the castle!");
+                    break;
+
+                case DungeonThemeFeatureType.SewerRunoff when feature.CooldownTicks == 0:
+                    feature.IsTriggered = true;
+                    feature.CooldownTicks = _ticksPerSecond * 3;
+                    ApplyThemeHazard(feature, 3 + CurrentFloor,
+                        "Caustic runoff burns through your boots!");
+                    break;
+
+                case DungeonThemeFeatureType.RestlessGrave when !feature.IsTriggered:
+                    feature.IsTriggered = true;
+                    int faithDrained = Math.Min(Hero.CurrentFaith, 8 + CurrentFloor);
+                    if (faithDrained > 0)
+                    {
+                        Hero.CurrentFaith -= faithDrained;
+                        LogMessage($"The restless grave chills your spirit. -{faithDrained} Faith",
+                            MessageKind.Warning);
+                    }
+                    else
+                    {
+                        ApplyThemeHazard(feature, 4 + CurrentFloor,
+                            "The restless grave feeds on your life!");
+                    }
+                    break;
+
+                case DungeonThemeFeatureType.ArcaneWard when !feature.IsTriggered:
+                    feature.IsTriggered = true;
+                    int manaDrained = Math.Min(Hero.CurrentMana, 10 + CurrentFloor * 2);
+                    if (manaDrained > 0)
+                    {
+                        Hero.CurrentMana -= manaDrained;
+                        LogMessage($"The ward consumes {manaDrained} Mana and falls dark.",
+                            MessageKind.Warning);
+                    }
+                    else
+                    {
+                        ApplyThemeHazard(feature, 5 + CurrentFloor,
+                            "The ward lashes out at your empty reserves!");
+                    }
+                    break;
+
+                case DungeonThemeFeatureType.HeatVent when feature.CooldownTicks == 0:
+                    feature.IsTriggered = true;
+                    feature.CooldownTicks = _ticksPerSecond * 4;
+                    ApplyThemeHazard(feature, 5 + CurrentFloor,
+                        "The forge vent erupts beneath you!");
+                    break;
+
+                case DungeonThemeFeatureType.HideoutTripwire when !feature.IsTriggered:
+                    feature.IsTriggered = true;
+                    AlertEncounterInRoom(feature, "A tripwire rattles the hideout's warning cans!");
+                    break;
+            }
+        }
+    }
+
+    private void AlertEncounterInRoom(DungeonThemeFeature feature, string message)
+    {
+        var roomEncounter = CurrentMaze.Dungeon?.Encounters
+            .FirstOrDefault(encounter => encounter.HomeRoomId == feature.RoomId);
+        if (roomEncounter != null)
+        {
+            foreach (var enemy in Enemies.Where(enemy =>
+                         enemy.IsAlive && enemy.EncounterId == roomEncounter.Id))
+            {
+                enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+                _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+            }
+        }
+
+        _heroAlertTicks = _alertTicks;
+        LogMessage(message, MessageKind.Warning);
+    }
+
+    private void ApplyThemeHazard(DungeonThemeFeature feature, int damage, string message)
+    {
+        Hero.CurrentHp = Math.Max(0, Hero.CurrentHp - damage);
+        ScreenShake = MathF.Max(ScreenShake, 4f);
+        HitEffects.Add(new HitEffect
+        {
+            X = feature.X,
+            Y = feature.Y,
+            LifeTime = 0,
+            MaxLifeTime = 10,
+            Type = HitEffectType.Impact,
+            Team = ProjectileTeam.Enemy
+        });
+        LogMessage($"{message} -{damage} HP", MessageKind.Warning);
     }
 
     /// <summary>
@@ -1732,6 +2904,147 @@ public class GameState
     }
 
     /// <summary>Right-click "Examine" on a corpse: flavor/identify.</summary>
+    private bool CanReachChest(MazeFeature chest)
+    {
+        if (chest == null || chest.Type != MazeFeatureType.Chest || chest.IsUsed ||
+            Hero.InCombat || CurrentActivity != null || !CurrentMaze.Features.Contains(chest)) return false;
+        float dx = chest.X - Hero.X;
+        float dy = chest.Y - Hero.Y;
+        return dx * dx + dy * dy <= InteractRadius * InteractRadius;
+    }
+
+    public bool HasChestKey(MazeFeature chest) => Hero.Inventory.OfType<Item>()
+        .Any(item => item.KeyId.Length > 0 && item.KeyId == chest.RequiredKeyId);
+
+    public bool LookForChestTraps(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || chest.IsOpened) return false;
+        chest.TrapChecked = true;
+        if (!chest.IsTrapped)
+        {
+            LogMessage("You find no sign of a trap.", MessageKind.System);
+            return true;
+        }
+
+        double chance = Math.Clamp(0.45 + Hero.EffectiveWisdom * 0.04 - CurrentFloor * 0.025, 0.2, 0.95);
+        if (_random.NextDouble() < chance)
+        {
+            chest.ChestTrapDetected = true;
+            LogMessage("You find a trap wired into the chest latch.", MessageKind.Warning);
+        }
+        else
+        {
+            LogMessage("You cannot make out anything suspicious.", MessageKind.System);
+        }
+        return true;
+    }
+
+    public bool TryDisarmChestTrap(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || !chest.ChestTrapDetected || chest.TrapDisarmed) return false;
+        double chance = Math.Clamp(0.4 + Hero.EffectiveDexterity * 0.045 - CurrentFloor * 0.025, 0.15, 0.95);
+        if (_random.NextDouble() < chance)
+        {
+            chest.TrapDisarmed = true;
+            LogMessage("You disarm the chest trap.", MessageKind.System);
+        }
+        else
+        {
+            LogMessage("The mechanism slips and the trap springs!", MessageKind.Warning);
+            TriggerChestTrap(chest);
+        }
+        return true;
+    }
+
+    public bool TryLockpickChest(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || !chest.IsLocked) return false;
+        double chance = Math.Clamp(0.35 + Hero.EffectiveDexterity * 0.045 - CurrentFloor * 0.02, 0.12, 0.9);
+        if (_random.NextDouble() < chance)
+        {
+            chest.IsLocked = false;
+            LogMessage("The lock clicks open.", MessageKind.System);
+        }
+        else
+        {
+            LogMessage("The lockpick slips.", MessageKind.System);
+            if (chest.IsTrapped && !chest.TrapDisarmed && _random.NextDouble() < 0.3)
+                TriggerChestTrap(chest);
+        }
+        return true;
+    }
+
+    public bool UseChestKey(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || !chest.IsLocked) return false;
+        Item? key = Hero.Inventory.OfType<Item>()
+            .FirstOrDefault(item => item.KeyId.Length > 0 && item.KeyId == chest.RequiredKeyId);
+        if (key == null) return false;
+        Hero.Inventory.Remove(key);
+        chest.IsLocked = false;
+        LogMessage("The key fits. The chest unlocks.", MessageKind.System);
+        return true;
+    }
+
+    public bool OpenChest(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || chest.IsLocked) return false;
+        if (chest.IsTrapped && !chest.TrapDisarmed) TriggerChestTrap(chest);
+        chest.IsOpened = true;
+        if (!chest.OpenRewardGranted)
+        {
+            chest.OpenRewardGranted = true;
+            int awarded = ProgressionService.Instance.GrantSharedXp(Hero, 25);
+            LogMessage($"Opened a chest (+{awarded} shared XP).", MessageKind.Loot);
+        }
+        return true;
+    }
+
+    private void TriggerChestTrap(MazeFeature chest)
+    {
+        if (chest.TrapDisarmed) return;
+        chest.TrapDisarmed = true;
+        chest.ChestTrapDetected = true;
+        int damage = 8 + CurrentFloor * 2;
+        Hero.CurrentHp = Math.Max(0, Hero.CurrentHp - damage);
+        ScreenShake = MathF.Max(ScreenShake, 4f);
+        LogMessage($"The chest trap hits you for {damage} damage!", MessageKind.Warning);
+    }
+
+    public bool LootChestItem(MazeFeature chest, Combinable item)
+    {
+        if (!CanReachChest(chest) || !chest.IsOpened || !chest.Inventory.Remove(item)) return false;
+        AcquireLoot(item);
+        FinishEmptyChest(chest);
+        return true;
+    }
+
+    public bool LootChestGold(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || !chest.IsOpened || chest.Gold <= 0) return false;
+        int amount = chest.Gold;
+        chest.Gold = 0;
+        Hero.Gold += amount;
+        LogMessage($"Looted {amount} gold.", MessageKind.Loot);
+        FinishEmptyChest(chest);
+        return true;
+    }
+
+    public void LootAll(MazeFeature chest)
+    {
+        if (!CanReachChest(chest) || !chest.IsOpened) return;
+        foreach (Combinable item in chest.Inventory.ToList()) LootChestItem(chest, item);
+        LootChestGold(chest);
+        FinishEmptyChest(chest);
+    }
+
+    private void FinishEmptyChest(MazeFeature chest)
+    {
+        if (chest.Inventory.Count > 0 || chest.Gold > 0) return;
+        chest.IsUsed = true;
+        if (ReferenceEquals(NearbyInteractable, chest)) NearbyInteractable = null;
+    }
+
     public void ExamineCorpse(Enemy enemy)
     {
         if (enemy == null || enemy.IsAlive) return;
@@ -1746,6 +3059,17 @@ public class GameState
     {
         if (corpse == null || item == null || !corpse.Inventory.Remove(item)) return false;
         AcquireLoot(item);
+        return true;
+    }
+
+    /// <summary>Take the body's gold as an individual loot entry.</summary>
+    public bool LootGold(Enemy corpse)
+    {
+        if (corpse == null || corpse.IsAlive || corpse.Gold <= 0) return false;
+        int amount = corpse.Gold;
+        corpse.Gold = 0;
+        Hero.Gold += amount;
+        LogMessage($"Looted {amount} gold.", MessageKind.Loot);
         return true;
     }
 
@@ -1780,12 +3104,7 @@ public class GameState
             corpse.Inventory.Remove(item);
             AcquireLoot(item);
         }
-        if (corpse.Gold > 0)
-        {
-            Hero.Gold += corpse.Gold;
-            LogMessage($"Looted {corpse.Gold} gold.", MessageKind.Loot);
-            corpse.Gold = 0;
-        }
+        LootGold(corpse);
     }
 
     /// <summary>Spawns the gate Guardian once the hero approaches the safe room's door.
@@ -1794,17 +3113,34 @@ public class GameState
     /// The fight itself IS the Guardian floor (5, 10, 15, ...): entering it advances
     /// CurrentFloor from e.g. 4 (safe room "4.5") to 5, so the Guardian's level scales off the
     /// Guardian floor and victory proceeds to floor 6.</summary>
-    private void SpawnGuardian(float x, float y)
+    public void EnterGuardianChamber()
     {
+        if (!IsInSafeRoom || NearbyInteractable?.Type != MazeFeatureType.GuardianDoor) return;
+
+        IsInSafeRoom = false;
         CurrentFloor++;
+        CurrentMaze = GenerateGuardianChamber();
+        Hero.X = 1;
+        Hero.Y = CurrentMaze.Height / 2;
+        NearbyInteractable = null;
+        Enemies.Clear();
+        Projectiles.Clear();
+        HitEffects.Clear();
+
         Boss = EnemyFactory.RandomBoss(CurrentFloor, _characterDataService, _random);
-        Boss.X = x;
-        Boss.Y = y;
-        Boss.TargetX = x;
-        Boss.TargetY = y;
+        Boss.X = CurrentMaze.Width - 3;
+        Boss.Y = CurrentMaze.Height / 2;
+        Boss.TargetX = Boss.X;
+        Boss.TargetY = Boss.Y;
         Enemies.Add(Boss);
         GameLog.Debug($"Guardian spawned: {Boss.Race} {Boss.Class} (Level {Boss.Level})");
-        LogMessage($"The Guardian bars the way — {Boss.Race} {Boss.Class}, level {Boss.Level}!", MessageKind.Warning);
+        LogMessage($"Floor {CurrentFloor}: the Guardian chamber. {Boss.Race} {Boss.Class}, level {Boss.Level}, bars the way!", MessageKind.Warning);
+    }
+
+    public void UseSafeRoomShrine()
+    {
+        if (!IsInSafeRoom || NearbyInteractable?.Type != MazeFeatureType.Shrine) return;
+        EnterOverworld();
     }
 
     /// <summary>
@@ -1823,7 +3159,8 @@ public class GameState
         CurrentMaze = GenerateSafeRoomMaze();
         Hero.X = 1;
         Hero.Y = CurrentMaze.Height / 2;
-        LogMessage("A safe room. The shrine's blue glow is restful. Progress saved.", MessageKind.System);
+        ControlMode = ControlMode.Manual;
+        LogMessage("A safe room between floors. Approach the door to challenge the next Guardian, or the shrine to return to town. Progress saved.", MessageKind.System);
 
         // Safe rooms are the only mid-dungeon save points: checkpoint automatically on entry.
         // Continuing this save resumes back in this safe room (SaveData.SafeRoomFloor).
@@ -1849,6 +3186,21 @@ public class GameState
 
         maze.Features.Add(new MazeFeature { X = width / 2, Y = midY, Type = MazeFeatureType.Shrine });
         maze.Features.Add(new MazeFeature { X = width - 2, Y = midY, Type = MazeFeatureType.GuardianDoor });
+        return maze;
+    }
+
+    private Maze GenerateGuardianChamber()
+    {
+        const int width = 15;
+        const int height = 9;
+        var maze = new Maze(width, height) { FloorNumber = CurrentFloor };
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+        {
+            bool border = x == 0 || x == width - 1 || y == 0 || y == height - 1;
+            maze.Walls[x, y] = border;
+            if (!border) maze.Explored[x, y] = true;
+        }
         return maze;
     }
 
@@ -1882,17 +3234,29 @@ public class GameState
     }
 
     /// <summary>
-    /// Restore a hero's progress from a save. Call after constructing a GameState normally (with
-    /// the saved class/race, so class-derived setup like effectiveness/starting loadout is
-    /// computed correctly), then this overwrites the fresh stats/inventory with the saved ones
-    /// and resumes where the save was made: a safe-room checkpoint (SaveData.SafeRoomFloor), or
-    /// otherwise the Overworld's dungeon entrance. Regular dungeon floors are never saved, so a
-    /// mid-dive quit resumes from the entry-time snapshot at the entrance.
+    /// Restore a hero's progress from a save after the appropriate legacy or equipment-first
+    /// constructor has established race effectiveness. Saved stats, inventory, progression, and
+    /// the checkpoint location then replace the fresh state.
     /// </summary>
     public void LoadFrom(SaveData data)
     {
         SaveId = data.SaveId;
         _priorPlaytimeSeconds = data.PlaytimeSeconds;
+        _characterName = data.HeroName;
+        _className = data.ClassName;
+        _raceName = data.RaceName;
+        _creationSelection = data.CreationSelection?.Clone();
+
+        Hero.Name = data.HeroName;
+        if (string.Equals(data.ClassName, "Classless", StringComparison.OrdinalIgnoreCase))
+        {
+            Hero.Class = "Classless";
+            Hero.ClassData = null;
+            Hero.ClassColor = "#808080";
+        }
+        else if (!string.Equals(Hero.Class, data.ClassName, StringComparison.OrdinalIgnoreCase) ||
+                 Hero.ClassData == null)
+            _characterDataService.ApplyClassIdentity(Hero, data.ClassName);
 
         Hero.Level = data.Level;
         Hero.Experience = data.Experience;
@@ -1907,22 +3271,21 @@ public class GameState
         Hero.Wisdom = data.Wisdom;
         Hero.Charisma = data.Charisma;
         Hero.UnspentStatPoints = data.UnspentStatPoints;
+        Hero.Progression = data.Progression ?? ProgressionService.Instance.CreateCompatibilityState(
+            data.ClassName, data.Level, data.Experience);
+        ProgressionService.Instance.Normalize(Hero);
         Hero.Gold = data.Gold;
         Hero.Resources = new Dictionary<string, int>(data.Resources);
-        Hero.Loadout = new List<Combinable>(data.Loadout);
+        Hero.Loadout = new List<Combinable>(data.Loadout
+            .Where(item => item is Spell && !LegacyClassActionIds.Contains(item.Id)));
         Hero.Inventory = new List<Combinable>(data.Inventory);
+        Hero.Equipment = new Dictionary<EquipmentSlot, Combinable>(data.Equipment ?? new());
+        Hero.WeaponTraining = new HashSet<WeaponType>(data.WeaponTraining ?? new());
+        // Grow-with-use elemental progress survives the restart (remote's typed Affinities model
+        // supersedes the local string-dict version — one restore path, not two).
+        if (data.Affinities != null) Hero.Affinities = data.Affinities.Clone();
+        MigrateLegacyLoadout(data);
         RefreshAttacks();
-
-        // Grow-with-use elemental progress survives the restart (saved entries overwrite the
-        // fresh class/race seed; elements absent from the save keep their seeded values).
-        if (data.Affinities is { Count: > 0 })
-        {
-            foreach (var kv in data.Affinities)
-            {
-                if (Enum.TryParse<MagicElement>(kv.Key, out var element))
-                    Hero.Affinities.Set(element, kv.Value);
-            }
-        }
 
         // World time resumes where it was (0 = a save predating the clock; keep the default).
         if (data.WorldGameMinutes > 0)
@@ -1964,7 +3327,7 @@ public class GameState
     }
 
     /// <summary>The town structures the hero can interact with via Press-E (proximity-detected in
-    /// UpdateOverworldInteractable).</summary>
+    /// UpdateNearbyInteractable).</summary>
     private static bool IsOverworldInteractable(MazeFeatureType t) => t switch
     {
         MazeFeatureType.MineEntrance or MazeFeatureType.Smithy or
@@ -2117,6 +3480,182 @@ public class GameState
         return true;
     }
 
+    /// <summary>Allocate shared XP to one active class slot. Profession slots reject this path.</summary>
+    public ProgressionAdvanceResult AllocateClassXp(string slotId, int amount)
+    {
+        int constitutionBefore = Hero.Constitution;
+        ProgressionAdvanceResult result = ProgressionService.Instance.AllocateSharedXp(Hero, slotId, amount);
+        if (!result.Success) return result;
+
+        ApplyAttributeRewardSideEffects(constitutionBefore);
+        RefreshAttacks();
+        if (result.LevelsGained > 0)
+        {
+            string automatic = result.AutomaticAttributesGranted.Count == 0
+                ? "no automatic attributes"
+                : string.Join(", ", result.AutomaticAttributesGranted.Select(pair => $"+{pair.Value} {pair.Key}"));
+            LogMessage($"Class advanced {result.LevelsGained} level(s): {automatic}; " +
+                $"+{result.FreeAttributePointsGranted} free points.", MessageKind.LevelUp);
+        }
+        return result;
+    }
+
+    /// <summary>Foundation for the contextual offer engine: place an accepted profession in an empty slot.</summary>
+    public bool TryActivateProfession(string professionId, out string error) =>
+        ProgressionService.Instance.TryPlacePath(Hero, ProgressionDomain.Profession, professionId, out error);
+
+    public IReadOnlyList<ProgressionOffer> GenerateProgressionOffers(ProgressionDomain domain, string slotId)
+    {
+        return ProgressionOfferService.Instance.GenerateOffers(
+            Hero, domain, slotId, BuildProgressionContext());
+    }
+
+    public IReadOnlyList<ProgressionSpecializationOffer> GenerateSpecializationOffers(string slotId) =>
+        ProgressionOfferService.Instance.GenerateSpecializationOffers(
+            Hero, slotId, BuildProgressionContext());
+
+    public IReadOnlyList<ProgressionAdvancementOffer> GenerateAdvancementOffers(string slotId) =>
+        ProgressionOfferService.Instance.GenerateAdvancementOffers(
+            Hero, slotId, BuildProgressionContext());
+
+    public bool AcceptProgressionOffer(string slotId, ProgressionOffer offer, out string error)
+    {
+        IReadOnlyList<ProgressionOffer> current = GenerateProgressionOffers(offer.Domain, slotId);
+        ProgressionOffer? valid = current.FirstOrDefault(candidate =>
+            string.Equals(candidate.ResultDefinitionId, offer.ResultDefinitionId,
+                StringComparison.OrdinalIgnoreCase) && candidate.ContextHash == offer.ContextHash);
+        if (valid == null)
+        {
+            error = "The character context changed. Review the updated offers.";
+            return false;
+        }
+
+        bool hadActiveClass = Hero.Progression.ClassSlots.Any(slot => slot.Instance != null);
+        if (!ProgressionService.Instance.TryPlacePath(
+                Hero, offer.Domain, slotId, offer.ResultDefinitionId, out error)) return false;
+
+        if (offer.Domain == ProgressionDomain.Class && !hadActiveClass)
+        {
+            _characterDataService.ApplyClassIdentity(Hero, valid.Name);
+            _className = valid.Name;
+        }
+        else if (offer.Domain == ProgressionDomain.Class)
+            _characterDataService.ApplyClassAffinities(Hero, valid.Name);
+        RefreshAttacks();
+        LogMessage($"Accepted {valid.Name} as a level-1 {offer.Domain.ToString().ToLowerInvariant()} path.",
+            MessageKind.LevelUp);
+        error = "";
+        return true;
+    }
+
+    public bool AcceptSpecializationOffer(string slotId, ProgressionSpecializationOffer offer,
+        out string error)
+    {
+        ProgressionSpecializationOffer? valid = GenerateSpecializationOffers(slotId)
+            .FirstOrDefault(candidate =>
+                string.Equals(candidate.SpecializationId, offer.SpecializationId,
+                    StringComparison.OrdinalIgnoreCase) && candidate.ContextHash == offer.ContextHash);
+        if (valid == null)
+        {
+            error = "The character context changed. Review the updated specializations.";
+            return false;
+        }
+        if (!ProgressionService.Instance.TrySpecialize(
+                Hero, slotId, valid.SpecializationId, out error)) return false;
+        RefreshAttacks();
+        LogMessage($"Specialized as {valid.Name} without resetting the path's level or XP.",
+            MessageKind.LevelUp);
+        error = "";
+        return true;
+    }
+
+    public bool AcceptAdvancementOffer(string slotId, ProgressionAdvancementOffer offer,
+        out string error)
+    {
+        ProgressionAdvancementOffer? valid = GenerateAdvancementOffers(slotId)
+            .FirstOrDefault(candidate =>
+                string.Equals(candidate.RecipeId, offer.RecipeId, StringComparison.OrdinalIgnoreCase) &&
+                candidate.ContextHash == offer.ContextHash);
+        if (valid == null)
+        {
+            error = "The character context changed. Review the updated advancements.";
+            return false;
+        }
+        if (!ProgressionService.Instance.TryAdvance(Hero, valid.RecipeId, valid.TargetSlotId,
+                valid.SourceSlotIds, out error)) return false;
+
+        if (valid.Domain == ProgressionDomain.Class)
+        {
+            ProgressionInstance? primary = Hero.Progression.ClassSlots
+                .FirstOrDefault(candidate => !candidate.IsLocked && candidate.Instance != null)?.Instance;
+            if (primary != null && string.Equals(primary.Name, valid.Name, StringComparison.OrdinalIgnoreCase))
+                _characterDataService.ApplyClassIdentity(Hero, primary.Name);
+            else
+                _characterDataService.ApplyClassAffinities(Hero, valid.Name);
+            if (primary != null) _className = primary.Name;
+        }
+        RefreshAttacks();
+        LogMessage($"Advanced to {valid.Name} at level 1; source paths were preserved in lineage.",
+            MessageKind.LevelUp);
+        error = "";
+        return true;
+    }
+
+    public void RecordProgressionFact(string factId, decimal amount = 1m)
+    {
+        if (string.IsNullOrWhiteSpace(factId) || amount == 0m) return;
+        Hero.Progression.Facts[factId] = Hero.Progression.Facts.GetValueOrDefault(factId, 0m) + amount;
+    }
+
+    private Dictionary<string, decimal> BuildProgressionContext()
+    {
+        var context = new Dictionary<string, decimal>
+        {
+            [IsInOverworld ? "environment.overworld" : "environment.dungeon"] = 1m
+        };
+        if (!IsInOverworld) context["environment.underground"] = 1m;
+        return context;
+    }
+
+    /// <summary>Apply direct practice XP to an active profession and its associated skills.</summary>
+    public ProgressionAdvanceResult RecordProfessionAction(string professionId)
+    {
+        int constitutionBefore = Hero.Constitution;
+        ProgressionAdvanceResult result = ProgressionService.Instance.RecordProfessionAction(Hero, professionId);
+        if (result.Success)
+        {
+            ApplyAttributeRewardSideEffects(constitutionBefore);
+            if (result.LevelsGained > 0)
+                LogMessage($"{professionId} advanced {result.LevelsGained} level(s).", MessageKind.LevelUp);
+        }
+        return result;
+    }
+
+    internal int SkillAdjustedYield(string skillId, int baseAmount)
+    {
+        float multiplier = ProgressionService.Instance.SkillYieldMultiplier(Hero, skillId);
+        float adjusted = baseAmount * multiplier;
+        int amount = Math.Max(baseAmount, (int)MathF.Floor(adjusted));
+        if (_random.NextDouble() < adjusted - MathF.Floor(adjusted)) amount++;
+        return amount;
+    }
+
+    internal bool RollSkillBonusDrop(string skillId) =>
+        _random.NextDouble() < ProgressionService.Instance.SkillBonusDropChance(Hero, skillId);
+
+    private void ApplyAttributeRewardSideEffects(int constitutionBefore)
+    {
+        int constitutionGain = Hero.Constitution - constitutionBefore;
+        if (constitutionGain > 0)
+        {
+            int hpBump = Math.Max(1, (int)Math.Round(
+                HpPerConstitutionPoint * Hero.ConstitutionEffectiveness)) * constitutionGain;
+            Hero.MaxHp += hpBump;
+            Hero.CurrentHp = Math.Min(Hero.MaxHp, Hero.CurrentHp + hpBump);
+        }
+        UpdateHeroResourcePools();
+    }
+
     // ---- Debug console --------------------------------------------------------------------
     // Registry of spawnable combinables for /additem and /addspell, keyed by stable id. Fresh
     // instance per call so added copies don't alias a template. Sourced from the same catalogs
@@ -2175,7 +3714,7 @@ public class GameState
         switch (cmd)
         {
             case "help": case "?":
-                result = "addxp N | addlevel N | addpoints N | addgold N | additem <id> [n] | " +
+                result = "addxp N | addlevel N | addpoints N | addgold N | addprofession <id> | additem <id> [n] | " +
                          "addspell <id> [n] | moveplayer dungeon N|overworld|safe N | " +
                          "reset health|mana|stamina|faith|all | listitems";
                 break;
@@ -2183,17 +3722,35 @@ public class GameState
             case "addxp": case "xp":
             {
                 int n = IntArg(1, 0);
-                Hero.GainExperience(n);
-                result = $"+{n} XP -> Level {Hero.Level} ({Hero.Experience}/{Hero.ExperienceToNext})";
+                int awarded = ProgressionService.Instance.GrantSharedXp(Hero, n);
+                result = $"+{awarded} shared XP -> bank {Hero.Progression.UnallocatedXp}";
                 break;
             }
 
             case "addlevel": case "level":
             {
                 int n = Math.Max(0, IntArg(1, 1));
+                ProgressionSlot? slot = Hero.Progression.ClassSlots
+                    .FirstOrDefault(candidate => !candidate.IsLocked && candidate.Instance != null);
+                int advanced = 0;
                 for (int i = 0; i < n; i++)
-                    Hero.GainExperience(Math.Max(1, Hero.ExperienceToNext - Hero.Experience));
-                result = $"+{n} level(s) -> Level {Hero.Level}, {Hero.UnspentStatPoints} stat point(s)";
+                {
+                    if (slot?.Instance == null) break;
+                    int needed = ProgressionService.Instance.XpNeededForNext(slot.Instance);
+                    if (needed <= 0) break;
+                    Hero.Progression.UnallocatedXp += needed;
+                    advanced += AllocateClassXp(slot.SlotId, needed).LevelsGained;
+                }
+                result = $"+{advanced} class level(s) -> overall level {Hero.Level}, " +
+                    $"{Hero.UnspentStatPoints} free stat point(s)";
+                break;
+            }
+
+            case "addprofession": case "profession":
+            {
+                string id = Arg(1);
+                bool activated = TryActivateProfession(id, out string error);
+                result = activated ? $"Activated profession: {id}" : error;
                 break;
             }
 
@@ -2414,6 +3971,7 @@ public class GameState
     /// </summary>
     public void RestartGame()
     {
+        string restartClass = Hero.Class;
         // Generate new seed for different maze
         Seed = new Random().Next();
         
@@ -2421,6 +3979,20 @@ public class GameState
         IsHeroDead = false;
         DeathTimer = 0;
         Messages.Clear(); // a fresh run starts a fresh feed (StartNewFloor logs the opener)
+        IsInOverworld = false;
+        NearbyInteractable = null;
+        CurrentActivity = null;
+        ScreenShake = 0f;
+        SimulationMode = SimulationMode.RealTime;
+        ResetTacticalResolution();
+        TacticalTurn.IsPlayerTurn = false;
+        TacticalTurn.MovementRemaining = 0;
+        TacticalTurn.ActionAvailable = false;
+        TacticalTurn.BonusActionAvailable = false;
+        _manualMoveX = 0f;
+        _manualMoveY = 0f;
+        _dashTicksRemaining = 0;
+        _dashCooldownRemaining = 0;
         
         // Reset game state (StartNewFloor increments CurrentFloor to 1 for the first floor)
         TickCount = 0;
@@ -2446,8 +4018,25 @@ public class GameState
             Y = 1
         };
         
-        // Apply class and race stats
-        _characterDataService.ApplyClassAndRace(Hero, _className, _raceName);
+        if (_creationSelection != null)
+        {
+            _characterDataService.ApplyClasslessAndRace(Hero, _raceName);
+            Hero.Progression = string.Equals(restartClass, "Classless", StringComparison.OrdinalIgnoreCase)
+                ? ProgressionService.Instance.CreateEmptyState()
+                : ProgressionService.Instance.CreateCompatibilityState(restartClass);
+            if (!string.Equals(restartClass, "Classless", StringComparison.OrdinalIgnoreCase))
+                _characterDataService.ApplyClassIdentity(Hero, restartClass);
+            _className = restartClass;
+            StarterLoadoutService.Instance.ApplyToHero(Hero, _creationSelection.ItemIds);
+        }
+        else
+        {
+            _characterDataService.ApplyClassAndRace(Hero, _className, _raceName);
+            Hero.Progression = ProgressionService.Instance.CreateCompatibilityState(_className);
+            Hero.Loadout = new List<Combinable>();
+            Hero.Equipment = AttackFactory.GetStartingEquipment(_className);
+        }
+        ProgressionService.Instance.Normalize(Hero);
         
         // Update resource pools based on attributes
         UpdateHeroResourcePools();
@@ -2457,10 +4046,7 @@ public class GameState
         Hero.CurrentMana = Hero.MaxMana;
         Hero.CurrentFaith = Hero.MaxFaith;
 
-        // Equip the class starting loadout and project it into executable attacks
-        Hero.Loadout = AttackFactory.GetStartingLoadout(_className);
-        Hero.Attacks = AttackFactory.ToAttacks(Hero.Loadout);
-        Hero.CurrentAttack = Hero.Attacks.Count > 0 ? Hero.Attacks[0] : null;
+        RefreshAttacks();
 
         // Start new floor
         StartNewFloor();
@@ -2497,6 +4083,14 @@ public class GameState
         // Remove cells too close to the hero start position
         emptyCells.RemoveAll(cell => 
             Math.Abs(cell.x - 1) < 5 && Math.Abs(cell.y - 1) < 5);
+
+        // Dressing and theme landmarks are non-blocking, but actors and interactive features
+        // should not initially occupy the same tile as either one.
+        var reservedCells = CurrentMaze.Dungeon?.Decorations
+            .Select(decoration => (decoration.X, decoration.Y))
+            .Concat(CurrentMaze.Dungeon.ThemeFeatures.Select(feature => (feature.X, feature.Y)))
+            .ToHashSet() ?? new HashSet<(int, int)>();
+        emptyCells.RemoveAll(cell => reservedCells.Contains(cell));
         
         // Spawn enemies in random valid locations
         Enemies.Clear();
@@ -2509,12 +4103,17 @@ public class GameState
         StairsLocation = null;
         int enemyCount = 3 + CurrentFloor;
 
-        // Place stairs genuinely far from the entrance (real maze-solving distance via BFS, not
-        // straight-line) so the floor is an actual maze-solving challenge rather than a coin flip.
+        // Place stairs in the generated exit room, then favor its most distant cells. The BFS
+        // fallback keeps this compatible with any older/non-semantic maze implementation.
         var distances = CurrentMaze.BfsDistancesFrom(1, 1);
         if (emptyCells.Count > 0)
         {
-            var reachable = emptyCells.Where(c => distances.ContainsKey(c)).ToList();
+            var exitRoom = CurrentMaze.Dungeon?.Rooms.FirstOrDefault(room => room.Role == DungeonRoomRole.Exit);
+            var exitRoomCells = exitRoom == null
+                ? new List<(int x, int y)>()
+                : emptyCells.Where(cell => exitRoom.Contains(cell.x, cell.y)).ToList();
+            var reachable = (exitRoomCells.Count > 0 ? exitRoomCells : emptyCells)
+                .Where(c => distances.ContainsKey(c)).ToList();
             var candidates = reachable.Count > 0 ? reachable : emptyCells;
             int farThreshold = candidates.Count > 0
                 ? candidates.Select(c => distances.GetValueOrDefault(c, 0)).OrderByDescending(d => d)
@@ -2526,38 +4125,209 @@ public class GameState
             emptyCells.Remove(stairsCell);
             CurrentMaze.Features.Add(new MazeFeature { X = stairsCell.x, Y = stairsCell.y, Type = MazeFeatureType.Stairs });
         }
-        // Place chest (loot + XP only — no key/gating)
+        // Place chest in the room reserved for treasure (loot + XP only — no key/gating).
+        MazeFeature? floorChest = null;
         if (emptyCells.Count > 0)
         {
-            int chestIdx = _random.Next(emptyCells.Count);
-            var chestCell = emptyCells[chestIdx];
-            emptyCells.RemoveAt(chestIdx);
-            CurrentMaze.Features.Add(new MazeFeature { X = chestCell.x, Y = chestCell.y, Type = MazeFeatureType.Chest });
+            var chestCell = TakeRoomAwareCell(emptyCells, DungeonRoomRole.Treasure);
+            bool locked = _random.NextDouble() < Math.Min(0.65, 0.3 + CurrentFloor * 0.025);
+            floorChest = new MazeFeature
+            {
+                X = chestCell.x,
+                Y = chestCell.y,
+                Type = MazeFeatureType.Chest,
+                IsLocked = locked,
+                IsTrapped = _random.NextDouble() < 0.3,
+                RequiredKeyId = locked ? $"chest-key-{CurrentFloor}-{chestCell.x}-{chestCell.y}" : "",
+                Gold = _random.Next(3, 8 + CurrentFloor * 2)
+            };
+            floorChest.Inventory.Add(LootService.Roll(CurrentFloor, _random));
+            if (_random.NextDouble() < 0.25)
+                floorChest.Inventory.Add(LootService.Roll(CurrentFloor, _random));
+            CurrentMaze.Features.Add(floorChest);
         }
         // Occasionally place a trap (environmental hazard, not every floor)
         if (emptyCells.Count > 0 && _random.NextDouble() < 0.4)
         {
-            int trapIdx = _random.Next(emptyCells.Count);
-            var trapCell = emptyCells[trapIdx];
-            emptyCells.RemoveAt(trapIdx);
+            var trapCell = TakeRoomAwareCell(emptyCells, DungeonRoomRole.Hazard);
             // Hidden: nearly invisible until the hero notices it (a Wisdom spot roll) or examines it.
             CurrentMaze.Features.Add(new MazeFeature { X = trapCell.x, Y = trapCell.y, Type = MazeFeatureType.Trap, Hidden = true });
         }
         // No per-floor boss anymore — the significant fight is the Guardian at each safe-room gate.
-        // Spawn regular enemies (weighted class, random race, random level in the floor's range)
-        for (int i = 0; i < enemyCount && emptyCells.Count > 0; i++)
+        PopulateDungeonEncounters(emptyCells, enemyCount);
+        if (floorChest is { IsLocked: true } && Enemies.Count > 0)
         {
-            int idx = _random.Next(emptyCells.Count);
-            var (x, y) = emptyCells[idx];
-            emptyCells.RemoveAt(idx);
-            var enemy = EnemyFactory.RandomRegular(CurrentFloor, _characterDataService, _random);
-            enemy.X = x;
-            enemy.Y = y;
-            enemy.TargetX = x;
-            enemy.TargetY = y;
-            Enemies.Add(enemy);
+            Enemy keyBearer = Enemies[_random.Next(Enemies.Count)];
+            keyBearer.Inventory.Add(CombinableCatalog.ChestKey(floorChest.RequiredKeyId));
         }
     }
+
+    private static readonly HashSet<string> LegacyClassActionIds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "quick-slash", "heavy-cleave", "magic-dart", "arcane-blast", "quick-stab",
+        "devastating-backstab", "holy-touch", "divine-wrath", "quick-shot", "power-shot",
+        "sound-wave", "sonic-boom", "light-punch", "heavy-strike"
+    };
+
+    /// <summary>Version-one saves stored class actions and found weapons in the same Loadout.</summary>
+    private void MigrateLegacyLoadout(SaveData data)
+    {
+        foreach (Weapon weapon in data.Loadout.OfType<Weapon>())
+        {
+            if (LegacyClassActionIds.Contains(weapon.Id)) continue;
+            Hero.Inventory.Add(weapon);
+            EquipFromInventory(weapon, out _);
+        }
+
+        if (Hero.Equipment.Count == 0)
+            Hero.Equipment = AttackFactory.GetStartingEquipment(Hero.Class);
+    }
+
+    private (int x, int y) TakeRoomAwareCell(List<(int x, int y)> available, DungeonRoomRole role)
+    {
+        var room = CurrentMaze.Dungeon?.Rooms.FirstOrDefault(candidate => candidate.Role == role);
+        return TakeRoomAwareCell(available, room);
+    }
+
+    private (int x, int y) TakeRoomAwareCell(List<(int x, int y)> available, DungeonRoom? room)
+    {
+        var preferred = room == null
+            ? available
+            : available.Where(cell => room.Contains(cell.x, cell.y)).ToList();
+        var pool = preferred.Count > 0 ? preferred : available;
+        var selected = pool[_random.Next(pool.Count)];
+        available.Remove(selected);
+        return selected;
+    }
+
+    private void PopulateDungeonEncounters(List<(int x, int y)> available, int enemyCount)
+    {
+        var layout = CurrentMaze.Dungeon;
+        if (layout == null)
+        {
+            for (int i = 0; i < enemyCount && available.Count > 0; i++)
+                SpawnEncounterEnemy(TakeRoomAwareCell(available, null), -1, -1, new List<int>(), null);
+            return;
+        }
+
+        layout.Encounters.Clear();
+        int landmarkRoomId = layout.ThemeFeatures.FirstOrDefault()?.RoomId ?? -1;
+        var encounterRooms = layout.Rooms
+            .Where(room => EncounterKindFor(room.Archetype).HasValue)
+            .OrderBy(room => room.Id == landmarkRoomId ? 0 : 1)
+            .ThenBy(_ => _random.Next())
+            .ToList();
+        int remaining = enemyCount;
+        int roomCursor = 0;
+
+        while (remaining > 0 && encounterRooms.Count > 0)
+        {
+            var room = encounterRooms[roomCursor % encounterRooms.Count];
+            roomCursor++;
+            var roomCells = available.Where(cell => room.Contains(cell.x, cell.y)).ToList();
+            if (roomCells.Count == 0)
+            {
+                encounterRooms.Remove(room);
+                continue;
+            }
+
+            var kind = EncounterKindFor(room.Archetype)!.Value;
+            int groupSize = Math.Min(remaining, Math.Min(roomCells.Count, GroupSizeFor(kind)));
+            string race = EnemyFactory.RandomRaceFrom(
+                EncounterRacesFor(layout.Theme), _characterDataService, _random);
+            var patrolRoute = BuildPatrolRoute(layout, room);
+            var encounter = new DungeonEncounter
+            {
+                Id = layout.Encounters.Count,
+                HomeRoomId = room.Id,
+                Kind = kind,
+                Race = race,
+                MemberCount = groupSize
+            };
+            encounter.PatrolRoomIds.AddRange(patrolRoute);
+            layout.Encounters.Add(encounter);
+
+            for (int member = 0; member < groupSize; member++)
+            {
+                var spawnCell = roomCells[_random.Next(roomCells.Count)];
+                roomCells.Remove(spawnCell);
+                available.Remove(spawnCell);
+                SpawnEncounterEnemy(spawnCell, encounter.Id, room.Id, patrolRoute, race);
+            }
+
+            remaining -= groupSize;
+        }
+    }
+
+    private void SpawnEncounterEnemy(
+        (int x, int y) cell,
+        int encounterId,
+        int homeRoomId,
+        List<int> patrolRoute,
+        string? race)
+    {
+        var enemy = race == null
+            ? EnemyFactory.RandomRegular(CurrentFloor, _characterDataService, _random)
+            : EnemyFactory.RandomRegularForRace(CurrentFloor, race, _characterDataService, _random);
+        enemy.X = cell.x;
+        enemy.Y = cell.y;
+        enemy.TargetX = cell.x;
+        enemy.TargetY = cell.y;
+        enemy.EncounterId = encounterId;
+        enemy.HomeRoomId = homeRoomId;
+        enemy.PatrolRoomIds = new List<int>(patrolRoute);
+        enemy.PatrolRouteIndex = patrolRoute.Count > 1 ? 1 : 0;
+        Enemies.Add(enemy);
+    }
+
+    private List<int> BuildPatrolRoute(DungeonLayout layout, DungeonRoom homeRoom)
+    {
+        bool canPatrol = homeRoom.Archetype is DungeonRoomArchetype.GuardPost or DungeonRoomArchetype.Lair;
+        if (!canPatrol || _random.NextDouble() >= 0.65)
+            return new List<int> { homeRoom.Id };
+
+        var neighboringRooms = layout.Connections
+            .Where(connection => connection.FromRoomId == homeRoom.Id || connection.ToRoomId == homeRoom.Id)
+            .Select(connection => connection.FromRoomId == homeRoom.Id
+                ? layout.Rooms[connection.ToRoomId]
+                : layout.Rooms[connection.FromRoomId])
+            .Where(room => room.Role == DungeonRoomRole.Standard && room.Archetype != DungeonRoomArchetype.StoreRoom)
+            .OrderBy(_ => _random.Next())
+            .ToList();
+        return neighboringRooms.Count > 0
+            ? new List<int> { homeRoom.Id, neighboringRooms[0].Id }
+            : new List<int> { homeRoom.Id };
+    }
+
+    private int GroupSizeFor(DungeonEncounterKind kind) => kind switch
+    {
+        DungeonEncounterKind.Sentries => _random.Next(1, 3),
+        DungeonEncounterKind.Garrison => _random.Next(2, 5),
+        DungeonEncounterKind.HuntingPack => _random.Next(2, 4),
+        DungeonEncounterKind.Ambush => _random.Next(1, 3),
+        DungeonEncounterKind.Gatekeepers => _random.Next(2, 4),
+        _ => 1
+    };
+
+    private static DungeonEncounterKind? EncounterKindFor(DungeonRoomArchetype archetype) => archetype switch
+    {
+        DungeonRoomArchetype.GuardPost => DungeonEncounterKind.Sentries,
+        DungeonRoomArchetype.Barracks => DungeonEncounterKind.Garrison,
+        DungeonRoomArchetype.Lair => DungeonEncounterKind.HuntingPack,
+        DungeonRoomArchetype.TrapGallery => DungeonEncounterKind.Ambush,
+        DungeonRoomArchetype.ExitChamber => DungeonEncounterKind.Gatekeepers,
+        _ => null
+    };
+
+    private static string[] EncounterRacesFor(DungeonTheme theme) => theme switch
+    {
+        DungeonTheme.Castle => new[] { "Human", "Elf", "Dwarf" },
+        DungeonTheme.Sewer => new[] { "Kobold", "Goblin", "Orc" },
+        DungeonTheme.Cemetery => new[] { "Tiefling", "Orc", "Human" },
+        DungeonTheme.Library => new[] { "Elf", "Human", "Tiefling" },
+        DungeonTheme.Forge => new[] { "Dwarf", "Dragonborn", "Orc" },
+        _ => new[] { "Human", "Halfling", "Goblin", "Orc" }
+    };
 
     /// <summary>
     /// Run a short deterministic simulation for testing (prints events to console)

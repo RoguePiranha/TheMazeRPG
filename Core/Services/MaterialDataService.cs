@@ -29,7 +29,7 @@ public class MaterialDataService
         var service = new MaterialDataService();
         try
         {
-            var path = Path.Combine("Data", "Materials", "materials.json");
+            var path = GamePaths.Content("Data", "Materials", "materials.json");
             GameLog.Debug($"Attempting to load materials from: {path} (exists: {File.Exists(path)})");
             if (File.Exists(path))
             {

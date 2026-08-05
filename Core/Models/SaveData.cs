@@ -29,7 +29,7 @@ public enum ResumePoint
 /// </summary>
 public class SaveData
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 4;
 
     /// <summary>Identifies this save slot on disk (Saves/{SaveId}.json) — stable across repeated
     /// saves of the same character so re-saving overwrites rather than multiplying files.</summary>
@@ -50,6 +50,7 @@ public class SaveData
     public string HeroName { get; set; } = "";
     public string ClassName { get; set; } = "";
     public string RaceName { get; set; } = "";
+    public CharacterCreationSelection? CreationSelection { get; set; }
 
     public int Level { get; set; }
     public int Experience { get; set; }
@@ -57,8 +58,7 @@ public class SaveData
     public int MaxHp { get; set; }
     public int CurrentHp { get; set; }
 
-    // Base (displayed) stats — not the race-effective values, which are re-derived from
-    // ClassName/RaceName on load via the normal ApplyClassAndRace + level-up path.
+    // Base (displayed) stats. Race effectiveness is re-derived from RaceName on load.
     public int Strength { get; set; }
     public int Constitution { get; set; }
     public int Agility { get; set; }
@@ -69,15 +69,18 @@ public class SaveData
 
     /// <summary>Banked, unspent manual level-up points (0 for saves predating manual allocation).</summary>
     public int UnspentStatPoints { get; set; }
+    public ProgressionState? Progression { get; set; }
 
     public int Gold { get; set; }
     public Dictionary<string, int> Resources { get; set; } = new();
     public List<Combinable> Loadout { get; set; } = new();
     public List<Combinable> Inventory { get; set; } = new();
+    public Dictionary<EquipmentSlot, Combinable> Equipment { get; set; } = new();
+    public HashSet<WeaponType> WeaponTraining { get; set; } = new();
 
-    /// <summary>Elemental affinity ratings (element name → 0–100), so grow-with-use progress
-    /// survives a restart. Null/empty for saves predating the field — the class/race seed applies.</summary>
-    public Dictionary<string, float>? Affinities { get; set; }
+    /// <summary>Elemental affinity profile, so grow-with-use progress survives a restart.
+    /// Null for saves predating the field — the class/race seed applies.</summary>
+    public Affinities? Affinities { get; set; }
 
     /// <summary>World-clock time (total game minutes). 0 for saves predating the clock.</summary>
     public double WorldGameMinutes { get; set; }

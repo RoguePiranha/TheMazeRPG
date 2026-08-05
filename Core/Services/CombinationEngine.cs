@@ -103,10 +103,12 @@ public static class CombinationEngine
         {
             CombinableKind.Weapon => new Weapon
             {
+                WeaponType = WeaponTypeOf(a, b),
                 BaseDamage = Math.Max(DamageOf(a), DamageOf(b)) + 2,
                 Range = Math.Max(RangeOf(a), RangeOf(b)),
                 Cooldown = Math.Max(6, Math.Min(CooldownOf(a), CooldownOf(b))),
-                Animation = WeaponAnimationOf(a, b)
+                Animation = WeaponAnimationOf(a, b),
+                HandsRequired = Math.Max(HandsRequiredOf(a), HandsRequiredOf(b))
             },
             CombinableKind.Spell => new Spell
             {
@@ -119,8 +121,16 @@ public static class CombinationEngine
             {
                 Modifiers = MergeModifiers(a, b)
             },
-            CombinableKind.Armor => new Item { }, // Armor modeled as Item for now
-            _ => new Item { }
+            CombinableKind.Armor => new Armor
+            {
+                Slot = ArmorSlotOf(a, b),
+                DefenseBonus = Math.Max(DefenseOf(a), DefenseOf(b)) + 1
+            },
+            _ => new Item
+            {
+                EquipSlot = ItemSlotOf(a, b),
+                DefenseBonus = Math.Max(DefenseOf(a), DefenseOf(b))
+            }
         };
 
         result.Id = id;
@@ -190,6 +200,21 @@ public static class CombinationEngine
     private static float RangeOf(Combinable c) => c switch { Weapon w => w.Range, Spell s => s.Range, _ => 0f };
     private static int CooldownOf(Combinable c) => c switch { Weapon w => w.Cooldown, Spell s => s.Cooldown, _ => 20 };
     private static int ManaCostOf(Combinable c) => c switch { Spell s => s.ManaCost, _ => 0 };
+    private static int HandsRequiredOf(Combinable c) => c is Weapon weapon ? weapon.HandsRequired : 1;
+    private static WeaponType WeaponTypeOf(Combinable a, Combinable b) =>
+        a is Weapon first && first.WeaponType != WeaponType.Unknown ? first.WeaponType
+        : b is Weapon second ? second.WeaponType : WeaponType.Unknown;
+    private static int DefenseOf(Combinable c) => c switch
+    {
+        Armor armor => armor.DefenseBonus,
+        Item item => item.DefenseBonus,
+        _ => 0
+    };
+    private static EquipmentSlot ArmorSlotOf(Combinable a, Combinable b) =>
+        a is Armor first ? first.Slot : b is Armor second ? second.Slot : EquipmentSlot.Chest;
+    private static EquipmentSlot? ItemSlotOf(Combinable a, Combinable b) =>
+        a is Item first && first.EquipSlot.HasValue ? first.EquipSlot
+        : b is Item second && second.EquipSlot.HasValue ? second.EquipSlot : null;
 
     private static AttackAnimation WeaponAnimationOf(Combinable a, Combinable b)
     {

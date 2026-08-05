@@ -23,7 +23,7 @@ public class RecipeDataService
         var service = new RecipeDataService();
         try
         {
-            var path = Path.Combine("Data", "Recipes", "recipes.json");
+            var path = GamePaths.Content("Data", "Recipes", "recipes.json");
             GameLog.Debug($"Attempting to load recipes from: {path} (exists: {File.Exists(path)})");
             if (File.Exists(path))
             {

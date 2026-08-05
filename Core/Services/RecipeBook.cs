@@ -24,14 +24,18 @@ public static class RecipeBook
         [Key("bow", "fireball")] = () => new Weapon
         {
             Id = "fire-bow", Name = "Fire Bow", Rarity = Rarity.Uncommon,
+            WeaponType = WeaponType.Bow,
             BaseDamage = 10, Range = 4.0f, Cooldown = 16, Animation = AttackAnimation.Ranged,
+            HandsRequired = 2,
             Attributes = { GameAttribute.Fire },
             Description = "Shoots fire arrows."
         },
         [Key("bow", "shield-generator")] = () => new Weapon
         {
             Id = "bubble-bow", Name = "Bubble Bow", Rarity = Rarity.Rare,
+            WeaponType = WeaponType.Bow,
             BaseDamage = 8, Range = 4.0f, Cooldown = 18, Animation = AttackAnimation.Ranged,
+            HandsRequired = 2,
             Attributes = { GameAttribute.Arcane },
             Description = "Arrows trap enemies in a shield bubble on hit."
         },
@@ -52,6 +56,7 @@ public static class RecipeBook
         [Key("dagger", "sword")] = () => new Weapon
         {
             Id = "rapier", Name = "Rapier", Rarity = Rarity.Uncommon,
+            WeaponType = WeaponType.Sword,
             BaseDamage = 9, Range = 1.4f, Cooldown = 14, Animation = AttackAnimation.Quick,
             Attributes = { GameAttribute.Sharp },
             Description = "A dexterity-based blade: longer reach than a dagger, faster than a sword."

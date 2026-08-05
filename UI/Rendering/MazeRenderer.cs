@@ -39,10 +39,27 @@ public class MazeRenderer
     private static readonly SKColor WallDetailColor = new(0x88, 0x88, 0x88);
     private static readonly SKColor FloorColor = new(0x22, 0x22, 0x22);
     private static readonly SKColor FloorDotColor = new(0x33, 0x33, 0x33);
+    private static readonly SKColor CorridorFloorColor = new(0x1B, 0x1D, 0x20);
+    private static readonly SKColor StandardRoomFloorColor = new(0x25, 0x25, 0x25);
+    private static readonly SKColor EntranceRoomFloorColor = new(0x20, 0x28, 0x2D);
+    private static readonly SKColor TreasureRoomFloorColor = new(0x2E, 0x29, 0x1B);
+    private static readonly SKColor HazardRoomFloorColor = new(0x30, 0x20, 0x20);
+    private static readonly SKColor ExitRoomFloorColor = new(0x20, 0x2C, 0x23);
     private static readonly SKColor HeroColor = new(100, 180, 255);
     private static readonly SKColor EnemyColor = new(255, 80, 80);
     private static readonly SKColor ChestColor = new(255, 215, 0);
     private static readonly SKColor StairsColor = new(150, 255, 150);
+
+    private readonly record struct DungeonPalette(
+        SKColor Wall,
+        SKColor WallDetail,
+        SKColor FloorDetail,
+        SKColor Corridor,
+        SKColor StandardRoom,
+        SKColor EntranceRoom,
+        SKColor TreasureRoom,
+        SKColor HazardRoom,
+        SKColor ExitRoom);
 
     // Explored-but-out-of-sight tiles render at this alpha over the black void (SimpleRPG's 0.3).
     private const byte DimAlpha = 76;
@@ -164,6 +181,12 @@ public class MazeRenderer
 
         // Draw maze
         DrawMaze(canvas, gameState.CurrentMaze, fog);
+
+        // Draw static room dressing below interactive features and actors.
+        DrawDecorations(canvas, gameState.CurrentMaze, fog);
+
+        // Theme landmarks are world-space markers with a fixed orthographic orientation.
+        DrawThemeFeatures(canvas, gameState.CurrentMaze, fog);
 
         // Draw features (chests, stairs)
         DrawFeatures(canvas, gameState.CurrentMaze, fog);
@@ -763,17 +786,70 @@ public class MazeRenderer
         return (visible, seen);
     }
 
+    private static DungeonPalette PaletteFor(Maze maze) => maze.Dungeon?.Theme switch
+    {
+        DungeonTheme.Castle => new DungeonPalette(
+            new SKColor(0x65, 0x63, 0x68), new SKColor(0x91, 0x8D, 0x91), new SKColor(0x3B, 0x39, 0x3E),
+            new SKColor(0x1C, 0x1C, 0x21), new SKColor(0x29, 0x28, 0x2D), new SKColor(0x24, 0x2B, 0x32),
+            new SKColor(0x35, 0x30, 0x21), new SKColor(0x36, 0x25, 0x29), new SKColor(0x25, 0x32, 0x2A)),
+        DungeonTheme.Sewer => new DungeonPalette(
+            new SKColor(0x3F, 0x52, 0x49), new SKColor(0x66, 0x78, 0x6A), new SKColor(0x30, 0x42, 0x36),
+            new SKColor(0x15, 0x1D, 0x1A), new SKColor(0x20, 0x2B, 0x25), new SKColor(0x20, 0x30, 0x2C),
+            new SKColor(0x31, 0x31, 0x1D), new SKColor(0x32, 0x26, 0x20), new SKColor(0x20, 0x35, 0x29)),
+        DungeonTheme.Cemetery => new DungeonPalette(
+            new SKColor(0x50, 0x52, 0x45), new SKColor(0x76, 0x78, 0x68), new SKColor(0x42, 0x3C, 0x30),
+            new SKColor(0x1C, 0x1D, 0x19), new SKColor(0x2B, 0x28, 0x22), new SKColor(0x28, 0x2E, 0x29),
+            new SKColor(0x36, 0x30, 0x1E), new SKColor(0x34, 0x24, 0x25), new SKColor(0x25, 0x31, 0x28)),
+        DungeonTheme.Library => new DungeonPalette(
+            new SKColor(0x68, 0x47, 0x34), new SKColor(0x9B, 0x70, 0x49), new SKColor(0x4D, 0x35, 0x28),
+            new SKColor(0x20, 0x18, 0x17), new SKColor(0x31, 0x24, 0x20), new SKColor(0x29, 0x2A, 0x32),
+            new SKColor(0x3A, 0x31, 0x1D), new SKColor(0x38, 0x23, 0x22), new SKColor(0x24, 0x31, 0x2B)),
+        DungeonTheme.Forge => new DungeonPalette(
+            new SKColor(0x67, 0x35, 0x38), new SKColor(0xA0, 0x55, 0x40), new SKColor(0x55, 0x31, 0x2E),
+            new SKColor(0x22, 0x17, 0x19), new SKColor(0x32, 0x22, 0x25), new SKColor(0x2C, 0x29, 0x32),
+            new SKColor(0x41, 0x31, 0x1D), new SKColor(0x42, 0x22, 0x20), new SKColor(0x29, 0x35, 0x29)),
+        DungeonTheme.Hideout => new DungeonPalette(
+            new SKColor(0x53, 0x4A, 0x3C), new SKColor(0x7B, 0x70, 0x56), new SKColor(0x41, 0x39, 0x2C),
+            new SKColor(0x1C, 0x1B, 0x17), new SKColor(0x2A, 0x28, 0x20), new SKColor(0x27, 0x2D, 0x2B),
+            new SKColor(0x39, 0x30, 0x1D), new SKColor(0x36, 0x25, 0x20), new SKColor(0x25, 0x32, 0x28)),
+        _ => new DungeonPalette(
+            WallColor, WallDetailColor, FloorDotColor, CorridorFloorColor, StandardRoomFloorColor,
+            EntranceRoomFloorColor, TreasureRoomFloorColor, HazardRoomFloorColor, ExitRoomFloorColor)
+    };
+
+    private static SKColor DungeonFloorColor(Maze maze, int x, int y, DungeonPalette palette)
+    {
+        var layout = maze.Dungeon;
+        if (layout == null) return FloorColor;
+        if (layout.Tiles[x, y] is DungeonTileType.CorridorFloor or DungeonTileType.Doorway)
+            return palette.Corridor;
+
+        return layout.RoomAt(x, y)?.Role switch
+        {
+            DungeonRoomRole.Entrance => palette.EntranceRoom,
+            DungeonRoomRole.Treasure => palette.TreasureRoom,
+            DungeonRoomRole.Hazard => palette.HazardRoom,
+            DungeonRoomRole.Exit => palette.ExitRoom,
+            _ => palette.StandardRoom
+        };
+    }
+
     private void DrawMaze(SKCanvas canvas, Maze maze, FogView fog)
     {
+        var palette = PaletteFor(maze);
         using var floorPaint = new SKPaint { Color = FloorColor, Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var floorDotPaint = new SKPaint { Color = FloorDotColor, Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var wallPaint = new SKPaint { Color = WallColor, Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var wallDetailPaint = new SKPaint { Color = WallDetailColor, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
+        using var floorDotPaint = new SKPaint { Color = palette.FloorDetail, Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallPaint = new SKPaint { Color = palette.Wall, Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallDetailPaint = new SKPaint { Color = palette.WallDetail, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
+        using var doorwayBackPaint = new SKPaint { Color = palette.Wall, Style = SKPaintStyle.Stroke, StrokeWidth = 7f, StrokeCap = SKStrokeCap.Round, IsAntialias = false };
+        using var doorwayPaint = new SKPaint { Color = palette.WallDetail, Style = SKPaintStyle.Stroke, StrokeWidth = 3f, StrokeCap = SKStrokeCap.Round, IsAntialias = false };
 
         using var floorPaintDim = new SKPaint { Color = FloorColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var floorDotPaintDim = new SKPaint { Color = FloorDotColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var wallPaintDim = new SKPaint { Color = WallColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
-        using var wallDetailPaintDim = new SKPaint { Color = WallDetailColor.WithAlpha(DimAlpha), Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
+        using var floorDotPaintDim = new SKPaint { Color = palette.FloorDetail.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallPaintDim = new SKPaint { Color = palette.Wall.WithAlpha(DimAlpha), Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var wallDetailPaintDim = new SKPaint { Color = palette.WallDetail.WithAlpha(DimAlpha), Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = false };
+        using var doorwayBackPaintDim = new SKPaint { Color = palette.Wall.WithAlpha(DimAlpha), Style = SKPaintStyle.Stroke, StrokeWidth = 7f, StrokeCap = SKStrokeCap.Round, IsAntialias = false };
+        using var doorwayPaintDim = new SKPaint { Color = palette.WallDetail.WithAlpha(DimAlpha), Style = SKPaintStyle.Stroke, StrokeWidth = 3f, StrokeCap = SKStrokeCap.Round, IsAntialias = false };
 
         float dotSize = CellSize * 0.2f;
         float dotOffset = CellSize * 0.4f;
@@ -791,19 +867,110 @@ public class MazeRenderer
                     if (!visible && !seen) continue; // never seen: pure black void
 
                     canvas.DrawRect(px, py, CellSize, CellSize, visible ? wallPaint : wallPaintDim);
-                    canvas.DrawRect(px + 2, py + 2, CellSize - 4, CellSize - 4, visible ? wallDetailPaint : wallDetailPaintDim);
+                    if (maze.Dungeon != null)
+                    {
+                        TerrainService.DrawTile(canvas, maze.Dungeon.Theme, "wall.fill",
+                            x, y, px, py, CellSize, visible ? (byte)180 : (byte)54);
+                        DrawWallTopology(canvas, maze, x, y, px, py,
+                            visible ? wallDetailPaint : wallDetailPaintDim);
+                    }
+                    else
+                    {
+                        canvas.DrawRect(px + 2, py + 2, CellSize - 4, CellSize - 4,
+                            visible ? wallDetailPaint : wallDetailPaintDim);
+                    }
                 }
                 else
                 {
                     if (!fog.FloorSeen(x, y)) continue; // never seen: pure black void
                     bool visible = fog.FloorVisible(x, y);
 
+                    var tileFloorColor = DungeonFloorColor(maze, x, y, palette);
+                    floorPaint.Color = tileFloorColor;
+                    floorPaintDim.Color = tileFloorColor.WithAlpha(DimAlpha);
+
                     canvas.DrawRect(px, py, CellSize, CellSize, visible ? floorPaint : floorPaintDim);
-                    canvas.DrawRect(px + dotOffset, py + dotOffset, dotSize, dotSize, visible ? floorDotPaint : floorDotPaintDim);
+                    string terrainSprite = TerrainSpriteId(maze, x, y);
+                    bool textured = maze.Dungeon != null && TerrainService.DrawTile(
+                        canvas, maze.Dungeon.Theme, terrainSprite, x, y, px, py, CellSize,
+                        visible ? (byte)170 : (byte)51);
+                    if (maze.Dungeon?.Tiles[x, y] == DungeonTileType.Doorway)
+                    {
+                        DrawDoorwayThreshold(canvas, terrainSprite, px, py,
+                            visible ? doorwayBackPaint : doorwayBackPaintDim,
+                            visible ? doorwayPaint : doorwayPaintDim);
+                    }
+                    bool isRoomFloor = maze.Dungeon == null ||
+                        maze.Dungeon.Tiles[x, y] == DungeonTileType.RoomFloor;
+                    if (isRoomFloor && !textured)
+                    {
+                        canvas.DrawRect(px + dotOffset, py + dotOffset, dotSize, dotSize,
+                            visible ? floorDotPaint : floorDotPaintDim);
+                    }
                 }
             }
         }
     }
+
+    private static string TerrainSpriteId(Maze maze, int x, int y)
+    {
+        var tile = maze.Dungeon?.Tiles[x, y] ?? DungeonTileType.RoomFloor;
+        if (tile == DungeonTileType.CorridorFloor) return "floor.corridor";
+        if (tile != DungeonTileType.Doorway) return "floor.room";
+
+        return maze.Dungeon!.DoorwayOrientationAt(x, y) == DungeonPassageOrientation.EastWest
+            ? "doorway.east-west"
+            : "doorway.north-south";
+    }
+
+    private static void DrawWallTopology(
+        SKCanvas canvas,
+        Maze maze,
+        int tileX,
+        int tileY,
+        float x,
+        float y,
+        SKPaint edgePaint)
+    {
+        const float inset = 2f;
+        float right = x + CellSize;
+        float bottom = y + CellSize;
+
+        if (IsOpen(maze, tileX, tileY - 1))
+            canvas.DrawLine(x + inset, y + inset, right - inset, y + inset, edgePaint);
+        if (IsOpen(maze, tileX + 1, tileY))
+            canvas.DrawLine(right - inset, y + inset, right - inset, bottom - inset, edgePaint);
+        if (IsOpen(maze, tileX, tileY + 1))
+            canvas.DrawLine(x + inset, bottom - inset, right - inset, bottom - inset, edgePaint);
+        if (IsOpen(maze, tileX - 1, tileY))
+            canvas.DrawLine(x + inset, y + inset, x + inset, bottom - inset, edgePaint);
+    }
+
+    private static void DrawDoorwayThreshold(
+        SKCanvas canvas,
+        string spriteId,
+        float x,
+        float y,
+        SKPaint backPaint,
+        SKPaint frontPaint)
+    {
+        const float margin = 9f;
+        float centerX = x + CellSize / 2f;
+        float centerY = y + CellSize / 2f;
+        if (spriteId == "doorway.east-west")
+        {
+            canvas.DrawLine(centerX, y + margin, centerX, y + CellSize - margin, backPaint);
+            canvas.DrawLine(centerX, y + margin, centerX, y + CellSize - margin, frontPaint);
+        }
+        else
+        {
+            canvas.DrawLine(x + margin, centerY, x + CellSize - margin, centerY, backPaint);
+            canvas.DrawLine(x + margin, centerY, x + CellSize - margin, centerY, frontPaint);
+        }
+    }
+
+    private static bool IsOpen(Maze maze, int x, int y) =>
+        x >= 0 && y >= 0 && x < maze.Width && y < maze.Height && !maze.Walls[x, y];
     
     private void DrawFeatures(SKCanvas canvas, Maze maze, FogView fog)
     {
@@ -875,6 +1042,322 @@ public class MazeRenderer
 
             if (dimmed || unperceived) canvas.RestoreToCount(layer);
         }
+    }
+
+    private static void DrawDecorations(SKCanvas canvas, Maze maze, FogView fog)
+    {
+        var decorations = maze.Dungeon?.Decorations;
+        if (decorations == null) return;
+
+        foreach (var decoration in decorations)
+        {
+            if (!fog.FloorSeen(decoration.X, decoration.Y)) continue;
+            bool dimmed = !fog.FloorVisible(decoration.X, decoration.Y);
+            int layer = 0;
+            if (dimmed)
+            {
+                using var layerPaint = new SKPaint { Color = SKColors.White.WithAlpha(DimAlpha) };
+                layer = canvas.SaveLayer(layerPaint);
+            }
+
+            float x = decoration.X * CellSize + CellSize / 2f;
+            float y = decoration.Y * CellSize + CellSize / 2f;
+            DrawDecoration(canvas, x, y, decoration);
+
+            if (dimmed) canvas.RestoreToCount(layer);
+        }
+    }
+
+    private static void DrawThemeFeatures(SKCanvas canvas, Maze maze, FogView fog)
+    {
+        var features = maze.Dungeon?.ThemeFeatures;
+        if (features == null) return;
+
+        foreach (var feature in features)
+        {
+            if (!fog.FloorSeen(feature.X, feature.Y)) continue;
+            bool dimmed = !fog.FloorVisible(feature.X, feature.Y);
+            bool exhausted = feature.IsTriggered && feature.Type is
+                DungeonThemeFeatureType.CastleAlarm or
+                DungeonThemeFeatureType.RestlessGrave or
+                DungeonThemeFeatureType.ArcaneWard or
+                DungeonThemeFeatureType.HideoutTripwire;
+            int layer = 0;
+            if (dimmed || exhausted)
+            {
+                byte alpha = dimmed ? DimAlpha : (byte)150;
+                using var layerPaint = new SKPaint { Color = SKColors.White.WithAlpha(alpha) };
+                layer = canvas.SaveLayer(layerPaint);
+            }
+
+            float x = feature.X * CellSize + CellSize / 2f;
+            float y = feature.Y * CellSize + CellSize / 2f;
+            DrawThemeFeature(canvas, x, y, feature);
+
+            if (dimmed || exhausted) canvas.RestoreToCount(layer);
+        }
+    }
+
+    private static void DrawThemeFeature(
+        SKCanvas canvas,
+        float x,
+        float y,
+        DungeonThemeFeature feature)
+    {
+        using var dark = new SKPaint
+        {
+            Color = new SKColor(0x18, 0x18, 0x18),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 3f,
+            StrokeCap = SKStrokeCap.Round,
+            IsAntialias = true
+        };
+        using var solid = new SKPaint
+        {
+            Color = SKColors.White,
+            Style = SKPaintStyle.Fill,
+            IsAntialias = true
+        };
+        using var detail = new SKPaint
+        {
+            Color = SKColors.White,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 3f,
+            StrokeCap = SKStrokeCap.Round,
+            IsAntialias = true
+        };
+
+        // No canvas transforms belong here. Every landmark retains this authored, screen-facing
+        // orientation regardless of room layout or the direction an actor travels through it.
+        switch (feature.Type)
+        {
+            case DungeonThemeFeatureType.CastleAlarm:
+                detail.Color = new SKColor(0x71, 0x55, 0x35);
+                canvas.DrawLine(x - 17, y + 16, x - 17, y - 16, detail);
+                canvas.DrawLine(x + 17, y + 16, x + 17, y - 16, detail);
+                canvas.DrawLine(x - 17, y - 16, x + 17, y - 16, detail);
+                solid.Color = feature.IsTriggered
+                    ? new SKColor(0x74, 0x6B, 0x58)
+                    : new SKColor(0xD4, 0xA8, 0x3F);
+                canvas.DrawOval(new SKRect(x - 12, y - 10, x + 12, y + 10), solid);
+                canvas.DrawOval(new SKRect(x - 12, y - 10, x + 12, y + 10), dark);
+                canvas.DrawCircle(x, y + 12, 3, solid);
+                break;
+
+            case DungeonThemeFeatureType.SewerRunoff:
+                solid.Color = new SKColor(0x48, 0x79, 0x3A, 0xD8);
+                canvas.DrawOval(new SKRect(x - 22, y - 12, x + 20, y + 13), solid);
+                canvas.DrawCircle(x - 19, y + 8, 7, solid);
+                canvas.DrawCircle(x + 18, y - 7, 6, solid);
+                detail.Color = new SKColor(0x91, 0xB0, 0x54);
+                detail.StrokeWidth = 2f;
+                canvas.DrawCircle(x - 7, y - 2, 4, detail);
+                canvas.DrawCircle(x + 8, y + 5, 3, detail);
+                break;
+
+            case DungeonThemeFeatureType.RestlessGrave:
+                solid.Color = feature.IsTriggered
+                    ? new SKColor(0x61, 0x62, 0x5D)
+                    : new SKColor(0x83, 0x84, 0x78);
+                canvas.DrawRoundRect(x - 13, y - 20, 26, 38, 3, 3, solid);
+                canvas.DrawRoundRect(x - 13, y - 20, 26, 38, 3, 3, dark);
+                detail.Color = new SKColor(0xB0, 0xAD, 0x94);
+                detail.StrokeWidth = 2f;
+                canvas.DrawLine(x, y - 13, x, y + 7, detail);
+                canvas.DrawLine(x - 7, y - 6, x + 7, y - 6, detail);
+                break;
+
+            case DungeonThemeFeatureType.ArcaneWard:
+                solid.Color = feature.IsTriggered
+                    ? new SKColor(0x4C, 0x55, 0x66, 0x80)
+                    : new SKColor(0x55, 0xA7, 0xD8, 0x70);
+                canvas.DrawCircle(x, y, 22, solid);
+                detail.Color = feature.IsTriggered
+                    ? new SKColor(0x69, 0x72, 0x80)
+                    : new SKColor(0x8C, 0xD9, 0xFF);
+                detail.StrokeWidth = 2.5f;
+                canvas.DrawCircle(x, y, 18, detail);
+                canvas.DrawRect(x - 10, y - 10, 20, 20, detail);
+                canvas.DrawLine(x, y - 17, x, y + 17, detail);
+                canvas.DrawLine(x - 17, y, x + 17, y, detail);
+                break;
+
+            case DungeonThemeFeatureType.HeatVent:
+                solid.Color = feature.CooldownTicks > 0
+                    ? new SKColor(0xD9, 0x59, 0x24, 0xA0)
+                    : new SKColor(0x6B, 0x2D, 0x1F, 0x70);
+                canvas.DrawCircle(x, y, 23, solid);
+                solid.Color = new SKColor(0x3D, 0x3E, 0x3C);
+                canvas.DrawRect(x - 17, y - 17, 34, 34, solid);
+                canvas.DrawRect(x - 17, y - 17, 34, 34, dark);
+                detail.Color = new SKColor(0xA0, 0x86, 0x6A);
+                detail.StrokeWidth = 2.5f;
+                for (int offset = -10; offset <= 10; offset += 10)
+                {
+                    canvas.DrawLine(x - 13, y + offset, x + 13, y + offset, detail);
+                    canvas.DrawLine(x + offset, y - 13, x + offset, y + 13, detail);
+                }
+                break;
+
+            case DungeonThemeFeatureType.HideoutTripwire:
+                detail.Color = feature.IsTriggered
+                    ? new SKColor(0x6B, 0x65, 0x59)
+                    : new SKColor(0xC5, 0xB6, 0x8A);
+                detail.StrokeWidth = 2f;
+                canvas.DrawLine(x - 23, y + 9, x + 23, y + 9, detail);
+                solid.Color = new SKColor(0x75, 0x60, 0x43);
+                canvas.DrawCircle(x - 23, y + 9, 5, solid);
+                canvas.DrawCircle(x + 23, y + 9, 5, solid);
+                solid.Color = new SKColor(0x9A, 0x8C, 0x68);
+                canvas.DrawRect(x - 10, y - 10, 8, 14, solid);
+                canvas.DrawRect(x + 4, y - 7, 8, 14, solid);
+                canvas.DrawLine(x - 6, y + 4, x - 3, y + 9, detail);
+                canvas.DrawLine(x + 8, y + 7, x + 6, y + 9, detail);
+                break;
+        }
+    }
+
+    private static void DrawDecoration(SKCanvas canvas, float x, float y, DungeonDecoration decoration)
+    {
+        using var outline = new SKPaint
+        {
+            Color = new SKColor(0x12, 0x12, 0x12),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 2f,
+            IsAntialias = true,
+            StrokeCap = SKStrokeCap.Round
+        };
+        using var primary = new SKPaint
+        {
+            Color = new SKColor(0x72, 0x68, 0x56),
+            Style = SKPaintStyle.Fill,
+            IsAntialias = true
+        };
+        using var secondary = new SKPaint
+        {
+            Color = new SKColor(0xA0, 0x91, 0x70),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 2f,
+            IsAntialias = true,
+            StrokeCap = SKStrokeCap.Round
+        };
+
+        // Orthographic contract: environmental art keeps its authored screen-facing orientation.
+        // Variant may select non-directional details later, but must never rotate the asset.
+        switch (decoration.Type)
+        {
+            case DungeonDecorationType.Rubble:
+                primary.Color = new SKColor(0x59, 0x5A, 0x58);
+                canvas.DrawCircle(x - 7, y + 4, 5, primary);
+                canvas.DrawCircle(x + 2, y - 3, 7, primary);
+                canvas.DrawCircle(x + 9, y + 6, 4, primary);
+                break;
+
+            case DungeonDecorationType.Bones:
+                secondary.Color = new SKColor(0xC0, 0xB8, 0x9A);
+                canvas.DrawLine(x - 10, y - 7, x + 10, y + 7, secondary);
+                canvas.DrawLine(x - 9, y + 8, x + 8, y - 9, secondary);
+                canvas.DrawCircle(x - 10, y - 7, 2.5f, secondary);
+                canvas.DrawCircle(x + 10, y + 7, 2.5f, secondary);
+                break;
+
+            case DungeonDecorationType.Crate:
+                primary.Color = new SKColor(0x70, 0x4F, 0x2E);
+                canvas.DrawRect(x - 12, y - 12, 24, 24, primary);
+                canvas.DrawRect(x - 12, y - 12, 24, 24, outline);
+                canvas.DrawLine(x - 9, y - 9, x + 9, y + 9, secondary);
+                canvas.DrawLine(x + 9, y - 9, x - 9, y + 9, secondary);
+                break;
+
+            case DungeonDecorationType.Barrel:
+                primary.Color = new SKColor(0x69, 0x49, 0x2C);
+                canvas.DrawOval(new SKRect(x - 10, y - 14, x + 10, y + 14), primary);
+                canvas.DrawOval(new SKRect(x - 10, y - 14, x + 10, y + 14), outline);
+                canvas.DrawLine(x - 9, y - 5, x + 9, y - 5, secondary);
+                canvas.DrawLine(x - 9, y + 5, x + 9, y + 5, secondary);
+                break;
+
+            case DungeonDecorationType.Bedroll:
+                primary.Color = new SKColor(0x3F, 0x65, 0x67);
+                canvas.DrawRoundRect(x - 15, y - 8, 30, 16, 4, 4, primary);
+                canvas.DrawRoundRect(x - 15, y - 8, 30, 16, 4, 4, outline);
+                canvas.DrawLine(x + 7, y - 7, x + 7, y + 7, secondary);
+                break;
+
+            case DungeonDecorationType.Banner:
+            {
+                primary.Color = new SKColor(0x86, 0x32, 0x35);
+                canvas.DrawRect(x - 11, y - 13, 22, 23, primary);
+                using var bannerTail = BannerTail(x, y);
+                canvas.DrawPath(bannerTail, primary);
+                canvas.DrawLine(x - 14, y - 14, x + 14, y - 14, secondary);
+                break;
+            }
+
+            case DungeonDecorationType.Brazier:
+                primary.Color = new SKColor(0x58, 0x5D, 0x60);
+                canvas.DrawCircle(x, y, 12, primary);
+                canvas.DrawCircle(x, y, 12, outline);
+                primary.Color = new SKColor(0xD8, 0x73, 0x2F);
+                canvas.DrawCircle(x, y, 7, primary);
+                primary.Color = new SKColor(0xF1, 0xC7, 0x57);
+                canvas.DrawCircle(x - 1, y - 1, 3.5f, primary);
+                break;
+
+            case DungeonDecorationType.Mushrooms:
+                secondary.Color = new SKColor(0x9A, 0x9C, 0x82);
+                canvas.DrawLine(x - 7, y + 9, x - 7, y, secondary);
+                canvas.DrawLine(x + 5, y + 8, x + 5, y - 4, secondary);
+                primary.Color = new SKColor(0x69, 0x75, 0x52);
+                canvas.DrawOval(new SKRect(x - 14, y - 4, x, y + 4), primary);
+                canvas.DrawOval(new SKRect(x - 3, y - 9, x + 13, y), primary);
+                break;
+
+            case DungeonDecorationType.BrokenTable:
+                primary.Color = new SKColor(0x62, 0x47, 0x30);
+                canvas.DrawRect(x - 14, y - 8, 23, 16, primary);
+                canvas.DrawLine(x - 12, y - 10, x + 12, y + 10, outline);
+                canvas.DrawLine(x - 12, y + 11, x - 16, y + 16, secondary);
+                canvas.DrawLine(x + 8, y + 8, x + 13, y + 15, secondary);
+                break;
+
+            case DungeonDecorationType.Rune:
+                secondary.Color = new SKColor(0x62, 0x9A, 0xA8);
+                canvas.DrawCircle(x, y, 12, secondary);
+                canvas.DrawLine(x, y - 9, x + 8, y + 7, secondary);
+                canvas.DrawLine(x + 8, y + 7, x - 8, y + 7, secondary);
+                canvas.DrawLine(x - 8, y + 7, x, y - 9, secondary);
+                break;
+
+            case DungeonDecorationType.Campfire:
+                secondary.Color = new SKColor(0x65, 0x43, 0x2A);
+                canvas.DrawLine(x - 11, y - 7, x + 11, y + 7, secondary);
+                canvas.DrawLine(x + 11, y - 7, x - 11, y + 7, secondary);
+                primary.Color = new SKColor(0xD4, 0x62, 0x2D);
+                canvas.DrawCircle(x, y, 8, primary);
+                primary.Color = new SKColor(0xF0, 0xB8, 0x45);
+                canvas.DrawCircle(x, y + 1, 4, primary);
+                break;
+
+            case DungeonDecorationType.WeaponRack:
+                secondary.Color = new SKColor(0x82, 0x64, 0x42);
+                canvas.DrawLine(x - 13, y - 9, x - 13, y + 10, secondary);
+                canvas.DrawLine(x + 13, y - 9, x + 13, y + 10, secondary);
+                canvas.DrawLine(x - 14, y - 5, x + 14, y - 5, secondary);
+                canvas.DrawLine(x - 8, y - 12, x - 2, y + 11, outline);
+                canvas.DrawLine(x + 7, y - 12, x + 2, y + 11, outline);
+                break;
+        }
+    }
+
+    private static SKPath BannerTail(float x, float y)
+    {
+        var path = new SKPath();
+        path.MoveTo(x - 11, y + 8);
+        path.LineTo(x, y + 15);
+        path.LineTo(x + 11, y + 8);
+        path.Close();
+        return path;
     }
 
     // Simple placeholder marker for Overworld points of interest: a colored circle with a glyph.
@@ -984,37 +1467,7 @@ public class MazeRenderer
     
     private void DrawChest(SKCanvas canvas, float x, float y, MazeFeature feature)
     {
-        // Draw light glow if chest is opening
-        if (feature.IsOpening && feature.LightRadius > 0)
-        {
-            using var glowPaint = new SKPaint
-            {
-                IsAntialias = true,
-                Style = SKPaintStyle.Fill
-            };
-            
-            // Draw expanding golden light
-            var colors = new SKColor[]
-            {
-                new SKColor(255, 215, 0, 180), // Gold center
-                new SKColor(255, 215, 0, 100), // Mid
-                new SKColor(255, 215, 0, 0)    // Fade out
-            };
-            var positions = new float[] { 0, 0.5f, 1.0f };
-            
-            glowPaint.Shader = SKShader.CreateRadialGradient(
-                new SKPoint(x, y),
-                feature.LightRadius * CellSize,
-                colors,
-                positions,
-                SKShaderTileMode.Clamp
-            );
-            
-            canvas.DrawCircle(x, y, feature.LightRadius * CellSize, glowPaint);
-        }
-        
-        // Opening progress (0 = closed, 1 = fully open), computed by GameState from the tick rate
-        float openProgress = feature.OpenProgress;
+        float openProgress = feature.IsOpened ? 1f : 0f;
         
         // Brown chest colors
         SKColor chestBrown = new SKColor(139, 90, 43);      // Saddle brown
@@ -1047,19 +1500,16 @@ public class MazeRenderer
         canvas.DrawRect(chestBase, chestPaint);
         canvas.DrawRect(chestBase, chestStroke);
         
-        // Draw chest lid (top part) - rotates when opening
-        canvas.Save();
-        
-        // Rotate lid based on opening progress (0 to -90 degrees)
-        float lidAngle = -90f * openProgress;
-        canvas.RotateDegrees(lidAngle, x - chestWidth/2, y - chestHeight/2 + lidHeight/2);
-        
-        SKRect chestLid = new SKRect(x - chestWidth/2, y - chestHeight/2 - lidHeight/2,
-                                      x + chestWidth/2, y - chestHeight/2 + lidHeight/2);
+        // The lid lifts and foreshortens without rotating, preserving the fixed orthographic view.
+        float lidLift = openProgress * 5f;
+        float visibleLidHeight = MathF.Max(1.5f, lidHeight * (1f - openProgress * 0.65f));
+        SKRect chestLid = new SKRect(
+            x - chestWidth / 2,
+            y - chestHeight / 2 - visibleLidHeight / 2 - lidLift,
+            x + chestWidth / 2,
+            y - chestHeight / 2 + visibleLidHeight / 2 - lidLift);
         canvas.DrawRect(chestLid, chestPaint);
         canvas.DrawRect(chestLid, chestStroke);
-        
-        canvas.Restore();
         
         // Draw lock/clasp on front (fades as chest opens)
         if (openProgress < 0.5f)
@@ -1132,55 +1582,75 @@ public class MazeRenderer
             float px = enemy.X * CellSize + CellSize / 2f;
             float py = enemy.Y * CellSize + CellSize / 2f;
             
-            // Color + shape derived from the enemy's character class; size scales with radius
-            // (bosses have a larger radius, so they read bigger).
-            SKColor baseColor = ClassColor(enemy.Class);
-            SKColor enemyColor = enemy.IsAlive ? baseColor
-                : new SKColor((byte)(baseColor.Red / 2), (byte)(baseColor.Green / 2), (byte)(baseColor.Blue / 2));
-
-            using var paint = new SKPaint
-            {
-                Color = enemyColor,
-                Style = SKPaintStyle.Fill,
-                IsAntialias = true
-            };
-
+            // Size scales with radius (bosses have a larger radius, so they read bigger).
             float sz = 10f * (enemy.Radius / 0.35f);
-            switch (ClassShape(enemy.Class))
+
+            // Sprite (resolved race+class -> race -> class in Data/Sprites/sprites.json) replaces
+            // the procedural class shape when one exists; unmapped enemies keep their old shape.
+            var sprite = SpriteService.ForEnemy(enemy.Race, enemy.Class);
+            if (sprite != null)
             {
-                case 0: // square (melee tank / generalist)
-                    canvas.DrawRect(px - sz, py - sz, sz * 2, sz * 2, paint);
-                    break;
-                case 1: // diamond (fast melee)
-                    var diamond = new SKPath();
-                    diamond.MoveTo(px, py - sz);
-                    diamond.LineTo(px + sz, py);
-                    diamond.LineTo(px, py + sz);
-                    diamond.LineTo(px - sz, py);
-                    diamond.Close();
-                    canvas.DrawPath(diamond, paint);
-                    break;
-                case 2: // triangle (ranged)
-                    var tri = new SKPath();
-                    tri.MoveTo(px, py - sz);
-                    tri.LineTo(px + sz * 0.9f, py + sz * 0.8f);
-                    tri.LineTo(px - sz * 0.9f, py + sz * 0.8f);
-                    tri.Close();
-                    canvas.DrawPath(tri, paint);
-                    break;
-                default: // pentagon (caster / support)
-                    var penta = new SKPath();
-                    for (int i = 0; i < 5; i++)
-                    {
-                        float angle = (float)(i * 2 * Math.PI / 5 - Math.PI / 2);
-                        float x = px + sz * MathF.Cos(angle);
-                        float y = py + sz * MathF.Sin(angle);
-                        if (i == 0) penta.MoveTo(x, y);
-                        else penta.LineTo(x, y);
-                    }
-                    penta.Close();
-                    canvas.DrawPath(penta, paint);
-                    break;
+                using var spritePaint = new SKPaint();
+                if (!enemy.IsAlive)
+                {
+                    // Corpses read as darkened, matching the dimmed-color treatment shapes get.
+                    spritePaint.ColorFilter = SKColorFilter.CreateBlendMode(
+                        new SKColor(0, 0, 0, 140), SKBlendMode.SrcATop);
+                }
+                // Same scale basis as the hero: a normal-radius enemy fills a cell.
+                float maxSize = CellSize * (enemy.Radius / 0.35f);
+                SpriteService.Draw(canvas, sprite, px, py, maxSize, spritePaint);
+            }
+            else
+            {
+                // Color + shape derived from the enemy's character class.
+                SKColor baseColor = ClassColor(enemy.Class);
+                SKColor enemyColor = enemy.IsAlive ? baseColor
+                    : new SKColor((byte)(baseColor.Red / 2), (byte)(baseColor.Green / 2), (byte)(baseColor.Blue / 2));
+
+                using var paint = new SKPaint
+                {
+                    Color = enemyColor,
+                    Style = SKPaintStyle.Fill,
+                    IsAntialias = true
+                };
+
+                switch (ClassShape(enemy.Class))
+                {
+                    case 0: // square (melee tank / generalist)
+                        canvas.DrawRect(px - sz, py - sz, sz * 2, sz * 2, paint);
+                        break;
+                    case 1: // diamond (fast melee)
+                        var diamond = new SKPath();
+                        diamond.MoveTo(px, py - sz);
+                        diamond.LineTo(px + sz, py);
+                        diamond.LineTo(px, py + sz);
+                        diamond.LineTo(px - sz, py);
+                        diamond.Close();
+                        canvas.DrawPath(diamond, paint);
+                        break;
+                    case 2: // triangle (ranged)
+                        var tri = new SKPath();
+                        tri.MoveTo(px, py - sz);
+                        tri.LineTo(px + sz * 0.9f, py + sz * 0.8f);
+                        tri.LineTo(px - sz * 0.9f, py + sz * 0.8f);
+                        tri.Close();
+                        canvas.DrawPath(tri, paint);
+                        break;
+                    default: // pentagon (caster / support)
+                        var penta = new SKPath();
+                        for (int i = 0; i < 5; i++)
+                        {
+                            float angle = (float)(i * 2 * Math.PI / 5 - Math.PI / 2);
+                            float x = px + sz * MathF.Cos(angle);
+                            float y = py + sz * MathF.Sin(angle);
+                            if (i == 0) penta.MoveTo(x, y);
+                            else penta.LineTo(x, y);
+                        }
+                        penta.Close();
+                        canvas.DrawPath(penta, paint);
+                        break;
+                }
             }
 
             // Elite/Boss get a distinguishing halo ring (gold for Boss, silver for Elite) on top
@@ -1828,7 +2298,15 @@ public class MazeRenderer
         float px = (hero.X + hero.AnimationOffsetX) * CellSize + CellSize / 2f;
         float py = (hero.Y + hero.AnimationOffsetY) * CellSize + CellSize / 2f;
         float heroRadius = CellSize / 6f;
-        
+
+        // Sprite (mapped by class in Data/Sprites/sprites.json) replaces the procedural
+        // race/class circles when one exists; unmapped classes fall through to the circles below.
+        if (SpriteService.ForHero(hero.Class) is { } sprite)
+        {
+            SpriteService.Draw(canvas, sprite, px, py, CellSize);
+            return;
+        }
+
         // Parse race color for inner circle
         SKColor raceColor = HeroColor; // default
         try
@@ -1990,7 +2468,9 @@ public class MazeRenderer
         // Floor / location info (bottom-left, gold like SimpleRPG's info spans)
         string location = gameState.IsInOverworld ? "Town"
             : gameState.IsInSafeRoom ? $"Safe Room {gameState.CurrentFloor}.5"
-            : $"Floor {gameState.CurrentFloor}";
+            : gameState.CurrentMaze.Dungeon is { } dungeon
+                ? $"{dungeon.Theme} - Floor {gameState.CurrentFloor}"
+                : $"Floor {gameState.CurrentFloor}";
         DrawHudLine(canvas, $"{location}  Atk:{hero.Attack} Def:{hero.Defense} Gold:{hero.Gold}",
             10, viewportHeight - 10, new SKColor(0xFF, 0xCC, 0x00));
 

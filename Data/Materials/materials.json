@@ -6,5 +6,9 @@
   "iron-ingot": {
     "name": "Iron Ingot",
     "description": "Smelted iron, ready to be forged into gear."
+  },
+  "rough-gem": {
+    "name": "Rough Gem",
+    "description": "An uncut gem uncovered while mining."
   }
 }

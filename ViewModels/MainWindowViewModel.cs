@@ -40,8 +40,7 @@ public partial class MainWindowViewModel : ViewModelBase
     public MainWindowViewModel(SaveData saveData)
     {
         int seed = (int)DateTime.Now.Ticks;
-        _gameState = new GameState(seed, saveData.HeroName, saveData.ClassName, saveData.RaceName);
-        _gameState.LoadFrom(saveData);
+        _gameState = GameState.FromSave(seed, saveData);
         Initialize();
     }
 

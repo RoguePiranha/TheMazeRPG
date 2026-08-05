@@ -49,6 +49,13 @@ public class Enemy
     public bool IsBoss => Tier == EnemyTier.Boss;
     public bool IsElite => Tier == EnemyTier.Elite;
 
+    // Generated-dungeon context. Regular enemies belong to a coherent encounter group and either
+    // remain near their home room or follow a short route through connected rooms while idle.
+    public int EncounterId { get; set; } = -1;
+    public int HomeRoomId { get; set; } = -1;
+    public List<int> PatrolRoomIds { get; set; } = new();
+    public int PatrolRouteIndex { get; set; }
+
     /// <summary>XP reward multiplier for this tier, from the "Monster Tier / XP Reward" table in
     /// Levels and Stats.xlsx (Basic ≈25.08, Elite ≈37.625, Boss ≈50.17 → exactly 1x / 1.5x / 2x).</summary>
     public float XpMultiplier => Tier switch

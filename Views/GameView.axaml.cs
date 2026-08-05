@@ -91,12 +91,14 @@ public partial class GameView : UserControl
     }
 
     /// <summary>Friendly label for a town structure.</summary>
-    private static string StructureName(MazeFeatureType t) => t switch
+    private string StructureName(MazeFeatureType t) => t switch
     {
         MazeFeatureType.MineEntrance => "Mine",
         MazeFeatureType.Smithy => "Smithy",
         MazeFeatureType.Stall => "Stall",
         MazeFeatureType.DungeonEntrance => "Dungeon Entrance",
+        MazeFeatureType.GuardianDoor => $"Challenge the Floor {(_viewModel?.GameState.CurrentFloor ?? 0) + 1} Guardian",
+        MazeFeatureType.Shrine => "Return to Town",
         _ => "Structure"
     };
 
@@ -469,6 +471,14 @@ public partial class GameView : UserControl
                 break;
             case MazeFeatureType.DungeonEntrance:
                 AddMenuItem(panel, "Enter the Dungeon", () => { CloseContextMenu(); gs.EnterDungeon(); });
+                break;
+            case MazeFeatureType.GuardianDoor:
+                AddMenuItem(panel, $"Enter Floor {gs.CurrentFloor + 1} and fight the Guardian",
+                    () => { CloseContextMenu(); gs.EnterGuardianChamber(); });
+                break;
+            case MazeFeatureType.Shrine:
+                AddMenuItem(panel, "Return to town (end this dive)",
+                    () => { CloseContextMenu(); gs.UseSafeRoomShrine(); });
                 break;
         }
         AddMenuItem(panel, "Cancel", CloseContextMenu);

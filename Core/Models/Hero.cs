@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace TheMazeRPG.Core.Models;
 
@@ -30,10 +31,9 @@ public class Hero
     public int Wisdom { get; set; } = 1;         // Magic Resist, Healing, Faith
     public int Charisma { get; set; } = 1;       // NPC Interaction, Followers
 
-    // Manual stat allocation: every level grants StatPointsPerLevel points the player assigns by
-    // hand (GameState.SpendStatPoint) from the stats screen — there is no class auto-allocation.
-    // Classes differ by their starting stats, not by per-level growth.
-    public const int StatPointsPerLevel = 5;
+    // Compatibility default. Runtime class definitions split this budget between automatic
+    // class-weighted gains and points the player assigns from the character screen.
+    public const int StatPointsPerLevel = 4;
     public int UnspentStatPoints { get; set; }
 
     // Racial effectiveness multipliers (set from race). Base stats above are what the character
@@ -93,17 +93,40 @@ public class Hero
     public int AttackSpeed { get; set; } = 30; // Ticks between attacks
     public int AttackCooldown { get; set; }
 
-    // Attack system
-    // Loadout = the equipped weapons/spells (Combinables) the hero carries. Attacks are
-    // projected from these, so combat is driven by equipped data rather than a class switch.
+    // Attack system. Loadout is retained as the save-compatible name for optional slotted spells;
+    // class techniques are derived from class/level and physical gear lives in Equipment.
     public List<Combinable> Loadout { get; set; } = new();
     public List<Attack> Attacks { get; set; } = new();
     public Attack? CurrentAttack { get; set; }
 
-    // Inventory = found gear that isn't equipped. HotbarCapacity caps how many attack-producing
-    // items (weapons/spells) can be equipped in the Loadout at once.
+    // Inventory = carried gear that is not worn, held, or slotted as a spell.
     public List<Combinable> Inventory { get; set; } = new();
     public int HotbarCapacity { get; set; } = 4;
+
+    public Dictionary<EquipmentSlot, Combinable> Equipment { get; set; } = new();
+
+    // Granted by the future skill system. Class affinities and learned training are checked
+    // independently so either one is enough to use a weapon without unfamiliarity penalties.
+    public HashSet<WeaponType> WeaponTraining { get; set; } = new();
+
+    public int EquipmentDefenseBonus => Equipment.Values.Sum(item => item switch
+    {
+        Armor armor => armor.DefenseBonus,
+        Item accessory => accessory.DefenseBonus,
+        _ => 0
+    });
+
+    public int EquippedWeaponDamage
+    {
+        get
+        {
+            int main = Equipment.GetValueOrDefault(EquipmentSlot.MainHand) is Weapon mainWeapon
+                ? mainWeapon.BaseDamage : 0;
+            int off = Equipment.GetValueOrDefault(EquipmentSlot.OffHand) is Weapon offWeapon
+                ? Math.Max(1, offWeapon.BaseDamage / 2) : 0;
+            return main + off;
+        }
+    }
 
     // Overworld: raw/refined materials (ore, ingots, ...), keyed by material id. Stackable/
     // countable, unlike Inventory's unique Combinables. Written only via
@@ -117,6 +140,9 @@ public class Hero
     // Elemental affinity profile — drives magic damage, mana cost, resistance, and learnable
     // spell tier per element, and grows with use (see AffinityService). Seeded from race+class.
     public Affinities Affinities { get; set; } = new();
+
+    // Persisted slot-based class, profession, and skill progression.
+    public ProgressionState Progression { get; set; } = new();
 
     // Animation state for combat movement
     public float AnimationOffsetX { get; set; }

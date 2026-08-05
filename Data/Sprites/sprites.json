@@ -1,0 +1,87 @@
+{
+  "_comment": [
+    "Curated runtime actor catalog grouped by original Pixel Crawler source set.",
+    "All actors are authored facing screen-south and remain unrotated in the orthographic view.",
+    "Frame size is the sheet height; frames are arranged horizontally; frame zero is currently used."
+  ],
+  "sets": {
+    "Free Heroes": {
+      "sourcePack": "Pixel Crawler - FREE - 1.8 / Heroes",
+      "placement": "actor", "facing": "screen-south", "anchor": "bottom-center", "animation": "idle", "frame": 0,
+      "sprites": {
+        "hero:Warrior": { "asset": "characters/warrior.png" },
+        "hero:Rogue": { "asset": "characters/rogue.png" },
+        "hero:Mage Apprentice": { "asset": "characters/mage.png" }
+      }
+    },
+    "Castle Royal Crew": {
+      "sourcePack": "Pixel Crawler - Castle Environment 0.3 / Royal Crew",
+      "placement": "actor", "facing": "screen-south", "anchor": "bottom-center", "animation": "idle", "frame": 0,
+      "sprites": {
+        "hero:Archer": { "asset": "characters/archer.png" },
+        "hero:Priest": { "asset": "characters/priest.png" },
+        "enemy:Human:Warrior": { "asset": "enemies/human-warrior.png" },
+        "enemy:Human:Archer": { "asset": "enemies/human-archer.png" },
+        "enemy:Human:Priest": { "asset": "enemies/human-priest.png" },
+        "enemy:Human": { "asset": "enemies/human-base.png" }
+      }
+    },
+    "Library Scholars": {
+      "sourcePack": "Pixel Crawler - Library / Scholars",
+      "placement": "actor", "facing": "screen-south", "anchor": "bottom-center", "animation": "idle", "frame": 0,
+      "sprites": {
+        "hero:Bard": { "asset": "characters/bard.png" }
+      }
+    },
+    "Hideout Bandits": {
+      "sourcePack": "Pixel Crawler - Hideout 1.0 / Bandits",
+      "placement": "actor", "facing": "screen-south", "anchor": "bottom-center", "animation": "idle", "frame": 0,
+      "sprites": {
+        "hero:Wanderer": { "asset": "characters/wanderer.png" }
+      }
+    },
+    "Fairy Forest Elves": {
+      "sourcePack": "Pixel Crawler - Fairy Forest 1.7 / Elves",
+      "placement": "actor", "facing": "screen-south", "anchor": "bottom-center", "animation": "idle", "frame": 0,
+      "sprites": {
+        "enemy:Elf:Mage Apprentice": { "asset": "enemies/elf-mage.png" },
+        "enemy:Elf:Archer": { "asset": "enemies/elf-archer.png" },
+        "enemy:Elf:Rogue": { "asset": "enemies/elf-rogue.png" },
+        "enemy:Elf": { "asset": "enemies/elf-base.png" }
+      }
+    },
+    "Free Orc Crew": {
+      "sourcePack": "Pixel Crawler - FREE - 1.8 / Orc Crew",
+      "placement": "actor", "facing": "screen-south", "anchor": "bottom-center", "animation": "idle", "frame": 0,
+      "sprites": {
+        "enemy:Orc:Warrior": { "asset": "enemies/orc-warrior.png" },
+        "enemy:Orc:Rogue": { "asset": "enemies/orc-rogue.png" },
+        "enemy:Orc:Mage Apprentice": { "asset": "enemies/orc-mage.png" },
+        "enemy:Orc": { "asset": "enemies/orc-base.png" }
+      }
+    },
+    "Sewer Rats": {
+      "sourcePack": "Pixel Crawler - Sewer / Rats",
+      "placement": "actor", "facing": "screen-south", "anchor": "bottom-center", "animation": "idle", "frame": 0,
+      "sprites": {
+        "enemy:Kobold:Warrior": { "asset": "enemies/rat-warrior.png" },
+        "enemy:Kobold:Rogue": { "asset": "enemies/rat-rogue.png" },
+        "enemy:Kobold:Mage Apprentice": { "asset": "enemies/rat-mage.png" },
+        "enemy:Kobold": { "asset": "enemies/rat-base.png" }
+      }
+    },
+    "Free Skeleton Crew": {
+      "sourcePack": "Pixel Crawler - FREE - 1.8 / Skeleton Crew",
+      "placement": "actor", "facing": "screen-south", "anchor": "bottom-center", "animation": "idle", "frame": 0,
+      "sprites": {
+        "enemy:Warrior": { "asset": "enemies/skeleton-warrior.png" },
+        "enemy:Rogue": { "asset": "enemies/skeleton-rogue.png" },
+        "enemy:Mage Apprentice": { "asset": "enemies/skeleton-mage.png" },
+        "enemy:Archer": { "asset": "enemies/skeleton-rogue.png" },
+        "enemy:Priest": { "asset": "enemies/skeleton-mage.png" },
+        "enemy:Bard": { "asset": "enemies/skeleton-base.png" },
+        "enemy:Wanderer": { "asset": "enemies/skeleton-base.png" }
+      }
+    }
+  }
+}

@@ -17,7 +17,7 @@ public static class SaveService
 {
     // A subdirectory of Saves/, not Saves/ itself — CodexService also writes Saves/codex.json,
     // and a naive glob over Saves/*.json would misparse that as a phantom (empty) save slot.
-    private static readonly string SavesDirectory = Path.Combine("Saves", "Characters");
+    private static string SavesDirectory => GamePaths.Save("Saves", "Characters");
     private static readonly JsonSerializerOptions ReadOptions = new() { PropertyNameCaseInsensitive = true };
 
     private static string PathFor(string saveId) => Path.Combine(SavesDirectory, $"{saveId}.json");
@@ -80,6 +80,7 @@ public static class SaveService
         var hero = gameState.Hero;
         var data = new SaveData
         {
+            Version = 4,
             SaveId = gameState.SaveId,
             PlaytimeSeconds = gameState.TotalPlaytimeSeconds,
             SavedAtUtc = DateTime.UtcNow,
@@ -93,7 +94,8 @@ public static class SaveService
             HeroName = hero.Name,
             ClassName = hero.Class,
             RaceName = hero.Race,
-            Level = hero.Level,
+            CreationSelection = gameState.CreationSelection,
+            Level = hero.Progression.CharacterLevel,
             Experience = hero.Experience,
             ExperienceToNext = hero.ExperienceToNext,
             MaxHp = hero.MaxHp,
@@ -106,11 +108,14 @@ public static class SaveService
             Wisdom = hero.Wisdom,
             Charisma = hero.Charisma,
             UnspentStatPoints = hero.UnspentStatPoints,
+            Progression = hero.Progression,
             Gold = hero.Gold,
             Resources = new Dictionary<string, int>(hero.Resources),
             Loadout = new List<Combinable>(hero.Loadout),
             Inventory = new List<Combinable>(hero.Inventory),
-            Affinities = hero.Affinities.Values.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
+            Equipment = new Dictionary<EquipmentSlot, Combinable>(hero.Equipment),
+            WeaponTraining = new HashSet<WeaponType>(hero.WeaponTraining),
+            Affinities = hero.Affinities.Clone(),
             WorldGameMinutes = gameState.Clock.TotalGameMinutes
         };
 

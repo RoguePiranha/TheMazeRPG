@@ -31,6 +31,10 @@ Saves/
 AppPackages/
 _AppPackages/
 
+# Godot editor/build artifacts
+.godot/
+.mono/
+
 
 # Rider IDE
 .idea/

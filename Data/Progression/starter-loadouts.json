@@ -1,0 +1,89 @@
+{
+  "kits": [
+    {
+      "id": "soldier",
+      "name": "Soldier's Kit",
+      "description": "A sword, practical iron protection, and a healing draught.",
+      "itemIds": ["sword", "iron-helm", "guard-leggings", "health-potion"]
+    },
+    {
+      "id": "outrider",
+      "name": "Outrider's Kit",
+      "description": "A two-handed bow with flexible armor for mobile fighting.",
+      "itemIds": ["bow", "leather-coat", "trail-boots", "health-potion"]
+    },
+    {
+      "id": "cutpurse",
+      "name": "Cutpurse's Kit",
+      "description": "Paired daggers and light gear suited to quick close work.",
+      "itemIds": ["dagger", "dagger", "leather-gloves", "trail-boots", "health-potion"]
+    },
+    {
+      "id": "arcanist",
+      "name": "Arcanist's Kit",
+      "description": "A staff, a simple arcane spell, and light traveling clothes.",
+      "itemIds": ["staff", "fireball", "leather-coat", "health-potion"]
+    },
+    {
+      "id": "devotee",
+      "name": "Devotee's Kit",
+      "description": "A holy symbol and warded ring carried by a novice of the faith.",
+      "itemIds": ["holy-symbol", "ward-ring", "leather-coat", "health-potion"]
+    },
+    {
+      "id": "traveler",
+      "name": "Traveler's Kit",
+      "description": "Balanced travel clothes, sturdy boots, and basic supplies.",
+      "itemIds": ["leather-coat", "trail-boots", "health-potion"]
+    }
+  ],
+  "customGroups": [
+    {
+      "id": "weapon",
+      "name": "Weapon",
+      "options": [
+        { "id": "unarmed", "name": "Unarmed", "description": "Carry no starting weapon.", "itemIds": [] },
+        { "id": "sword", "name": "Sword", "description": "A versatile one-handed blade.", "itemIds": ["sword"] },
+        { "id": "daggers", "name": "Paired Daggers", "description": "Two fast one-handed blades.", "itemIds": ["dagger", "dagger"] },
+        { "id": "bow", "name": "Bow", "description": "A two-handed ranged weapon.", "itemIds": ["bow"] },
+        { "id": "staff", "name": "Staff", "description": "A simple arcane focus and melee implement.", "itemIds": ["staff"] }
+      ]
+    },
+    {
+      "id": "attire",
+      "name": "Attire",
+      "options": [
+        { "id": "plain", "name": "Plain Clothes", "description": "No protective starting attire.", "itemIds": [] },
+        { "id": "leather", "name": "Leather Outfit", "description": "A light coat, gloves, and trail boots.", "itemIds": ["leather-coat", "leather-gloves", "trail-boots"] },
+        { "id": "guard", "name": "Guard Pieces", "description": "An iron helm and layered leggings.", "itemIds": ["iron-helm", "guard-leggings"] }
+      ]
+    },
+    {
+      "id": "focus",
+      "name": "Focus",
+      "options": [
+        { "id": "none", "name": "No Focus", "description": "Carry no magical or religious focus.", "itemIds": [] },
+        { "id": "arcane", "name": "Shield Generator", "description": "An amulet-sized arcane projector.", "itemIds": ["shield-generator"] },
+        { "id": "holy", "name": "Holy Symbol", "description": "A blessed symbol worn as an amulet.", "itemIds": ["holy-symbol"] },
+        { "id": "ward", "name": "Ward Ring", "description": "A ring bearing a small protective ward.", "itemIds": ["ward-ring"] }
+      ]
+    },
+    {
+      "id": "technique",
+      "name": "Technique",
+      "options": [
+        { "id": "none", "name": "No Spell", "description": "Begin without a learned spell.", "itemIds": [] },
+        { "id": "fireball", "name": "Fireball", "description": "A basic fire spell.", "itemIds": ["fireball"] },
+        { "id": "ice-shard", "name": "Ice Shard", "description": "A basic ice spell.", "itemIds": ["ice-shard"] }
+      ]
+    },
+    {
+      "id": "supply",
+      "name": "Supply",
+      "options": [
+        { "id": "potion", "name": "Health Potion", "description": "One restorative draught.", "itemIds": ["health-potion"] },
+        { "id": "none", "name": "No Supply", "description": "Carry no consumable supply.", "itemIds": [] }
+      ]
+    }
+  ]
+}
