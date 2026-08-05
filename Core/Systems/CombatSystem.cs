@@ -240,30 +240,55 @@ public class CombatSystem
 
     /// <summary>Offensive stat-scaled damage for a hero attack, before target defense; includes
     /// a crit roll. Shared by target-locked and directional attacks.</summary>
+    // Damage pipeline (owner ruling 2026-08-05): damage flows from the systems, never from flat
+    // attack stats or hardcoded floors — weapon × stats × proficiency × elemental affinity ×
+    // creature scale. Stats AMPLIFY the weapon multiplicatively, so gear quality and character
+    // build both genuinely matter. Coefficients are the two tuning knobs for overall pacing.
+    private const float PrimaryStatCoeff = 0.15f;   // +15% weapon damage per primary-stat point
+    private const float SecondaryStatCoeff = 0.06f; // +6% per secondary-stat point
+
+    private static int ComputeWeaponDamage(int weaponDamage, float primaryStat, float secondaryStat,
+        float proficiencyMult, float affinityMult, float sizeScale)
+    {
+        float statMult = 1f + primaryStat * PrimaryStatCoeff + secondaryStat * SecondaryStatCoeff;
+        return Math.Max(1, (int)MathF.Round(weaponDamage * statMult * proficiencyMult * affinityMult * sizeScale));
+    }
+
     private int ComputeHeroStatDamage(Hero hero, Attack attack)
     {
         WeaponUseProfile weaponUse = WeaponProficiencyService.Evaluate(hero, attack);
-        int statDamage = attack.Damage + hero.Attack;
+        var element = MagicElements.For(attack);
+        float affinityMult = AffinityService.PowerMultiplier(hero.Affinities.Get(element));
+
+        // The weapon term: the technique/spell's own power, plus held-weapon damage for
+        // physical strikes (a Quick Slash through an iron sword cuts with the sword).
+        int weaponBase;
+        float primary, secondary;
         if (attack.Animation == AttackAnimation.Magic || attack.ManaCost > 0)
-            statDamage += (int)(hero.EffectiveIntelligence * 1.2f) + (int)(hero.EffectiveWisdom * 0.5f);
+        {
+            weaponBase = attack.Damage;
+            primary = hero.EffectiveIntelligence;
+            secondary = hero.EffectiveWisdom;
+        }
         else if (attack.FaithCost > 0)
-            statDamage += (int)(hero.EffectiveWisdom * 1.2f) + (int)(hero.EffectiveCharisma * 0.5f);
+        {
+            weaponBase = attack.Damage;
+            primary = hero.EffectiveWisdom;
+            secondary = hero.EffectiveCharisma;
+        }
         else
         {
-            statDamage += hero.EquippedWeaponDamage;
-            statDamage += (int)(hero.EffectiveStrength * 1.2f) + (int)(hero.EffectiveDexterity * 0.5f);
+            weaponBase = attack.Damage + hero.EquippedWeaponDamage;
+            primary = hero.EffectiveStrength;
+            secondary = hero.EffectiveDexterity;
         }
 
-        statDamage = Math.Max(1, (int)MathF.Floor(statDamage * weaponUse.DamageMultiplier));
+        int statDamage = ComputeWeaponDamage(weaponBase, primary, secondary,
+            weaponUse.DamageMultiplier, affinityMult, sizeScale: 1f);
 
         float critChance = attack.CritChance + hero.EffectiveDexterity * 0.005f;
         if ((float)_random.NextDouble() < critChance)
             statDamage = (int)(statDamage * 1.5f);
-
-        // Elemental affinity: a caster hits harder with elements they're attuned to (identity at
-        // neutral, so non-elemental / unattuned attacks are unchanged).
-        var element = MagicElements.For(attack);
-        statDamage = (int)(statDamage * AffinityService.PowerMultiplier(hero.Affinities.Get(element)));
         return statDamage;
     }
 
@@ -361,31 +386,24 @@ public class CombatSystem
         var atk = enemy.CurrentAttack;
         var animation = atk?.Animation ?? AttackAnimation.Melee;
 
-        // Stat-driven damage, scaled by the attack's damage type (mirrors PerformHeroAttack).
-        int statDamage = (atk?.Damage ?? 6) + enemy.Attack;
+        // Weapon × stats × affinity × creature scale, mirroring the hero pipeline (owner ruling
+        // 2026-08-05). No flat attack stat, no boss multiplier/floor — a big creature hits harder
+        // because SizeScale says so, and a support-class boss hits like the support it is.
         bool magic = atk != null && (atk.Animation == AttackAnimation.Magic || atk.ManaCost > 0);
         bool faith = atk != null && atk.FaithCost > 0;
-        // Magic/faith scale at the same rate as physical so casters aren't disproportionately strong.
-        if (magic)
-            statDamage += (int)(enemy.Intelligence * 1.2f) + (int)(enemy.Wisdom * 0.5f);
-        else if (faith)
-            statDamage += (int)(enemy.Wisdom * 1.2f) + (int)(enemy.Charisma * 0.5f);
-        else
-            statDamage += (int)(enemy.Strength * 1.2f) + (int)(enemy.Dexterity * 0.5f);
+        int weaponBase = atk?.Damage ?? 3; // bare-handed strike when a kit somehow has no attack
+        float primary = magic ? enemy.Intelligence : faith ? enemy.Wisdom : enemy.Strength;
+        float secondary = magic ? enemy.Wisdom : faith ? enemy.Charisma : enemy.Dexterity;
 
-        // Attacker's elemental affinity power (identity at neutral, so physical attacks unchanged).
         var element = atk != null ? MagicElements.For(atk) : MagicElement.None;
-        statDamage = (int)(statDamage * AffinityService.PowerMultiplier(enemy.Affinities.Get(element)));
+        float affinityMult = AffinityService.PowerMultiplier(enemy.Affinities.Get(element));
+
+        int statDamage = ComputeWeaponDamage(weaponBase, primary, secondary,
+            proficiencyMult: 1f /* enemies are trained in their own kit */,
+            affinityMult, enemy.SizeScale);
 
         int finalDamage = CalculateDamage(statDamage,
             hero.Defense + hero.EquipmentDefenseBonus + (int)(hero.EffectiveConstitution * 0.7f));
-        if (enemy.IsBoss)
-        {
-            // Bosses hit above regulars AND never fall below a level-scaled floor, so even a
-            // low-damage support-class boss stays consistently threatening (casters still spike higher).
-            finalDamage = (int)(finalDamage * 1.35f);
-            finalDamage = Math.Max(finalDamage, 12 + enemy.Level * 2);
-        }
 
         // Hero's elemental resistance to this attack's element (baked in; the enemy projectile's
         // Damage is applied directly on hit).

@@ -54,6 +54,15 @@ public static class EnemyFactory
         _ => 0.35f
     };
 
+    // Creature bulk in the damage pipeline (owner ruling 2026-08-05: scale, not hardcoded boss
+    // multipliers/floors). Humanoid tiers are modest; big creature templates carry their own.
+    private static float TierSizeScale(EnemyTier tier) => tier switch
+    {
+        EnemyTier.Elite => 1.1f,
+        EnemyTier.Boss => 1.3f,
+        _ => 1.0f
+    };
+
     /// <summary>Level range for regular enemies on a floor. Boss uses the top of this + 1.</summary>
     public static (int min, int max) LevelRange(int floor) => (floor, floor + 2);
 
@@ -154,6 +163,7 @@ public static class EnemyFactory
             NoiseOffsetX = rng.NextDouble() * 100,
             NoiseOffsetY = rng.NextDouble() * 100,
             Radius = TierRadius(tier),
+            SizeScale = TierSizeScale(tier),
         };
 
         // Seed the enemy's affinities from its class + race (same data the hero uses). Static —

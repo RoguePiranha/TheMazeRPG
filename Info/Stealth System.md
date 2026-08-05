@@ -24,6 +24,11 @@ Three interlocking mechanics:
   dangerous ones to sneak past; a dull brute barely looks up.
 - **Gear weight → noise.** Heavy attribute gear rattles (louder steps), Light gear is quiet.
   When armor lands as equipment, armor weight becomes the dominant term.
+- **Size → footprint** (ruled 2026-08-05): the smaller you are, the easier it is to sneak, and
+  vice versa. Race size scales both your step noise and how fast eyes find you — a Kobold is a
+  natural burglar, a Dragonborn in iron announces themselves — and the same scale governs
+  creatures (a Dire Bear cannot hide behind a shrub). One knob (`SizeScale`) shared with the
+  damage pipeline: big things hit harder *and* get spotted sooner.
 
 ## How detection works (player-facing rules)
 

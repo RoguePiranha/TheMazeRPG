@@ -172,6 +172,14 @@ sealed class Program
             return;
         }
 
+        // If TEST_DAMAGE is set, verify the ruled damage pipeline (weapon × stats × proficiency ×
+        // affinity × creature scale; no flat attack stats, no boss floors) and exit
+        if (Environment.GetEnvironmentVariable("TEST_DAMAGE") == "1")
+        {
+            RunDamageDemo();
+            return;
+        }
+
         // If TEST_SPRITES is set, validate the sprite manifest against the files on disk and exit
         if (Environment.GetEnvironmentVariable("TEST_SPRITES") == "1")
         {
@@ -186,6 +194,75 @@ sealed class Program
         }
 
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+
+    // Debug/test entrypoint: verify the ruled damage pipeline — weapon × stats × proficiency ×
+    // affinity × creature scale, with flat attack stats and the old boss floor gone.
+    public static void RunDamageDemo()
+    {
+        Console.WriteLine("=== Damage pipeline: weapon x stats x affinity x scale ===");
+
+        var gs = new GameState(31, "Fencer", "Warrior", "Human");
+        gs.IsRunning = true;
+        gs.SetControlMode(ControlMode.Manual);
+        var h = gs.Hero;
+
+        // Fire directional shots and take the minimum StatDamage (crits are 1.5x outliers).
+        int MinShot()
+        {
+            int min = int.MaxValue;
+            for (int i = 0; i < 40; i++)
+            {
+                gs.Projectiles.Clear();
+                h.AttackCooldown = 0;
+                gs.FireManualAttack(1, 0);
+                var p = gs.Projectiles.FirstOrDefault(pr => pr.Team == ProjectileTeam.Hero);
+                if (p != null && p.StatDamage > 0) min = Math.Min(min, p.StatDamage);
+            }
+            return min;
+        }
+
+        var atk = h.CurrentAttack!;
+        float prof = WeaponProficiencyService.Evaluate(h, atk).DamageMultiplier;
+        float statMult = 1f + h.EffectiveStrength * 0.15f + h.EffectiveDexterity * 0.06f;
+        int expected = Math.Max(1, (int)MathF.Round((atk.Damage + h.EquippedWeaponDamage) * statMult * prof));
+        int baseline = MinShot();
+        Console.WriteLine($"{atk.Name}: non-crit stat damage = {baseline}, formula = {expected} (expect equal)");
+
+        // (a) The flat Attack stat is OUT of the formula.
+        h.Attack += 100;
+        Console.WriteLine($"Hero.Attack +100 -> {MinShot()} (expect {baseline} — flat stat no longer feeds damage)");
+        h.Attack -= 100;
+
+        // (b) Stats amplify the weapon multiplicatively.
+        h.Strength += 5;
+        int stronger = MinShot();
+        h.Strength -= 5;
+        Console.WriteLine($"+5 Strength -> {stronger} (expect > {baseline}; each primary point = +15% weapon damage)");
+
+        // (c) Boss floor is gone: a support-class boss hits like the support it is.
+        var cds = new CharacterDataService();
+        var bardBoss = EnemyFactory.Create("Bard", "Human", 10, EnemyTier.Boss, cds, new Random(3));
+        var bAtk = bardBoss.CurrentAttack;
+        bool magic = bAtk != null && (bAtk.Animation == AttackAnimation.Magic || bAtk.ManaCost > 0);
+        float bPrimary = magic ? bardBoss.Intelligence : bardBoss.Strength;
+        float bSecondary = magic ? bardBoss.Wisdom : bardBoss.Dexterity;
+        var bElement = bAtk != null ? MagicElements.For(bAtk) : MagicElement.None;
+        float bAffinity = AffinityService.PowerMultiplier(bardBoss.Affinities.Get(bElement));
+        int bardStat = Math.Max(1, (int)MathF.Round((bAtk?.Damage ?? 3) *
+            (1f + bPrimary * 0.15f + bSecondary * 0.06f) * bAffinity * bardBoss.SizeScale));
+        int oldFloor = 12 + bardBoss.Level * 2;
+        Console.WriteLine($"L10 Bard boss ({bAtk?.Name}, size x{bardBoss.SizeScale:0.0}): pre-mitigation {bardStat} — the old hardcoded floor would have forced >= {oldFloor} (expect the honest number, floor gone: {bardStat < oldFloor})");
+
+        // (d) SizeScale is the large-creature lever: double the bulk, double the hit.
+        var wolfSized = EnemyFactory.Create("Warrior", "Orc", 5, EnemyTier.Basic, cds, new Random(4));
+        var direSized = EnemyFactory.Create("Warrior", "Orc", 5, EnemyTier.Basic, cds, new Random(4));
+        direSized.SizeScale = 2.0f;
+        var wAtk = wolfSized.CurrentAttack!;
+        float wMult = 1f + wolfSized.Strength * 0.15f + wolfSized.Dexterity * 0.06f;
+        int normalHit = Math.Max(1, (int)MathF.Round(wAtk.Damage * wMult * 1f));
+        int direHit = Math.Max(1, (int)MathF.Round(wAtk.Damage * wMult * 2f));
+        Console.WriteLine($"Same Orc at size x1 vs x2: {normalHit} vs {direHit} (expect ~double — the Dire/large-creature lever)");
     }
 
     // Debug/test entrypoint: verify intrinsic rarity — fixed per definition, weighted selection,
@@ -1440,16 +1517,21 @@ sealed class Program
             Console.WriteLine($"--- Floor {gs.CurrentFloor} ---");
             foreach (var e in gs.Enemies.OrderByDescending(x => x == gs.Boss))
             {
+                // Mirrors CombatSystem's ruled pipeline: weapon × stats × affinity × size scale
+                // (owner ruling 2026-08-05 — no flat attack stat, no boss multiplier/floor).
                 var atk = e.CurrentAttack;
-                int stat = (atk?.Damage ?? 6) + e.Attack;
                 bool magic = atk != null && (atk.Animation == AttackAnimation.Magic || atk.ManaCost > 0);
-                stat += magic
-                    ? (int)(e.Intelligence * 1.2f) + (int)(e.Wisdom * 0.5f)
-                    : (int)(e.Strength * 1.2f) + (int)(e.Dexterity * 0.5f);
+                bool faith = atk != null && atk.FaithCost > 0;
+                int weaponBase = atk?.Damage ?? 3;
+                float primary = magic ? e.Intelligence : faith ? e.Wisdom : e.Strength;
+                float secondary = magic ? e.Wisdom : faith ? e.Charisma : e.Dexterity;
+                float statMult = 1f + primary * 0.15f + secondary * 0.06f;
+                var element = atk != null ? MagicElements.For(atk) : MagicElement.None;
+                float affinity = AffinityService.PowerMultiplier(e.Affinities.Get(element));
+                int stat = System.Math.Max(1, (int)MathF.Round(weaponBase * statMult * affinity * e.SizeScale));
                 int est = System.Math.Max(1, stat - heroDef / 2); // pre-variance (+-25%)
-                if (e.IsBoss) est = System.Math.Max((int)(est * 1.35f), 12 + e.Level * 2);
                 int xp = (int)((10 + e.MaxHp / 4) * e.XpMultiplier);
-                Console.WriteLine($"  {e.Tier,-5} L{e.Level,2} {e.Race,-10} {e.Class,-16} {atk?.Name,-14} ~{est,2} dmg  HP {e.MaxHp,3}  XP {xp,3}");
+                Console.WriteLine($"  {e.Tier,-5} L{e.Level,2} {e.Race,-10} {e.Class,-16} {atk?.Name,-14} ~{est,2} dmg  HP {e.MaxHp,3}  XP {xp,3}  x{e.SizeScale:0.0}");
             }
         }
     }

@@ -29,6 +29,8 @@ Emission sites and radii (one static table `NoiseTable`, all tiles, all tunable)
 
 **Gear noise multiplier** on Step sounds: `stepMult = Π over equipped Loadout attributes — Heavy ×1.4, Light ×0.85` (clamped 0.6–2.0). When armor becomes real equipment its weight class dominates this term (note the hook, don't build armor here).
 
+**Size multiplier (owner ruling 2026-08-05: the smaller you are, the easier it is to sneak, and vice versa)** — the same `SizeScale` knob the damage pipeline uses is the stealth footprint: step-noise radius × `SizeScale`, and visual awareness gain × `clamp(SizeScale, 0.6, 1.6)` (see the sight formula below). Races carry a size (`races.json "size"` when this lands: Halfling/Kobold ~0.8, Goblin 0.85, Dwarf 0.95, Human/Elf/Tiefling 1.0, Hobgoblin 1.1, Orc 1.15, Dragonborn 1.2, Troll 1.5) feeding `Hero.SizeScale` and humanoid enemies alike; creature templates (note 14) set their own — a Kobold hero is a natural burglar, a Dragonborn in iron announces themselves, and a Dire Bear cannot hide behind a shrub. Applies symmetrically when enemy stealth arrives (v2).
+
 **Occlusion (v1, cheap):** effective radius = `LOS(listener, source) ? r : r × 0.6`. No per-sound BFS — walls muffle, that's enough fidelity for now.
 
 ## 2. Awareness (per enemy — and per NPC when note 09 lands)
@@ -52,7 +54,8 @@ if (InCone(enemy, hero) && HasLOS && dist <= VisionRange)
         ? Math.Clamp(0.5f + Hero.EffectiveAgility * 0.02f - GearNoisePenalty(), 0f, 0.9f)
         : 0f;                                                          // not sneaking = fully visible
     float percep  = 0.8f + enemy.EffectiveWisdom * 0.02f;              // Wis = perception (symmetry w/ PerceptionService)
-    Awareness += SightGainPerSec /*60*/ * distF * (1 - stealth) * percep / TickRate;
+    float sizeF   = Math.Clamp(hero.SizeScale, 0.6f, 1.6f);           // owner ruling 2026-08-05: small = sneaky, big = seen
+    Awareness += SightGainPerSec /*60*/ * distF * (1 - stealth) * percep * sizeF / TickRate;
 }
 if (dist <= 1.5f) Awareness = 100;                                     // bumped into
 

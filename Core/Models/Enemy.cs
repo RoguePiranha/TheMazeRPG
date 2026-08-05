@@ -49,6 +49,13 @@ public class Enemy
     public bool IsBoss => Tier == EnemyTier.Boss;
     public bool IsElite => Tier == EnemyTier.Elite;
 
+    /// <summary>Creature bulk (owner rulings 2026-08-05) — the one shared size knob: large
+    /// creatures deliver proportionally harder hits (damage pipeline, replacing the old hardcoded
+    /// boss ×1.35 + level floor) and, when stealth lands, are proportionally easier to spot and
+    /// louder (small = sneaky, big = seen — Planning note 11). Set by EnemyFactory per tier for
+    /// humanoids (1.0 / 1.1 / 1.3); creature templates (Dire bears, trolls, dragons) carry their own.</summary>
+    public float SizeScale { get; set; } = 1f;
+
     // Generated-dungeon context. Regular enemies belong to a coherent encounter group and either
     // remain near their home room or follow a short route through connected rooms while idle.
     public int EncounterId { get; set; } = -1;
