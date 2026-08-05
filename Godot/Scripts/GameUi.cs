@@ -44,6 +44,10 @@ public partial class GameUi : Control
     private PanelContainer _interactionToast = null!;
     private Label _interactionLabel = null!;
     private HBoxContainer _hotbar = null!;
+    private PanelContainer _consolePanel = null!;
+    private Label _consoleOutput = null!;
+    private LineEdit _consoleInput = null!;
+    private GameState? _consoleState;
     private VBoxContainer _bottomHud = null!;
     private PanelContainer _messagePanel = null!;
     private string _hotbarSignature = "";
@@ -66,7 +70,6 @@ public partial class GameUi : Control
     public event Action? QuitToTitleRequested;
     public event Action? QuitToDesktopRequested;
     public event Action? RestartRequested;
-    public event Action? DiveAgainRequested;
     public event Action<ClientSettings>? SettingsChanged;
     public event Action? ModalOpened;
     public event Action? ModalClosed;
@@ -429,7 +432,10 @@ public partial class GameUi : Control
         }
         else
         {
-            _modeLabel.Text = hero.InCombat ? "ENGAGED" : "REAL-TIME";
+            // In town the mode line doubles as the world clock (dungeon keeps time to itself).
+            _modeLabel.Text = state.IsInOverworld
+                ? $"TOWN   {state.Clock.TimeDisplay.ToUpperInvariant()}"
+                : hero.InCombat ? "ENGAGED" : "REAL-TIME";
             _turnLabel.Visible = false;
             _intentBand.Visible = false;
         }
@@ -448,6 +454,10 @@ public partial class GameUi : Control
                 MazeFeatureType.Chest => nearby.IsOpened ? "LOOT CHEST" : "CHEST",
                 MazeFeatureType.GuardianDoor => $"CHALLENGE FLOOR {state.CurrentFloor + 1} GUARDIAN",
                 MazeFeatureType.Shrine => "RETURN TO TOWN",
+                MazeFeatureType.MineEntrance => "MINE",
+                MazeFeatureType.Smithy => "SMITHY",
+                MazeFeatureType.Stall => "MARKET STALL",
+                MazeFeatureType.DungeonEntrance => "ENTER THE DUNGEON",
                 _ => nearby.Type.ToString().ToUpperInvariant()
             };
             _interactionLabel.Text = $"PRESS E   {action}";
@@ -1479,18 +1489,120 @@ public partial class GameUi : Control
         ShowModal(body, new Vector2(470, 430), false);
     }
 
-    public void ShowDungeonExit(GameState state)
+    // The old "DIVE COMPLETE" modal is gone — leaving the dungeon now lands the hero in the
+    // playable town (the overworld loop is ported); re-diving is the Dungeon Entrance's menu.
+
+    /// <summary>Raised when the debug console opens (true) or closes (false) — the host pauses
+    /// and resumes the sim around it, same as the Avalonia client.</summary>
+    public event Action<bool>? ConsoleToggled;
+
+    public bool IsConsoleOpen => _consolePanel.Visible;
+
+    public void ToggleConsole(GameState state)
     {
-        var body = ModalBody("DIVE COMPLETE", Green, new Vector2(390, 0));
-        body.AddChild(LabelOf($"{state.Hero.Name.ToUpperInvariant()} RETURNS\nLEVEL {state.Hero.Level}     GOLD {state.Hero.Gold}",
-            16, Text, HorizontalAlignment.Center));
-        var again = CommandButton("DESCEND AGAIN", Gold, 290);
-        again.Pressed += () => DiveAgainRequested?.Invoke();
-        body.AddChild(again);
-        var title = CommandButton("RETURN TO TITLE", Muted, 290);
-        title.Pressed += () => QuitToTitleRequested?.Invoke();
-        body.AddChild(title);
-        ShowModal(body, new Vector2(450, 340));
+        if (_consolePanel.Visible)
+        {
+            CloseConsole();
+            return;
+        }
+        _consoleState = state;
+        _consolePanel.Visible = true;
+        _consoleOutput.Text = "Debug console — type 'help' for commands.";
+        _consoleInput.Clear();
+        _consoleInput.GrabFocus();
+        ConsoleToggled?.Invoke(true);
+    }
+
+    public void CloseConsole()
+    {
+        if (!_consolePanel.Visible) return;
+        _consolePanel.Visible = false;
+        _consoleInput.ReleaseFocus();
+        ConsoleToggled?.Invoke(false);
+    }
+
+    /// <summary>Mine entrance menu: start a mining activity (the modal closes so the sim runs).</summary>
+    public void ShowMineActions(GameState state)
+    {
+        var body = ModalBody("MINE", Gold, new Vector2(360, 0));
+        int ore = state.Hero.Resources.GetValueOrDefault("iron-ore", 0);
+        body.AddChild(LabelOf($"IRON ORE CARRIED: {ore}", 14, Text, HorizontalAlignment.Center));
+        var mine = CommandButton("MINE IRON ORE", Blue, 280);
+        mine.Pressed += () => { CloseModal(); state.MineOre(); };
+        body.AddChild(mine);
+        var leave = CommandButton("LEAVE", Muted, 280);
+        leave.Pressed += () => CloseModal();
+        body.AddChild(leave);
+        ShowModal(body, new Vector2(430, 300));
+    }
+
+    /// <summary>Smithy menu: one entry per crafting recipe, disabled with its needs when inputs
+    /// are short. (Forge-gated synthesis joins once the combination UI grows a location filter.)</summary>
+    public void ShowSmithyActions(GameState state)
+    {
+        var body = ModalBody("SMITHY", Gold, new Vector2(410, 0));
+        string carried = string.Join("   ", state.Hero.Resources.Where(kv => kv.Value > 0)
+            .Select(kv => $"{kv.Key.Replace('-', ' ').ToUpperInvariant()} x{kv.Value}"));
+        body.AddChild(LabelOf(carried.Length > 0 ? carried : "NO MATERIALS CARRIED",
+            12, Muted, HorizontalAlignment.Center));
+
+        foreach (RecipeDef recipe in RecipeDataService.Instance.Recipes.Values)
+        {
+            bool can = state.CanCraft(recipe);
+            string needs = string.Join(", ", recipe.Inputs.Select(kv => $"{kv.Value}x {kv.Key.Replace('-', ' ')}"));
+            var craft = CommandButton(recipe.Name.ToUpperInvariant() + (can ? "" : $"   (need {needs})"),
+                can ? Blue : Muted, 340);
+            craft.Disabled = !can;
+            craft.TooltipText = $"Needs {needs}.";
+            craft.Pressed += () => { CloseModal(); state.Craft(recipe); };
+            body.AddChild(craft);
+        }
+
+        var leave = CommandButton("LEAVE", Muted, 340);
+        leave.Pressed += () => CloseModal();
+        body.AddChild(leave);
+        ShowModal(body, new Vector2(480, 420));
+    }
+
+    /// <summary>Market stall: sell inventory items at their rarity price. Rebuilds itself after
+    /// each sale (the same self-refresh idiom as the chest menu).</summary>
+    public void ShowStallActions(GameState state)
+    {
+        var body = ModalBody("MARKET STALL", Gold, new Vector2(430, 0));
+        body.AddChild(LabelOf($"GOLD: {state.Hero.Gold}", 15, Gold, HorizontalAlignment.Center));
+
+        var sellable = state.Hero.Inventory.Take(8).ToList();
+        if (sellable.Count == 0)
+            body.AddChild(LabelOf("NOTHING TO SELL", 13, Muted, HorizontalAlignment.Center));
+        foreach (Combinable item in sellable)
+        {
+            var sell = CommandButton($"SELL {item.Name.ToUpperInvariant()}   {state.SellPrice(item)}g", Blue, 360);
+            sell.Pressed += () => { state.SellItem(item); ShowStallActions(state); };
+            body.AddChild(sell);
+        }
+        if (state.Hero.Inventory.Count > sellable.Count)
+            body.AddChild(LabelOf($"+{state.Hero.Inventory.Count - sellable.Count} more in your pack",
+                11, Muted, HorizontalAlignment.Center));
+
+        var leave = CommandButton("LEAVE", Muted, 360);
+        leave.Pressed += () => CloseModal();
+        body.AddChild(leave);
+        ShowModal(body, new Vector2(500, 460));
+    }
+
+    /// <summary>Dungeon entrance: confirm a fresh dive (progress checkpoints at the entrance).</summary>
+    public void ShowDungeonEntranceActions(GameState state)
+    {
+        var body = ModalBody("DUNGEON ENTRANCE", Red, new Vector2(390, 0));
+        body.AddChild(LabelOf("A fresh dive begins at Floor 1.\nProgress is saved at the entrance.",
+            14, Text, HorizontalAlignment.Center));
+        var enter = CommandButton("ENTER THE DUNGEON", Red, 300);
+        enter.Pressed += () => { CloseModal(); state.EnterDungeon(); };
+        body.AddChild(enter);
+        var stay = CommandButton("STAY IN TOWN", Muted, 300);
+        stay.Pressed += () => CloseModal();
+        body.AddChild(stay);
+        ShowModal(body, new Vector2(450, 320));
     }
 
     public void MarkSaved()
@@ -1667,6 +1779,51 @@ public partial class GameUi : Control
         messageMargin.AddChild(_messageLabel);
         _messagePanel.AddChild(messageMargin);
         _hud.AddChild(_messagePanel);
+
+        // Debug console (backtick): a bottom text box pushed into Core's shared command
+        // interpreter — same commands as the Avalonia client (help/addgold/settime/moveplayer/...).
+        _consolePanel = new PanelContainer
+        {
+            AnchorLeft = 0,
+            AnchorRight = 1,
+            AnchorTop = 1,
+            AnchorBottom = 1,
+            OffsetLeft = 16,
+            OffsetRight = -16,
+            OffsetTop = -186,
+            OffsetBottom = -124,
+            Visible = false
+        };
+        _consolePanel.AddThemeStyleboxOverride("panel", Box(new Color(0.02f, 0.03f, 0.04f, 0.94f), Gold, 3));
+        var consoleRows = new VBoxContainer();
+        consoleRows.AddThemeConstantOverride("separation", 2);
+        _consoleOutput = LabelOf("", 12, Muted);
+        _consoleInput = new LineEdit { PlaceholderText = "command…  ('help' lists them)" };
+        _consoleInput.TextSubmitted += text =>
+        {
+            if (_consoleState == null || string.IsNullOrWhiteSpace(text)) return;
+            string result = _consoleState.ExecuteDebugCommand(text);
+            _consoleOutput.Text = result;
+            GD.Print($"CONSOLE> {text}");
+            GD.Print(result);
+            _consoleInput.Clear();
+            RefreshGame(_consoleState);
+        };
+        _consoleInput.GuiInput += inputEvent =>
+        {
+            if (inputEvent is InputEventKey { Pressed: true } key &&
+                (key.PhysicalKeycode == Key.Quoteleft || key.PhysicalKeycode == Key.Escape))
+            {
+                _consoleInput.AcceptEvent();
+                CloseConsole();
+            }
+        };
+        consoleRows.AddChild(_consoleOutput);
+        consoleRows.AddChild(_consoleInput);
+        var consoleMargin = Margin(10, 6, 10, 6);
+        consoleMargin.AddChild(consoleRows);
+        _consolePanel.AddChild(consoleMargin);
+        _hud.AddChild(_consolePanel);
         _hud.Visible = false;
     }
 

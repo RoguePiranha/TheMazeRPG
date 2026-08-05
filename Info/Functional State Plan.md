@@ -237,7 +237,7 @@ The DF/CDDA layer, all confirmed in-milestone. Per-system notes 15–18.
 - **World items, containers & ownership** (note 16, PR 6b): items on the ground and in shelves/barrels/cupboards; drop/pick-up/container verbs reusing the loot window; everything ownable — taking owned things is theft, resolved through the stealth witness check and the crime flow; merchants refuse stolen goods; shops become real shelves. *"Otherwise the world feels false."*
 - **Player needs, food & meditation** (note 15, PR 9b): hunger + rest as lightweight bands (buffs for upkeep, mild penalties, never lethal); travel drains stamina and demands breathers; food bought/looted v1 with cooking joining the consumables pass; **Meditate** as a levelable skill — ×4 resource regen channel, interruptible, vulnerable while channeling.
 - **Offscreen events** (note 17, PR 9c): an event framework where the world moves without you — wave 1 ships caravan arrivals, sewer outbreaks, and small dungeon breaks; the full owner catalog (invasion, cult uprising, plague, famine, flood, dragon attack — *"EVERYTHING"*) lands as data entries in a follow-on content pass. Abstract resolution when absent, concrete fights when present. **NPCs can die offscreen — no plot armor ("death makes it real")** — with apprentice/newcomer backfill so towns degrade honestly and heal slowly.
-- **Audio** (note 18, PR 12 spike + post-milestone content): backend spike early (thin `IAudioService`, likely NAudio), SFX-first, semi-retro/chiptune + atmospheric hybrid aesthetic.
+- **Audio** (note 18, PR 12): **no backend spike — Godot ships the audio engine** (ruling #30). Core emits sound events (shared with the stealth system's noise model); the Godot client wires them to `AudioStreamPlayer`s and buses. SFX-first, semi-retro/chiptune + atmospheric hybrid aesthetic.
 
 ---
 
@@ -272,7 +272,8 @@ The DF/CDDA layer, all confirmed in-milestone. Per-system notes 15–18.
 26. **Audio (2026-08-05)** — backend spike early, SFX-first; semi-retro/chiptune + atmospheric hybrid.
 27. **Floor sizes (2026-08-05)** — fully random per floor, independent axes, no depth scaling of any kind; bounds are tunables (~31–101 × 21–101).
 28. **Cursed roster (2026-08-05)** — the goblinoid family: Goblin, Orc, Kobold + enemy-only Hobgoblin and Troll (Bugbear/Ogre as easy adds); data-flagged in races.json. In-world family name still open (working term: "goblinoid").
-29. **Equipment slots (2026-08-05)** — eight, final: Head, Chest, Legs, Hands, Feet, RingLeft, RingRight, Amulet.
+29. **Equipment slots (2026-08-05, reconciled same day)** — the merged system's **MainHand/OffHand handedness model wins** (owner-confirmed), with **RingLeft, RingRight** (one per hand) and **Amulet** kept. Core's `EquipmentSlot` enum already carries the full union: Head, Chest, Hands, Legs, Feet, Amulet, RingLeft, RingRight, MainHand, OffHand — no code change was needed; the ruling is satisfied as built.
+30. **The final product is the Godot client (2026-08-05)** — Avalonia is frozen at current parity as the development harness/legacy client: no new screens, rendering, or sprite investment there. All client-side work in this plan lands **Godot-first** (see the touchpoint mapping in [Planning/README.md](Planning/README.md)); Core remains the single shared simulation. Consequences: the audio backend spike is obsolete (Godot ships an audio engine — note 18 rewritten); a **Godot overworld view** becomes a load-bearing PR gating the NPC phase; night lighting re-lands via Godot 2D lights (`CanvasModulate` + `PointLight2D` + occluders) using the Avalonia implementation as its behavioral spec; the `TEST_*` harness gets extracted to a Core-referencing console project so verification outlives Avalonia; `hotbarKeys` canon flips to Godot's InputMap when Avalonia retires.
 
 **Still open:**
 1. **NPC depth v1** — schedules-only remains the working assumption (per Starting Region.md); NPC-side needs stay abstracted until the economy pass.
@@ -298,18 +299,20 @@ The DF/CDDA layer, all confirmed in-milestone. Per-system notes 15–18.
 | 6a | 2.0 world foundation: WorldGenOptions, world↔character save split, creation flow, legacy records | M | — (must precede PR 6) |
 | 6 | 2.1–2.2 RegionGenerator (grammar + prefabs) → per-world freeze → load | L | PR 2, PR 6a |
 | 6b | 7b world items, containers, ownership + TEST_WORLDITEMS | M | PR 6, PR 5b (witness checks) |
+| 6c | **Godot overworld view**: render the town + Press-E layer in the Godot client, incl. night lighting via Godot 2D lights (Avalonia impl = behavioral spec) | M | PR 6 |
 | 7 | 3.4 spell content (Tier-0/1 lines) | S–M | PR 5 |
-| 8 | 4.1–4.3 world clock + NPCs + schedules (+ memorial barks off PR 6a legacy data) | L | PR 6 |
+| 8 | 4.1–4.3 world clock + NPCs + schedules (+ memorial barks off PR 6a legacy data) | L | PR 6, PR 6c (a town to see them in) |
 | 9 | 4.4–4.5 merchants/trainer/priest + guards + Cha-scaled prices & Opinion v1 | M | PR 8, PR 7, PR 5b, PR 5c (armored guards) |
 | 9b | 7b needs + food + Meditate + TEST_NEEDS | M | PR 9 (vendors), PR 5d (ingredient drops) |
 | 9c | 7b offscreen events framework + wave 1 + TEST_EVENTS | M | PR 9, PR 5d (break/outbreak creatures) |
 | 10 | 5.1–5.3 spell leveling (Int-scaled mastery) + abilities + rarity power | M | PR 5 |
 | 11 | 5.4 specializations + meta store (Thief trigger → real thefts via PR 6b) | M–L | PR 9 |
-| 12 | audio backend spike (IAudioService + ~6 proof SFX) | S | — (anytime; content pass post-milestone) |
+| 12 | audio: wire Godot AudioStreamPlayers/buses to Core sound events + ~6 proof SFX (backend spike obsolete — ruling #30) | S | — (anytime; content pass post-milestone) |
+| 13 | extract the TEST_* harness to a Core-referencing console project (verification outlives Avalonia) | S | — (cleanup; before Avalonia retires) |
 
 Every PR keeps the house rule: a `TEST_*` headless demo proving the new mechanic + the full regression suite + a GUI smoke, with owner-eyeball items listed explicitly.
 
-UI cost note (owner-acknowledged 2026-08-05): PRs 6a–11 imply ~6 new screens (world creation, worlds list, trainer, merchant, evolution choice, ability slots) plus the pause menu's Settings placeholder — expect roughly half of PR 6a/9's effort to be screens. Onboarding hints (ruling #13) ride whichever polish pass comes last.
+UI cost note (owner-acknowledged 2026-08-05; retargeted by ruling #30): PRs 6a–11 imply ~6 new screens (world creation, worlds list, trainer, merchant, evolution choice, ability slots) plus a Settings screen — all built as **Godot Control screens in `GameUi`**, not Avalonia XAML. Expect roughly half of PR 6a/9's effort to be screens. Onboarding hints (ruling #13) ride whichever polish pass comes last.
 
 ---
 

@@ -35,7 +35,7 @@ public partial class DungeonView : Node2D
             return;
 
         Maze maze = State.CurrentMaze;
-        Palette palette = Palette.For(maze.Dungeon?.Theme);
+        Palette palette = State.IsInOverworld ? Palette.Town : Palette.For(maze.Dungeon?.Theme);
         UpdateVisibility(State);
 
         for (int y = 0; y < maze.Height; y++)
@@ -484,6 +484,56 @@ public partial class DungeonView : Node2D
                         DrawInteractionGlow(center, 10f);
                     DrawCircle(center, 8f, FogColor(palette.Hazard, dimmed), false, 2f);
                     break;
+
+                case MazeFeatureType.DungeonEntrance:
+                    // A dark arch set into stone — the maw the whole town exists around.
+                    DrawRect(new Rect2(center + new Vector2(-14, -14), new Vector2(28, 28)),
+                        new Color(0.22f, 0.23f, 0.26f));
+                    DrawCircle(center + new Vector2(0, 3), 9f, new Color(0.05f, 0.05f, 0.08f));
+                    DrawRect(new Rect2(center + new Vector2(-9, 3), new Vector2(18, 11)),
+                        new Color(0.05f, 0.05f, 0.08f));
+                    DrawPoiLabel(center, "DUNGEON", palette.Exit);
+                    break;
+
+                case MazeFeatureType.MineEntrance:
+                    // A timber-framed adit in a rock mound.
+                    DrawCircle(center + new Vector2(0, 2), 11f, new Color(0.33f, 0.29f, 0.25f));
+                    DrawRect(new Rect2(center + new Vector2(-6, -2), new Vector2(12, 13)),
+                        new Color(0.08f, 0.06f, 0.05f));
+                    DrawLine(center + new Vector2(-7, -3), center + new Vector2(7, -3),
+                        new Color(0.45f, 0.34f, 0.2f), 3f);
+                    DrawPoiLabel(center, "MINE", new Color(0.72f, 0.6f, 0.45f));
+                    break;
+
+                case MazeFeatureType.Smithy:
+                    // Anvil silhouette with an ember glow.
+                    DrawRect(new Rect2(center + new Vector2(-10, -2), new Vector2(20, 6)),
+                        new Color(0.28f, 0.28f, 0.31f));
+                    DrawRect(new Rect2(center + new Vector2(-4, 4), new Vector2(8, 6)),
+                        new Color(0.24f, 0.24f, 0.27f));
+                    DrawCircle(center + new Vector2(8, -8), 3f, new Color(0.95f, 0.45f, 0.15f));
+                    DrawPoiLabel(center, "SMITHY", new Color(0.93f, 0.55f, 0.25f));
+                    break;
+
+                case MazeFeatureType.Stall:
+                    // Striped awning over a counter.
+                    for (int i = 0; i < 4; i++)
+                        DrawRect(new Rect2(center + new Vector2(-12 + i * 6, -10), new Vector2(6, 5)),
+                            i % 2 == 0 ? new Color(0.82f, 0.68f, 0.3f) : new Color(0.55f, 0.2f, 0.18f));
+                    DrawRect(new Rect2(center + new Vector2(-10, -4), new Vector2(20, 8)),
+                        new Color(0.42f, 0.3f, 0.18f));
+                    DrawPoiLabel(center, "STALL", palette.Chest);
+                    break;
+
+                case MazeFeatureType.Lamp:
+                    // Iron post with a warm lantern head (the actual light pool is TownLighting's job).
+                    DrawLine(center + new Vector2(0, 11), center + new Vector2(0, -9),
+                        new Color(0.23f, 0.23f, 0.25f), 2.5f);
+                    DrawCircle(center + new Vector2(0, -12), 3.5f, new Color(1f, 0.82f, 0.48f));
+                    DrawLine(center + new Vector2(-4, -15), center + new Vector2(4, -15),
+                        new Color(0.23f, 0.23f, 0.25f), 1.6f);
+                    break;
+
                 default:
                     DrawCircle(center, 10f, FogColor(palette.Arcane, dimmed), false, 3f);
                     break;
@@ -604,6 +654,14 @@ public partial class DungeonView : Node2D
         DrawRect(new Rect2(center + new Vector2(-4, -5), new Vector2(8, 10)), palette.HeroMark);
     }
 
+    private void DrawPoiLabel(Vector2 center, string text, Color color)
+    {
+        DrawString(ThemeDB.FallbackFont, center + new Vector2(-39, 27), text,
+            HorizontalAlignment.Center, 80, 10, new Color(0f, 0f, 0f, 0.75f));
+        DrawString(ThemeDB.FallbackFont, center + new Vector2(-40, 26), text,
+            HorizontalAlignment.Center, 80, 10, color);
+    }
+
     private void DrawInteractionGlow(Rect2 bounds)
     {
         Color glow = InteractionGlowColor();
@@ -658,6 +716,13 @@ public partial class DungeonView : Node2D
         Color HealthBack,
         Color Health)
     {
+        /// <summary>The town: grass and packed-earth paths under open sky (night is TownLighting's job).</summary>
+        public static Palette Town { get; } = Build(
+            new Color(0.25f, 0.26f, 0.28f),   // walls: town stone
+            new Color(0.20f, 0.29f, 0.16f),   // floor: grass
+            new Color(0.30f, 0.27f, 0.18f),   // corridor (unused in town, earth tone)
+            new Color(0.85f, 0.72f, 0.35f));  // accent: warm gold
+
         public static Palette For(DungeonTheme? theme) => theme switch
         {
             DungeonTheme.Sewer => Build(new Color(0.13f, 0.2f, 0.17f), new Color(0.29f, 0.39f, 0.29f), new Color(0.17f, 0.29f, 0.25f), new Color(0.45f, 0.62f, 0.35f)),

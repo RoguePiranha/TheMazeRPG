@@ -25,8 +25,22 @@ This folder holds the project's planning documents and the **per-system developm
 | [15 - Needs Food and Meditation.md](15%20-%20Needs%20Food%20and%20Meditation.md) | Hunger/rest bands, travel fatigue, food, Meditate skill | PR 9b |
 | [16 - World Items Containers Ownership.md](16%20-%20World%20Items%20Containers%20Ownership.md) | Ground items, containers, ownership + theft substrate | PR 6b |
 | [17 - Offscreen Events.md](17%20-%20Offscreen%20Events.md) | Event framework, wave-1 roster, NPC death + backfill | PR 9c |
-| [18 - Audio.md](18%20-%20Audio.md) | Backend spike, IAudioService, SFX-first content plan | PR 12 |
+| [18 - Audio.md](18%20-%20Audio.md) | Godot audio engine wired to Core sound events; SFX-first content plan | PR 12 |
 
 House rules that apply to every note: every feature ships with a `TEST_*=1` headless demo + the full regression suite + a GUI smoke; tunables live in `Data/Config/settings.json` or one named constant block, never scattered; content is data-driven (JSON under `Data/`) wherever a table would otherwise be hardcoded.
+
+## Client retargeting (owner ruling 2026-08-05: the final product is the Godot client)
+
+All sim/data touchpoints in these notes (`Core/**`) are unchanged — Core is shared. Every **UI/render/input** touchpoint written against the Avalonia client now binds to its Godot equivalent; Avalonia is frozen at current parity (dev harness/legacy, retires at Godot parity):
+
+| Notes say (Avalonia) | Build it in (Godot) |
+|---|---|
+| `MazeRenderer` (tiles, entities, lighting, floating text, hotbar drawing) | `Godot/Scripts/DungeonView.cs` (world) / `GameUi.cs` (HUD) |
+| `GameView.axaml.cs` (input, overlays) | `GameHost.cs` (input) / `GameUi.cs` (overlays, modals) |
+| `StatsOverlay` / inventory / loot windows | `GameUi` modals (Character modal already exists) |
+| `MainWindowViewModel` seam (live-game flags: Manual mode, `EnableAmbience`) | `GameHost.EnterGame` |
+| Skia lighting (SaveLayer/DstOut punches) | Godot 2D lights: `CanvasModulate` + `PointLight2D` + `LightOccluder2D` — the Avalonia implementation is the *behavioral spec* (radii, darkvision, flicker temperament), not code to translate |
+| `IAudioService` backend evaluation (note 18, old draft) | Obsolete — Godot's audio engine; wire Core sound events to `AudioStreamPlayer`s |
+| Avalonia `SpriteService`/Skia sheets | Godot TileSets/textures (per the Godot README's own plan) |
 
 Code sketches are **starting points, not drop-in files** — they use the audited names/lines from 2026-08-04 and will need reconciling with whatever has landed since.

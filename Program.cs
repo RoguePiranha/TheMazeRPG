@@ -1110,6 +1110,9 @@ sealed class Program
         Console.WriteLine(gs.ExecuteDebugCommand("moveplayer dungeon 4") + $"  (CurrentFloor {gs.CurrentFloor}, overworld {gs.IsInOverworld})");
         Console.WriteLine(gs.ExecuteDebugCommand("moveplayer overworld") + $"  (overworld {gs.IsInOverworld})");
 
+        // settime jumps the world clock within the current day (night testing).
+        Console.WriteLine(gs.ExecuteDebugCommand("settime 22") + "  (expect 22:00, darkness 1.00)");
+
         // A leading slash is optional; unknown commands report cleanly.
         Console.WriteLine(gs.ExecuteDebugCommand("boguscmd") + "  (expect 'Unknown command ...')");
     }

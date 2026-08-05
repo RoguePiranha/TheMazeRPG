@@ -2549,12 +2549,6 @@ public class GameState
     /// to make things, both available at the same location. Returns null (with a logged reason)
     /// if the combination isn't allowed.
     /// </summary>
-    /// Combine two owned Combinables at the Smithy (Forge-gated). Reuses the CombinationEngine/
-    /// RecipeBook system built in Phase 1 rather than duplicating it — the Smithy's new recipe-
-    /// crafting (ore -> ingot -> gear) and this pre-existing merge system are two different ways
-    /// to make things, both available at the same location. Returns null (with a logged reason)
-    /// if the combination isn't allowed.
-    /// </summary>
     public Combinable? CombineAtForge(Combinable a, Combinable b)
     {
         if (!CombinationEngine.CanCombine(a, b, CombineLocation.Forge, out var reason))
@@ -3767,6 +3761,15 @@ public class GameState
                 int n = IntArg(1, 0);
                 Hero.Gold += n;
                 result = $"+{n} gold -> {Hero.Gold}";
+                break;
+            }
+
+            case "settime": case "time":
+            {
+                // settime <hour 0-23> — jump the world clock within the current day (night testing).
+                int hour = Math.Clamp(IntArg(1, 12), 0, 23);
+                Clock.TotalGameMinutes = (Clock.Day - 1) * 1440 + hour * 60;
+                result = $"World clock -> {Clock.TimeDisplay} (darkness {Clock.Darkness:0.00})";
                 break;
             }
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -14,6 +14,8 @@ public partial class GameHost : Node
     private DungeonView _dungeonView = null!;
     private Camera2D _camera = null!;
     private GameUi _ui = null!;
+    private TownLighting _townLighting = null!;
+    private Maze? _lastMaze;
     private GameState _gameState = null!;
     private ClientSettings _clientSettings = null!;
     private double _simulationAccumulator;
@@ -44,8 +46,8 @@ public partial class GameHost : Node
     private bool _startDeath;
     private bool _inGame;
     private bool _deathShown;
-    private bool _dungeonExitShown;
     private bool _wasRunningBeforeModal;
+    private bool _wasRunningBeforeConsole;
     private Vector2I _lastTacticalDirection = Vector2I.Right;
     private readonly Queue<Vector2I> _queuedTacticalPath = new();
     private double _tacticalPathStepAccumulator;
@@ -64,6 +66,8 @@ public partial class GameHost : Node
         _dungeonView = GetNode<DungeonView>("World/DungeonView");
         _camera = GetNode<Camera2D>("World/Camera2D");
         _ui = GetNode<GameUi>("Interface/GameUi");
+        _townLighting = new TownLighting();
+        GetNode<Node2D>("World").AddChild(_townLighting);
         WireUi();
         ApplyClientSettings();
 
@@ -231,12 +235,16 @@ public partial class GameHost : Node
         _ui.RefreshGame(_gameState);
         _dungeonView.QueueRedraw();
 
-        if (_gameState.IsInOverworld && !_dungeonExitShown)
+        // Map transitions (floor descent, shrine â†’ town, town â†’ fresh dive) snap the camera to
+        // the hero's new position instead of lerping across the whole map.
+        if (!ReferenceEquals(_lastMaze, _gameState.CurrentMaze))
         {
-            _dungeonExitShown = true;
-            _ui.ShowDungeonExit(_gameState);
-            return;
+            _lastMaze = _gameState.CurrentMaze;
+            SnapCameraToHero();
         }
+
+        // Town day/night lighting (CanvasModulate + PointLight2D pools; no-op in the dungeon).
+        _townLighting.Sync(_gameState);
 
         if (_gameState.IsHeroDead && !_deathShown)
         {
@@ -271,6 +279,15 @@ public partial class GameHost : Node
 
         if (!_inGame) return;
 
+        // Backtick toggles the debug console. Closing while it has keyboard focus is handled by
+        // the console's own GuiInput hook (a focused LineEdit consumes the keystroke first).
+        if (@event is InputEventKey { Pressed: true, Echo: false, PhysicalKeycode: Key.Quoteleft })
+        {
+            _ui.ToggleConsole(_gameState);
+            GetViewport().SetInputAsHandled();
+            return;
+        }
+
         if (@event.IsActionPressed("interact"))
         {
             CancelQueuedTacticalPath();
@@ -281,6 +298,14 @@ public partial class GameHost : Node
                 _ui.ShowSafeRoomChoice(_gameState, challengeGuardian: true);
             else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Shrine })
                 _ui.ShowSafeRoomChoice(_gameState, challengeGuardian: false);
+            else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.MineEntrance })
+                _ui.ShowMineActions(_gameState);
+            else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Smithy })
+                _ui.ShowSmithyActions(_gameState);
+            else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Stall })
+                _ui.ShowStallActions(_gameState);
+            else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.DungeonEntrance })
+                _ui.ShowDungeonEntranceActions(_gameState);
             GetViewport().SetInputAsHandled();
             return;
         }
@@ -430,14 +455,21 @@ public partial class GameHost : Node
             SaveService.Save(_gameState);
             EnterGame(_gameState);
         };
-        _ui.DiveAgainRequested += () =>
-        {
-            _ui.CloseModal(false);
-            _gameState.IsRunning = true;
-            _gameState.EnterDungeon();
-            EnterGame(_gameState);
-        };
         _ui.SettingsChanged += _ => ApplyClientSettings();
+        _ui.ConsoleToggled += open =>
+        {
+            if (!_inGame) return;
+            if (open)
+            {
+                _wasRunningBeforeConsole = _gameState.IsRunning;
+                _gameState.IsRunning = false;
+            }
+            else if (_wasRunningBeforeConsole)
+            {
+                _gameState.IsRunning = true;
+            }
+            _ui.RefreshGame(_gameState);
+        };
         _ui.ModalOpened += () =>
         {
             if (!_inGame) return;
@@ -457,7 +489,6 @@ public partial class GameHost : Node
     {
         _inGame = false;
         _deathShown = false;
-        _dungeonExitShown = false;
         _gameState.IsRunning = false;
         _gameState.SetManualMoveIntent(0, 0);
         _ui.ShowTitle(SaveService.HasAnySaves());
@@ -497,11 +528,7 @@ public partial class GameHost : Node
         var state = GameState.FromSave(System.Environment.TickCount, data);
         state.SetControlMode(ControlMode.Manual);
         state.IsRunning = true;
-
-        // The Godot migration intentionally remains dungeon-only. Town-resume saves begin a new
-        // dive from their preserved entrance snapshot until the overworld scene is ported.
-        if (state.IsInOverworld)
-            state.EnterDungeon();
+        // Town-resume saves now resume in the town â€” the overworld loop is ported.
         EnterGame(state);
     }
 
@@ -510,14 +537,13 @@ public partial class GameHost : Node
         if (_gameState != null && !ReferenceEquals(_gameState, state))
             _gameState.IsRunning = false;
         _gameState = state;
-        // Live-game-only ambience (critters + flavor lines) — the same seam rule the Avalonia
+        // Live-game-only ambience (critters + flavor lines) â€” the same seam rule the Avalonia
         // client uses: headless demos stay silent, real play gets the alive layer.
         state.EnableAmbience = true;
         _secondsPerTick = 1.0 / Math.Max(1, GameSettings.Current.TickRate);
         _simulationAccumulator = 0;
         _inGame = true;
         _deathShown = false;
-        _dungeonExitShown = false;
         _dungeonView.State = state;
         _dungeonView.TacticalPathPreview = Array.Empty<(int x, int y)>();
         _dungeonView.TacticalAttackPreview = null;
@@ -1129,7 +1155,7 @@ public partial class GameHost : Node
 
     // Per-slot hotbar bindings shared with the Avalonia client via settings.json ("hotbarKeys",
     // Avalonia Key names). Digit names map to the top row; anything else parses as a Godot key
-    // name ("Q" → Key.Q); unparseable entries fall back to the numpad only.
+    // name ("Q" â†’ Key.Q); unparseable entries fall back to the numpad only.
     private static readonly Key[] HotbarBindings = ParseHotbarBindings();
 
     private static Key[] ParseHotbarBindings()

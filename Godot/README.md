@@ -53,8 +53,13 @@ cell, and affected cells for area attacks. Left-click commits only a `READY` tar
 out-of-range, and unaffordable attacks preserve the action. WASD and arrow-key movement remain
 available.
 
-The Godot migration remains dungeon-only. Loading a save whose resume point is the overworld starts
-a fresh dungeon dive from the preserved entrance snapshot; the overworld itself is not rendered.
+The town (overworld) loop is playable: leaving the dungeon via a safe-room shrine lands in the
+town, which renders with its own palette and points of interest (dungeon entrance, mine, smithy,
+market stall, street lamps). `E` opens each structure's menu — mining, crafting recipes, selling,
+and starting a fresh dive. The HUD mode line shows the world clock in town, and night falls for
+real: a day/night `CanvasModulate` with warm flickering lamp/forge light pools, the hero's own
+light sized by racial darkvision or a carried torch, and the Night Sight skill thinning the dark
+globally. Overworld-resume saves load directly into the town.
 
 ## Architecture
 

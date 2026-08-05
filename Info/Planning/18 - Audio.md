@@ -1,33 +1,54 @@
-# 18 — Audio: backend spike now, content pass after (PR 12 + post-milestone)
+# 18 — Audio: Godot's engine + Core sound events (PR 12 + post-milestone content)
 
-**Owner rulings 2026-08-05:** backend spike early per recommendation (the "spike" = a small throwaway-tolerant PR whose only job is picking and proving the audio library, because that's the platform risk — Avalonia has no built-in audio, and discovering the chosen library stutters under Skia render load is a *now* problem, not a ship-week problem). SFX first, music later. **Aesthetic: semi-retro/chiptune + atmospheric hybrid** — chiptune-leaning SFX to match the pixel look, atmospheric/ambient beds for music.
+**Rewritten 2026-08-05 under ruling #30 (final product = Godot).** The original draft's backend
+spike (NAudio/SDL/OpenAL evaluation, a hand-rolled `IAudioService`) existed solely because
+*Avalonia has no audio engine*. Godot ships a complete one — `AudioStreamPlayer`/`2D`, buses,
+mixing, positional audio — so the spike is **obsolete**. What remains is wiring and content.
+Standing rulings unchanged: **SFX first, music later; semi-retro/chiptune + atmospheric hybrid.**
 
-## PR 12 — the spike (S)
+## Architecture: Core emits, Godot plays
 
-1. **Evaluate** (Windows-first, cross-platform-aware): **NAudio** (simple, Windows-native, battle-tested — likely winner for now), SDL2-CS mixer, OpenTK/OpenAL. Criteria: latency good enough for combat SFX, N simultaneous voices (~16), no GC-pressure per play, coexists with the Avalonia/Skia render loop.
-2. **Thin interface so the choice is swappable** — nothing outside this service may touch the library:
+- Core already gets a transient **`SoundEvent`** stream for the stealth system (note 11 —
+  footsteps, attacks, doors, chest channels, mining, with world positions and kinds). The same
+  events are the audio triggers: **AI ears and player speakers share one emission model.** Until
+  PR 5b lands, a minimal `GameState.SoundsThisTick` list can ship early with just the obvious
+  emitters (attack fired, hit landed, chest opened, level-up, UI click) and grow into the full
+  note-11 table.
+- The Godot side (`GameHost` or a small `AudioDirector` node) drains the per-tick events and
+  plays mapped streams: `AudioStreamPlayer2D` at the event's world position for world sounds
+  (free distance attenuation + pan from the camera), plain `AudioStreamPlayer` for UI.
+- Mapping is data: `Data/Config/audio.json` — event kind/id → stream path, base volume, pitch
+  variance (±5% keeps repeated footsteps from droning). Assets under `Godot/Audio/` as imported
+  Godot resources (OGG preferred).
+- **Buses**: Master → SFX / Music / UI. The Godot client's existing `user://client-settings.json`
+  already stores master volume; extend it with per-bus sliders when the Settings screen lands.
+- Headless safety is automatic: Core emits plain data; the `TEST_*` suites never touch Godot.
 
-```csharp
-public interface IAudioService
-{
-    void PlaySfx(string id, float volume = 1f, float pan = 0f);
-    void PlayMusic(string track, float fadeSeconds = 1f);   // loops; null = fade out
-    void StopAll();
-    float SfxVolume { get; set; }    // settings-menu hooks (the pause menu's dead
-    float MusicVolume { get; set; }  // Settings button finally gets a first resident)
-}
-```
+## PR 12 (S): proof-of-pipeline
 
-3. **Prove the pipeline with ~6 placeholder SFX** wired at real call sites: attack swing, projectile hit, chest open, level-up, UI click, footstep. Assets under `Assets/Audio/` (embedded like the font), `Data/Config/audio.json` maps id → file + base volume + random pitch-variance (±5% keeps repeated footsteps from droning).
-4. Headless safety: `IAudioService` no-ops when the audio device is absent or under `TEST_*` runs — the 14-suite regression must never depend on a sound card.
+Wire ~6 SFX end-to-end (attack swing, projectile hit, chest open, level-up, UI click, footstep)
+through real Core events → `audio.json` → players. Verify: audible latency fine at tick rate,
+16+ simultaneous voices OK (Godot's default polyphony handles this), volume persists via
+client settings, zero regression impact (Core-side events asserted in a `TEST_SOUNDEVENTS`
+extension — counts and positions, no audio device involved).
 
 ## Content pass (post-milestone)
 
-- **SFX coverage** in priority order: combat (per `VisualStyle` — arrow, sword arc, each element's cast/impact tinted like the palette), statuses, UI, doors/chests/mining, footsteps by terrain (stone/grass/water — the note 11 noise events are the trigger points, so the player's ears and the AI's "ears" share emission sites), town ambience one-shots (smithy hammer, market murmur).
-- **Music**: ambient beds per context — title, town day, town night, dungeon (per-theme variants eventually: forest floor birdsong-with-pads, scorched-arena low drones), guardian arena sting. Hybrid palette per the ruling: chip-adjacent leads over atmospheric pads.
-- **Events**: sound leads perception — the dungeon-break horn or the flood bell plays *before* the message log line (offscreen events get audible arrival, note 17).
-- Sourcing: CC0/CC-BY packs (OpenGameArt, Kenney, freesound) + tracker-made originals later; keep a `CREDITS.md` from day one so licensing never becomes archaeology.
+- **SFX coverage** in priority order: combat per `VisualStyle`/element (palette-matched tints in
+  sound: each element gets a cast/impact identity), statuses, UI, doors/chests/mining, footsteps
+  by terrain (stone/grass/water — the note 11 emission sites carry terrain), town ambience
+  one-shots (smithy hammer, market murmur).
+- **Music**: ambient beds per context — title, town day/night, dungeon per-theme (the
+  `DungeonTheme` palettes already imply moods: Sewer drips, Library hush, Forge drones),
+  guardian-arena sting. Chip-adjacent leads over atmospheric pads per the aesthetic ruling.
+- **Events lead perception**: the dungeon-break horn or flood bell plays *before* the message-log
+  line (note 17 integration).
+- Sourcing: CC0/CC-BY packs (OpenGameArt, Kenney, freesound) + tracker originals later; keep a
+  `CREDITS.md` from day one so licensing never becomes archaeology.
 
 ## Verification
 
-Spike: perceived latency check (SFX within ~50 ms of trigger), 16-voice stress under a busy combat scene, zero regression-suite impact, volume settings persist. Content pass: coverage checklist against the SFX table + an hour's play without audible repetition fatigue (owner's ears — this one can't be headless).
+PR 12: the six proof sounds audible in the Godot editor run; `TEST_SOUNDEVENTS` asserts Core-side
+emission (kinds/positions/counts) headlessly; client-settings volume round-trips. Content pass:
+coverage checklist against the SFX table + an hour's play without repetition fatigue (owner's
+ears — this one can't be headless).
