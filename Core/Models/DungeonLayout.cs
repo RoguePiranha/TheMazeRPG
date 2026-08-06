@@ -88,6 +88,28 @@ public enum DungeonThemeFeatureType
     HideoutTripwire
 }
 
+/// <summary>
+/// What a cell *is* structurally, for code that reasons about shape rather than terrain: placement
+/// rules ("chests prefer dead ends", "traps prefer corridors and doorways"), encounter seeding, and
+/// later NPC routing. Derived from the generated layout rather than stored, so it can never drift
+/// out of step with the map.
+/// </summary>
+public enum DungeonCellKind
+{
+    Wall,
+    Room,
+    Doorway,
+
+    /// <summary>Corridor with a single way out — the end of a spur.</summary>
+    DeadEnd,
+
+    /// <summary>Corridor where three or more ways meet.</summary>
+    Junction,
+
+    /// <summary>Ordinary corridor: a through-passage.</summary>
+    Corridor
+}
+
 public sealed class DungeonRoom
 {
     public int Id { get; init; }
@@ -180,6 +202,47 @@ public sealed class DungeonLayout
         int roomId = RegionIds[x, y];
         return roomId >= 0 && roomId < Rooms.Count ? Rooms[roomId] : null;
     }
+
+    /// <summary>
+    /// Classify a cell by its structural role. Dead ends and junctions are counted from open
+    /// neighbours rather than recorded at generation time, so this stays correct even if a later
+    /// pass carves or seals something.
+    /// </summary>
+    public DungeonCellKind Classify(int x, int y)
+    {
+        if (!InBounds(x, y)) return DungeonCellKind.Wall;
+
+        switch (Tiles[x, y])
+        {
+            case DungeonTileType.Wall: return DungeonCellKind.Wall;
+            case DungeonTileType.RoomFloor: return DungeonCellKind.Room;
+            case DungeonTileType.Doorway: return DungeonCellKind.Doorway;
+        }
+
+        int exits = 0;
+        foreach (var (dx, dy) in Cardinals)
+            if (IsWalkable(x + dx, y + dy)) exits++;
+
+        return exits switch
+        {
+            <= 1 => DungeonCellKind.DeadEnd,
+            >= 3 => DungeonCellKind.Junction,
+            _ => DungeonCellKind.Corridor
+        };
+    }
+
+    /// <summary>Every cell of a given structural kind — the query placement rules want.</summary>
+    public List<(int x, int y)> CellsOfKind(DungeonCellKind kind)
+    {
+        var cells = new List<(int x, int y)>();
+        for (int x = 0; x < Tiles.GetLength(0); x++)
+            for (int y = 0; y < Tiles.GetLength(1); y++)
+                if (Classify(x, y) == kind)
+                    cells.Add((x, y));
+        return cells;
+    }
+
+    private static readonly (int dx, int dy)[] Cardinals = { (0, 1), (1, 0), (0, -1), (-1, 0) };
 
     public DungeonPassageOrientation DoorwayOrientationAt(int x, int y)
     {

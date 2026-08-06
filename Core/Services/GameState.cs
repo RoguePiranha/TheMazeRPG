@@ -1361,6 +1361,7 @@ public class GameState
     // camera culling gets exercised before the region generator lands. Session-only, never saved.
     private int _townWidth = OverworldGenerator.Width;
     private int _townHeight = OverworldGenerator.Height;
+    private bool _townSizeOverride;
 
     // What last hurt the hero, as a display string, so their legacy record can say how they died.
     // Recorded at each damage site because the killing blow itself carries no attribution: an
@@ -3507,7 +3508,7 @@ public class GameState
         IsInOverworld = true;
         NearbyInteractable = null;
         ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
-        CurrentMaze = OverworldGenerator.Generate(_townWidth, _townHeight);
+        CurrentMaze = BuildTownMap();
         PlaceHeroAtOverworldArrival();
     }
 
@@ -3617,6 +3618,36 @@ public class GameState
         {
             EnterTown();
         }
+    }
+
+    /// <summary>
+    /// The town map for this character's world. Generated from the world's own seed and size, so
+    /// every character in a world walks the same town and the same seed always rebuilds it — which
+    /// is what "frozen per world" means in practice while the map itself isn't yet serialized (the
+    /// generator is deterministic and version-pinned by the world's recorded seed).
+    ///
+    /// Falls back to the small hand-authored field if the world can't be resolved (headless demos
+    /// that never established a world scope) or if the `towngen` debug command asked for an
+    /// explicit size.
+    /// </summary>
+    private Maze BuildTownMap()
+    {
+        if (_townSizeOverride)
+            return OverworldGenerator.Generate(_townWidth, _townHeight);
+
+        try
+        {
+            var world = WorldService.Load(WorldId);
+            if (world != null)
+                return RegionGenerator.Generate(world.Options, out _);
+        }
+        catch (Exception ex)
+        {
+            // A region that can't be generated must not strand the player in a broken town.
+            GameLog.Debug($"Region generation failed, falling back to the simple field: {ex.Message}");
+        }
+
+        return OverworldGenerator.Generate(_townWidth, _townHeight);
     }
 
     /// <summary>Arrival spot when entering (or resuming in) the town: one tile off the dungeon
@@ -4083,6 +4114,26 @@ public class GameState
                 break;
             }
 
+            case "gotobuilding":
+            {
+                // gotobuilding [n] — stand at the nth building's door. For inspecting generated
+                // premises without walking a few hundred tiles to find one.
+                var buildings = CurrentMaze.Region?.Buildings;
+                if (buildings == null || buildings.Count == 0)
+                {
+                    result = "This map has no generated buildings";
+                    break;
+                }
+                var target = buildings[Math.Clamp(IntArg(1, 0), 0, buildings.Count - 1)];
+                // Stand inside, on the interior anchor — a walkable tile by construction, unlike
+                // the door itself (shut) or a guessed offset from it (could be the wall).
+                Hero.X = target.InteriorX;
+                Hero.Y = target.InteriorY;
+                result = $"Moved inside the {target.Kind} at ({target.InteriorX},{target.InteriorY}); " +
+                         $"door at ({target.DoorX},{target.DoorY})";
+                break;
+            }
+
             case "reveal":
             {
                 // Mark the whole floor explored — for inspecting generated layouts (rooms, doors,
@@ -4106,6 +4157,7 @@ public class GameState
                 // axis) gets walked and measured before the region generator exists.
                 _townWidth = Math.Clamp(IntArg(1, OverworldGenerator.Width), 9, 4096);
                 _townHeight = Math.Clamp(IntArg(2, OverworldGenerator.Height), 9, 4096);
+                _townSizeOverride = true; // an explicit size means the plain field, not a region
                 if (IsInOverworld)
                 {
                     EnterTown();

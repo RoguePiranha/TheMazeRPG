@@ -279,6 +279,8 @@ The DF/CDDA layer, all confirmed in-milestone. Per-system notes 15–18.
 33. **Size scales stealth too (2026-08-05, spec'd into note 11)** — the smaller the creature, the easier it sneaks and the harder it is to spot; `SizeScale` is the one shared bulk knob (damage now, stealth footprint + step noise when PR 5b lands; races gain a `size` field then).
 34. **Start location is a player choice (2026-08-06, IMPLEMENTED same day)** — a character picks their origin at creation: **The Dungeon** (default — §0a's newly-sentient being waking in the maze, which stays the canonical opening and the premise the blank slate rests on) or **The Town** (begin as a resident; the dungeon becomes somewhere you choose to go). Resolved by feature lookup rather than coordinates, so PR 6's generated gates/wilderness/inn become additional anchors as *data*. Built in PR 6a rather than deferred for the same retrofit-cliff reason 6a leads: the creation flow and every saved character would otherwise be revisited later.
 
+35. **Region scale: 1m tiles, genuinely large regions (2026-08-06)** — a tile is roughly a metre (dungeon corridors are one tile wide), so the earlier 72×48 / 96×64 / 128×84 table described plots smaller than a city block and could not physically contain [Starting Region.md](Starting%20Region.md)'s own geography — its ~100m cleared band alone needs 200 tiles per axis before a wall is placed. Rejected: redefining a tile as several metres, and shrinking the spec to a hamlet. Regions are now **derived from the spec** (town core + cleared band + forest fringe) at roughly **320–512 tiles per axis**, and `Data/Config/worldgen.json` carries the derivation. The engineering cost — rendering could no longer be O(grid) — was paid up front by camera culling, measured at 262,144 tiles for the same frame cost as 465. Consumed by the region generator (PR 6); the creation screen says so rather than implying the knob is already live.
+
 **Still open:**
 1. **NPC depth v1** — schedules-only remains the working assumption (per Starting Region.md); NPC-side needs stay abstracted until the economy pass.
 2. **Stealth details** — stealth-strike = backstab + auto-crit stands as the default (unobjected); enemy Rogues sneaking at the player is a v2 candidate.
@@ -290,7 +292,7 @@ The DF/CDDA layer, all confirmed in-milestone. Per-system notes 15–18.
 | PR | Content | Size | Depends on |
 |---|---|---|---|
 | 1 | Phase 0 quick fixes (incl. the XP rework, 0.4) | S | — |
-| 2 | 1.1 tile/door/room model + iterative carve + culling | M | — |
+| ~~2~~ | ~~1.1 tile/door/room model + iterative carve + culling~~ **DONE 2026-08-06** (carve was already iterative; + door-to-door corridor routing, ruling #35 scale) | M | — |
 | 3 | 1.2–1.4 generator + placement + TEST_MAPGEN | M–L | PR 2 |
 | 3b | 1.2b open-terrain themed floors (Forest/Swamp/Grassland; Fortress after PR 6) + Guardian arenas | M | PR 3 |
 | 4 | 3.1 status effects + per-entity TimeScale substrate | M | — (parallel-capable) |
@@ -301,7 +303,7 @@ The DF/CDDA layer, all confirmed in-milestone. Per-system notes 15–18.
 | 5c | 3.8 armor & equipment slots + **blocking** (shield block, weapon parry, active guard — note 13) + TEST_ARMOR | M | PR 5 |
 | 5d | 3.9 creatures & bestiary (variants, spawn rework, cursed-race dungeons) + TEST_CREATURES | M | PR 5 (payloads); before PR 8 |
 | ~~6a~~ | ~~2.0 world foundation: WorldGenOptions, world↔character save split, creation flow, legacy records~~ **DONE 2026-08-06** (+ start-location choice, ruling #34; `TEST_WORLD`) | M | — (must precede PR 6) |
-| 6 | 2.1–2.2 RegionGenerator (grammar + prefabs) → per-world freeze → load | L | PR 2, PR 6a |
+| ~~6~~ | ~~2.1–2.2 RegionGenerator (grammar + prefabs) → per-world freeze → load~~ **DONE 2026-08-06** (`TEST_TOWNGEN`; prefab stamps + serialized freeze still open — regions rebuild deterministically from the recorded seed) | L | PR 2, PR 6a |
 | 6b | 7b world items, containers, ownership + TEST_WORLDITEMS | M | PR 6, PR 5b (witness checks) |
 | 6c | **Godot overworld view**: render the town + Press-E layer in the Godot client, incl. night lighting via Godot 2D lights (Avalonia impl = behavioral spec) | M | PR 6 |
 | 7 | 3.4 spell content (Tier-0/1 lines) | S–M | PR 5 |

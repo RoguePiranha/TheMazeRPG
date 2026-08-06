@@ -247,6 +247,26 @@ public partial class DungeonView : Node2D
             return;
         }
 
+        // Outdoor terrain first: generated regions speak in roads, water and trees, which the
+        // dungeon's room/corridor vocabulary has no entry for.
+        TileType terrain = maze.TileAt(x, y);
+        if (terrain is TileType.Road or TileType.Water or TileType.Tree)
+        {
+            DrawTerrainCell(terrain, x, y, cell, palette, dimmed);
+            return;
+        }
+
+        // Indoors is the same Floor tile as the field outside, so without this a building's inside
+        // would be carpeted in grass. The layout knows which cells are under a roof.
+        if (maze.Region?.IsBuildingInterior(x, y) == true)
+        {
+            var boards = new Color(0.31f, 0.24f, 0.17f);
+            DrawRect(cell, FogColor(((x * 31 + y * 17) & 3) == 0 ? boards.Lightened(0.06f) : boards, dimmed));
+            DrawLine(cell.Position, cell.Position + Vector2.Right * CellSize,
+                FogColor(boards.Darkened(0.25f), dimmed), 1f);
+            return;
+        }
+
         DungeonTileType type = maze.Dungeon?.Tiles[x, y] ?? DungeonTileType.RoomFloor;
         Color floorColor = type switch
         {
@@ -265,6 +285,52 @@ public partial class DungeonView : Node2D
             Vector2 center = cell.GetCenter();
             Vector2 half = eastWest ? new Vector2(0, 15) : new Vector2(15, 0);
             DrawLine(center - half, center + half, FogColor(palette.DoorwayEdge, dimmed), 3f);
+        }
+    }
+
+    /// <summary>Outdoor terrain in a generated region: made road, river water, and standing trees.</summary>
+    private void DrawTerrainCell(TileType terrain, int x, int y, Rect2 cell, Palette palette, bool dimmed)
+    {
+        // A stable per-cell wobble so surfaces look laid rather than printed.
+        int hash = (x * 73856093) ^ (y * 19349663);
+        float jitter = ((hash >> 8) & 7) / 7f;
+
+        switch (terrain)
+        {
+            case TileType.Road:
+            {
+                var packed = new Color(0.33f, 0.28f, 0.20f).Lightened(jitter * 0.10f);
+                DrawRect(cell, FogColor(packed, dimmed));
+                if ((hash & 3) == 0)
+                    DrawRect(new Rect2(cell.Position + new Vector2(jitter * 30f, jitter * 26f), new Vector2(4, 3)),
+                        FogColor(packed.Lightened(0.18f), dimmed));
+                break;
+            }
+
+            case TileType.Water:
+            {
+                var deep = new Color(0.10f, 0.24f, 0.42f).Lightened(jitter * 0.12f);
+                DrawRect(cell, FogColor(deep, dimmed));
+                // A couple of highlights so the river reads as moving rather than painted.
+                DrawLine(cell.Position + new Vector2(4, 14 + jitter * 8f),
+                    cell.Position + new Vector2(CellSize - 6, 12 + jitter * 8f),
+                    FogColor(new Color(0.45f, 0.66f, 0.85f, 0.55f), dimmed), 1.5f);
+                break;
+            }
+
+            default:
+            {
+                // Grass underneath, then a trunk and canopy, so a wood has depth at a glance.
+                DrawRect(cell, FogColor(palette.Floor.Darkened(0.15f), dimmed));
+                var trunk = new Color(0.28f, 0.19f, 0.11f);
+                var canopy = new Color(0.13f, 0.30f + jitter * 0.08f, 0.13f);
+                Vector2 centre = cell.GetCenter();
+                DrawRect(new Rect2(centre.X - 3, centre.Y - 2, 6, CellSize / 2f - 2), FogColor(trunk, dimmed));
+                DrawCircle(centre + new Vector2(0, -6 + jitter * 3f), CellSize * 0.34f, FogColor(canopy, dimmed));
+                DrawCircle(centre + new Vector2(-6, -2), CellSize * 0.22f, FogColor(canopy.Darkened(0.1f), dimmed));
+                DrawCircle(centre + new Vector2(6, -3), CellSize * 0.20f, FogColor(canopy.Lightened(0.08f), dimmed));
+                break;
+            }
         }
     }
 

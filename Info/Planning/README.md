@@ -17,7 +17,7 @@ This folder holds the project's planning documents and the **per-system developm
 | [07 - Attack Behaviors and Kit Identity.md](07%20-%20Attack%20Behaviors%20and%20Kit%20Identity.md) | Behavior payloads, per-class kits, Tier-0/1 spell data | PR 5, 7 |
 | [11 - Stealth Noise and Awareness.md](11%20-%20Stealth%20Noise%20and%20Awareness.md) | Sneak mode, noise events, hidden awareness/perception AI | PR 5b |
 | [12 - World Creation and Legacy.md](12%20-%20World%20Creation%20and%20Legacy.md) | WorldGenOptions (seed/size/hostility), world↔character save split, legacy heroes + NPC memory | PR 6a — **DONE 2026-08-06** (`TEST_WORLD`) |
-| [08 - Town Generator.md](08%20-%20Town%20Generator.md) | World & town generation — grammar + prefabs, frozen per world | PR 6 |
+| [08 - Town Generator.md](08%20-%20Town%20Generator.md) | World & town generation — grammar + prefabs, frozen per world | PR 6 — **DONE 2026-08-06** (`TEST_TOWNGEN`) |
 | [09 - NPC Life System.md](09%20-%20NPC%20Life%20System.md) | World clock, Npc model, schedules/goals, steering, guards | PR 8, 9 |
 | [10 - Progression Depth.md](10%20-%20Progression%20Depth.md) | Spell leveling, ability effects, rarity power, specializations, meta store | PR 10, 11 |
 | [13 - Armor and Equipment Slots.md](13%20-%20Armor%20and%20Equipment%20Slots.md) | Full-slot armor, weight classes, enemy/guard armor | PR 5c |

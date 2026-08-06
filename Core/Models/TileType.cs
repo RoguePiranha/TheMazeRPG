@@ -23,17 +23,32 @@ public enum TileType
 
     /// <summary>Shut and needs the matching key. Blocks movement and sight; bumping does not open
     /// it.</summary>
-    DoorLocked
+    DoorLocked,
 
-    // Room reserved for terrain that isn't a binary obstacle — Water (slows), Rubble (blocks sight
-    // but not movement) — which the open-terrain floors (Planning note 04) will want.
+    // --- Outdoor terrain (regions) ---
+
+    /// <summary>Made road or paved street. Walkable; distinct from open ground so the generator can
+    /// lay building lots along frontage and the renderer can show a street.</summary>
+    Road,
+
+    /// <summary>Deep water — a river. Impassable on foot and crossed at a bridge, but you can see
+    /// straight across it, which is what makes a river read as open ground rather than a wall.
+    /// </summary>
+    Water,
+
+    /// <summary>Standing tree. Blocks movement and sight, like a wall, but is terrain rather than
+    /// masonry so forests can be told apart from buildings for rendering and later felling.</summary>
+    Tree
+
+    // Room reserved for the rest of note 04's open-terrain palette — shallow water that slows
+    // rather than stops, mud, rubble that blocks sight but not movement.
 }
 
 public static class TileTypes
 {
     /// <summary>Can an actor stand here right now? A shut door can't be occupied until it's opened.</summary>
     public static bool IsPassable(this TileType tile) =>
-        tile is TileType.Floor or TileType.DoorOpen;
+        tile is TileType.Floor or TileType.DoorOpen or TileType.Road;
 
     /// <summary>
     /// Can an actor get through here eventually, by opening what's in the way? Pathfinding and
@@ -43,11 +58,13 @@ public static class TileTypes
     /// genuinely need their key, which is what makes a vault a vault.
     /// </summary>
     public static bool IsTraversable(this TileType tile) =>
-        tile is TileType.Floor or TileType.DoorOpen or TileType.DoorClosed;
+        tile is TileType.Floor or TileType.DoorOpen or TileType.DoorClosed or TileType.Road;
 
-    /// <summary>Does this stop line of sight? Closed and locked doors do; an open one does not.</summary>
+    /// <summary>Does this stop line of sight? Closed and locked doors do; an open one does not.
+    /// Water does not — you can see across a river, which is what makes it read as open country
+    /// rather than a wall you happen to be able to look over.</summary>
     public static bool BlocksSight(this TileType tile) =>
-        tile is TileType.Wall or TileType.DoorClosed or TileType.DoorLocked;
+        tile is TileType.Wall or TileType.DoorClosed or TileType.DoorLocked or TileType.Tree;
 
     public static bool IsDoor(this TileType tile) =>
         tile is TileType.DoorClosed or TileType.DoorOpen or TileType.DoorLocked;

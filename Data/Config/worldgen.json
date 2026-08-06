@@ -1,8 +1,17 @@
 {
+  "_comment": [
+    "Region dimensions are in TILES, and one tile is roughly one metre — dungeon corridors are a",
+    "tile wide and the hero's radius is 0.35. Sizes are therefore derived from Starting Region.md's",
+    "own geography rather than picked: a walled town core, plus the spec's ~100m cleared band on",
+    "every side (200 tiles per axis before a single wall), plus the forest fringe beyond it.",
+    "Owner ruling 2026-08-06: keep 1m tiles and let regions be genuinely large.",
+    "regionWidth/regionHeight/population/forestDepth are consumed by the region generator (PR 6);",
+    "the hostility profile below is live now."
+  ],
   "sizes": {
-    "Small":  { "regionWidth": 72,  "regionHeight": 48, "population": 60,  "forestDepth": 4 },
-    "Medium": { "regionWidth": 96,  "regionHeight": 64, "population": 100, "forestDepth": 6 },
-    "Large":  { "regionWidth": 128, "regionHeight": 84, "population": 150, "forestDepth": 9 }
+    "Small":  { "regionWidth": 320, "regionHeight": 288, "population": 60,  "forestDepth": 32 },
+    "Medium": { "regionWidth": 416, "regionHeight": 352, "population": 100, "forestDepth": 40 },
+    "Large":  { "regionWidth": 512, "regionHeight": 448, "population": 150, "forestDepth": 56 }
   },
   "hostility": {
     "Peaceful": { "enemyDensity": 0.7, "levelOffset": -1, "eliteChance": 0.10, "trapChanceDelta": -0.1 },

@@ -33,6 +33,11 @@ public class Maze
     // Present only on procedurally generated dungeon floors. The Overworld and safe rooms keep
     // using the shared wall grid without inheriting dungeon-specific semantics.
     public DungeonLayout? Dungeon { get; set; }
+
+    // Present only on generated regions (the town and its surroundings). Walls, gates, roads,
+    // buildings and the river are a different vocabulary from rooms and corridors, so regions get
+    // their own structural record rather than overloading DungeonLayout.
+    public RegionLayout? Region { get; set; }
     
     public Maze(int width, int height)
     {

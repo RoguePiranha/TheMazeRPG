@@ -199,6 +199,13 @@ sealed class Program
             return;
         }
 
+        // If TEST_TOWNGEN is set, generate regions, validate the grammar, and print an ASCII preview
+        if (Environment.GetEnvironmentVariable("TEST_TOWNGEN") == "1")
+        {
+            RunTownGenDemo();
+            return;
+        }
+
         // If TEST_WORLD is set, verify the world layer — creation, the world/character save split,
         // hostility profiles, legacy records on death, and start-location choice — and exit
         if (Environment.GetEnvironmentVariable("TEST_WORLD") == "1")
@@ -208,6 +215,190 @@ sealed class Program
         }
 
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+
+    // Debug/test entrypoint: if TEST_TOWNGEN=1 is set, sweep the region generator across sizes,
+    // hostilities and seeds, assert the Starting Region grammar on every one, and print an ASCII
+    // preview for eyeballing the generator itself (not one map). SEED=n previews a single world.
+    public static void RunTownGenDemo()
+    {
+        Console.WriteLine("=== Region generation ===");
+
+        string? seedArg = Environment.GetEnvironmentVariable("SEED");
+        if (int.TryParse(seedArg, out int single))
+        {
+            var options = new WorldGenOptions { Seed = single, Size = WorldSize.Medium };
+            var preview = RegionGenerator.Generate(options, out int used);
+            Console.WriteLine($"Seed {single} (effective {used}), {preview.Width}x{preview.Height}");
+            PrintRegion(preview);
+            return;
+        }
+
+        var sizes = Enum.GetValues<WorldSize>();
+        var hostilities = Enum.GetValues<Hostility>();
+        int generated = 0;
+        double worstMs = 0;
+        var totals = new Dictionary<string, int>();
+
+        foreach (var size in sizes)
+        {
+            foreach (var hostility in hostilities)
+            {
+                for (int seed = 1; seed <= 6; seed++)
+                {
+                    var options = new WorldGenOptions { Seed = seed * 7919, Size = size, Hostility = hostility };
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    var maze = RegionGenerator.Generate(options, out _);
+                    clock.Stop();
+                    worstMs = Math.Max(worstMs, clock.Elapsed.TotalMilliseconds);
+
+                    var errors = RegionValidator.Validate(maze);
+                    if (errors.Count > 0)
+                        throw new InvalidOperationException(
+                            $"{size}/{hostility} seed {options.Seed}: {string.Join("; ", errors)}");
+
+                    var region = maze.Region!;
+                    Tally(totals, "buildings", region.Buildings.Count);
+                    Tally(totals, "gates", region.Gates.Count);
+                    Tally(totals, "features", maze.Features.Count);
+                    generated++;
+                }
+            }
+        }
+
+        // Determinism: the same options must rebuild the same region, or "frozen per world" is a lie.
+        var first = RegionGenerator.Generate(new WorldGenOptions { Seed = 4242, Size = WorldSize.Medium }, out _);
+        var second = RegionGenerator.Generate(new WorldGenOptions { Seed = 4242, Size = WorldSize.Medium }, out _);
+        if (!SameTerrain(first, second))
+            throw new InvalidOperationException("Same options produced different regions.");
+        var different = RegionGenerator.Generate(new WorldGenOptions { Seed = 4243, Size = WorldSize.Medium }, out _);
+        if (SameTerrain(first, different))
+            throw new InvalidOperationException("Different seeds produced identical regions.");
+
+        // --- Buildings are places, not shapes: walk into one through its own door ---
+        {
+            var sample = RegionGenerator.Generate(
+                new WorldGenOptions { Seed = 31337, Size = WorldSize.Medium }, out _);
+            var region = sample.Region!;
+            var building = region.Buildings.First();
+
+            if (sample.Tiles[building.DoorX, building.DoorY] != TileType.DoorClosed)
+                throw new InvalidOperationException("Building test: the door is not a shut door.");
+            if (!sample.IsWalkable(building.InteriorX, building.InteriorY))
+                throw new InvalidOperationException("Building test: the interior is not standable.");
+
+            // The footprint is a real shell: a ring of wall around a floor, one tile of it a door.
+            int wallTiles = 0, doorTiles = 0, interiorFloor = 0;
+            for (int x = building.X; x <= building.Right; x++)
+            {
+                for (int y = building.Y; y <= building.Bottom; y++)
+                {
+                    bool border = x == building.X || x == building.Right ||
+                                  y == building.Y || y == building.Bottom;
+                    var tile = sample.Tiles[x, y];
+                    if (border && tile == TileType.Wall) wallTiles++;
+                    else if (border && tile.IsDoor()) doorTiles++;
+                    else if (!border && tile == TileType.Floor) interiorFloor++;
+                }
+            }
+            if (doorTiles != 1)
+                throw new InvalidOperationException($"Building test: {doorTiles} doors in the shell, expected 1.");
+            if (interiorFloor < 4)
+                throw new InvalidOperationException($"Building test: interior is only {interiorFloor} tiles.");
+
+            // Shut, you can't walk in; opened, you can — the same bump-to-open the dungeon uses.
+            if (sample.IsWalkable(building.DoorX, building.DoorY))
+                throw new InvalidOperationException("Building test: a shut door was already walkable.");
+            if (!sample.TryOpenDoor(building.DoorX, building.DoorY))
+                throw new InvalidOperationException("Building test: the door would not open.");
+            if (!sample.IsWalkable(building.DoorX, building.DoorY))
+                throw new InvalidOperationException("Building test: the opened door is still blocked.");
+
+            int enterable = region.Buildings.Count(b =>
+                sample.IsWalkable(b.InteriorX, b.InteriorY) && sample.IsDoor(b.DoorX, b.DoorY));
+            Console.WriteLine($"Buildings: {region.Buildings.Count} in the sample town, {enterable} with a door " +
+                              $"and a standable interior. Example {building.Kind} is {building.Width}x{building.Height} " +
+                              $"with {wallTiles} wall tiles, 1 door, {interiorFloor} floor tiles inside.");
+        }
+
+        Console.WriteLine($"Validated {generated} regions across {sizes.Length} sizes x {hostilities.Length} hostilities.");
+        Console.WriteLine($"Averages — buildings {totals["buildings"] / generated}, gates {totals["gates"] / generated}, " +
+                          $"features {totals["features"] / generated}. Worst generation time {worstMs:0} ms.");
+        Console.WriteLine("Determinism: same options rebuild the same region; a different seed does not.");
+
+        Console.WriteLine("\nPreview (Medium, seed 4242) — # mountain/wall  , road  ~ water  T tree  + door  . ground");
+        PrintRegion(first);
+    }
+
+    private static void Tally(Dictionary<string, int> totals, string key, int value) =>
+        totals[key] = totals.GetValueOrDefault(key) + value;
+
+    private static bool SameTerrain(Maze a, Maze b)
+    {
+        if (a.Width != b.Width || a.Height != b.Height) return false;
+        for (int x = 0; x < a.Width; x++)
+            for (int y = 0; y < a.Height; y++)
+                if (a.Tiles[x, y] != b.Tiles[x, y])
+                    return false;
+        return true;
+    }
+
+    /// <summary>Downsample the region to a console-sized picture — each character summarises a block,
+    /// preferring whatever is most structurally interesting in it.</summary>
+    private static void PrintRegion(Maze maze)
+    {
+        const int targetWidth = 118;
+        int step = Math.Max(1, (int)Math.Ceiling(maze.Width / (double)targetWidth));
+
+        var featureAt = new Dictionary<(int x, int y), char>();
+        foreach (var feature in maze.Features)
+        {
+            char glyph = feature.Type switch
+            {
+                MazeFeatureType.DungeonEntrance => 'D',
+                MazeFeatureType.MineEntrance => 'M',
+                MazeFeatureType.Smithy => 'S',
+                MazeFeatureType.Stall => '$',
+                MazeFeatureType.Lamp => 'i',
+                _ => '?'
+            };
+            featureAt[(feature.X / step, feature.Y / (step * 2))] = glyph;
+        }
+
+        for (int y = 0; y < maze.Height; y += step * 2)
+        {
+            var line = new System.Text.StringBuilder();
+            for (int x = 0; x < maze.Width; x += step)
+            {
+                if (featureAt.TryGetValue((x / step, y / (step * 2)), out char glyph))
+                {
+                    line.Append(glyph);
+                    continue;
+                }
+                line.Append(BlockGlyph(maze, x, y, step));
+            }
+            Console.WriteLine(line.ToString());
+        }
+    }
+
+    private static char BlockGlyph(Maze maze, int startX, int startY, int step)
+    {
+        var counts = new Dictionary<TileType, int>();
+        for (int x = startX; x < Math.Min(maze.Width, startX + step); x++)
+            for (int y = startY; y < Math.Min(maze.Height, startY + step * 2); y++)
+                counts[maze.Tiles[x, y]] = counts.GetValueOrDefault(maze.Tiles[x, y]) + 1;
+
+        // Structure beats ground: a block containing a door or road is more worth showing than the
+        // grass around it, even if grass is the majority.
+        if (counts.GetValueOrDefault(TileType.DoorClosed) > 0) return '+';
+        if (counts.GetValueOrDefault(TileType.Water) > 0) return '~';
+        if (counts.GetValueOrDefault(TileType.Road) > step) return ',';
+        if (counts.GetValueOrDefault(TileType.Wall) > step) return '#';
+        if (counts.GetValueOrDefault(TileType.Tree) > step) return 'T';
+        if (counts.GetValueOrDefault(TileType.Road) > 0) return ',';
+        if (counts.GetValueOrDefault(TileType.Wall) > 0) return '#';
+        if (counts.GetValueOrDefault(TileType.Tree) > 0) return 'T';
+        return '.';
     }
 
     private static void Expect(bool condition, string what)
@@ -2474,6 +2665,7 @@ sealed class Program
         int eastWestDoorways = 0;
         int northSouthDoorways = 0;
         int doorsGenerated = 0;
+        int thresholdsGenerated = 0;
         var themeCounts = Enum.GetValues<DungeonTheme>().ToDictionary(theme => theme, _ => 0);
 
         Console.WriteLine("=== Dungeon map generation validation ===");
@@ -2535,21 +2727,37 @@ sealed class Program
                         else
                             northSouthDoorways++;
 
-                        // Every doorway carries a real door, and it starts shut: blocking movement
-                        // and sight, but never severing the room behind it from the map.
-                        if (maze.Tiles[x, y] != TileType.DoorClosed)
+                        // A threshold is either an open gap or a shut door — never solid stone, and
+                        // never something that severs the room behind it from the map.
+                        TileType threshold = maze.Tiles[x, y];
+                        if (threshold != TileType.Floor && threshold != TileType.DoorClosed)
                             throw new InvalidOperationException(
-                                $"Seed {seed}, floor {floor}: doorway ({x},{y}) is {maze.Tiles[x, y]}, expected DoorClosed.");
-                        if (maze.IsWalkable(x, y))
-                            throw new InvalidOperationException(
-                                $"Seed {seed}, floor {floor}: shut door ({x},{y}) is walkable.");
-                        if (!maze.BlocksSight(x, y))
-                            throw new InvalidOperationException(
-                                $"Seed {seed}, floor {floor}: shut door ({x},{y}) does not block sight.");
+                                $"Seed {seed}, floor {floor}: doorway ({x},{y}) is {threshold}, expected Floor or DoorClosed.");
                         if (!maze.IsTraversable(x, y))
                             throw new InvalidOperationException(
-                                $"Seed {seed}, floor {floor}: shut door ({x},{y}) is not traversable — it would cut off its room.");
-                        doorsGenerated++;
+                                $"Seed {seed}, floor {floor}: threshold ({x},{y}) is not traversable — it would cut off its room.");
+
+                        // A threshold is one tile wide: exactly one room borders it. More than one
+                        // room floor beside it means an opening several tiles across, which is the
+                        // "missing wall" look rather than a doorway.
+                        int roomNeighbours = 0;
+                        foreach (var (nx, ny) in new[] { (x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1) })
+                            if (layout.Tiles[nx, ny] == DungeonTileType.RoomFloor) roomNeighbours++;
+                        if (roomNeighbours != 1)
+                            throw new InvalidOperationException(
+                                $"Seed {seed}, floor {floor}: threshold ({x},{y}) borders {roomNeighbours} room tiles, expected exactly 1.");
+
+                        if (threshold == TileType.DoorClosed)
+                        {
+                            if (maze.IsWalkable(x, y))
+                                throw new InvalidOperationException(
+                                    $"Seed {seed}, floor {floor}: shut door ({x},{y}) is walkable.");
+                            if (!maze.BlocksSight(x, y))
+                                throw new InvalidOperationException(
+                                    $"Seed {seed}, floor {floor}: shut door ({x},{y}) does not block sight.");
+                            doorsGenerated++;
+                        }
+                        thresholdsGenerated++;
                     }
                 }
             }
@@ -2677,8 +2885,36 @@ sealed class Program
                 !doorMaze.IsWalkable(door.x, door.y))
                 throw new InvalidOperationException("Door behaviour test: unlocking did not open the door.");
 
-            Console.WriteLine($"Doors: {doorsGenerated} generated across the sweep; " +
-                              "shut = blocks movement + sight but stays traversable; bump opens; locked needs a key.");
+            // Structural classification: every cell lands in exactly one kind, kinds agree with the
+            // terrain, and the shapes placement rules depend on actually occur.
+            var kindCounts = Enum.GetValues<DungeonCellKind>().ToDictionary(kind => kind, _ => 0);
+            for (int x = 0; x < doorMaze.Width; x++)
+            {
+                for (int y = 0; y < doorMaze.Height; y++)
+                {
+                    var kind = doorMaze.Dungeon!.Classify(x, y);
+                    kindCounts[kind]++;
+                    bool solid = kind == DungeonCellKind.Wall;
+                    if (solid != (doorMaze.Dungeon.Tiles[x, y] == DungeonTileType.Wall))
+                        throw new InvalidOperationException(
+                            $"Cell classification test: ({x},{y}) classified {kind} but terrain disagrees.");
+                }
+            }
+            foreach (var required in new[]
+                     { DungeonCellKind.Room, DungeonCellKind.Corridor, DungeonCellKind.Doorway })
+            {
+                if (kindCounts[required] == 0)
+                    throw new InvalidOperationException($"Cell classification test: no {required} cells found.");
+            }
+            if (doorMaze.Dungeon!.CellsOfKind(DungeonCellKind.Room).Count != kindCounts[DungeonCellKind.Room])
+                throw new InvalidOperationException("Cell classification test: CellsOfKind disagrees with Classify.");
+            Console.WriteLine("Cell kinds: " + string.Join(", ",
+                kindCounts.Where(pair => pair.Key != DungeonCellKind.Wall)
+                          .Select(pair => $"{pair.Key}={pair.Value}")));
+
+            Console.WriteLine($"Thresholds: {thresholdsGenerated} across the sweep, all exactly one tile wide; " +
+                              $"{doorsGenerated} carry a door ({100.0 * doorsGenerated / Math.Max(1, thresholdsGenerated):0.0}%).");
+            Console.WriteLine("Doors: shut = blocks movement + sight but stays traversable; bump opens; locked needs a key.");
         }
 
         Console.WriteLine($"Validated {generated} floors ({seedCount} seeds x {floorCount} floors).");

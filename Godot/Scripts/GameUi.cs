@@ -548,9 +548,12 @@ public partial class GameUi : Control
         void UpdateSize(int index)
         {
             var profile = WorldService.ResolveProfile(new WorldGenOptions { Size = Enum.Parse<WorldSize>(sizeNames[index]) });
+            // Honest about what's wired: the region generator (PR 6) is what consumes these, so
+            // until it lands the size is recorded on the world rather than shaping it.
             sizeDetail.Text =
-                $"Region {profile.Size.RegionWidth}x{profile.Size.RegionHeight}, about {profile.Size.Population} residents.\n" +
-                "Scales the region, not the number of towns.";
+                $"Region {profile.Size.RegionWidth}x{profile.Size.RegionHeight} tiles (~1m each), " +
+                $"about {profile.Size.Population} residents.\n" +
+                "Scales the region, not the number of towns. Applies when region generation lands.";
         }
 
         void UpdateHostility(int index)
