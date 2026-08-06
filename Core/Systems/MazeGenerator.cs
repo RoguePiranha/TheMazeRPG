@@ -50,7 +50,7 @@ public sealed class MazeGenerator
         {
             for (int y = 0; y < height; y++)
             {
-                maze.Walls[x, y] = true;
+                maze.Tiles[x, y] = TileType.Wall;
                 layout.Tiles[x, y] = DungeonTileType.Wall;
             }
         }
@@ -58,6 +58,7 @@ public sealed class MazeGenerator
         PlaceRooms(maze, layout, random);
         ConnectRooms(maze, layout, random);
         MarkDoorways(layout);
+        PlaceDoors(maze, layout);
         AssignRoomRoles(maze, layout, random);
         AssignRoomArchetypes(layout, random);
         PlaceDecorations(layout, random);
@@ -122,7 +123,7 @@ public sealed class MazeGenerator
         {
             for (int y = room.Y; y <= room.Bottom; y++)
             {
-                maze.Walls[x, y] = false;
+                maze.Tiles[x, y] = TileType.Floor;
                 layout.Tiles[x, y] = DungeonTileType.RoomFloor;
                 layout.RegionIds[x, y] = room.Id;
             }
@@ -234,7 +235,7 @@ public sealed class MazeGenerator
 
         foreach (var (x, y) in path)
         {
-            maze.Walls[x, y] = false;
+            maze.Tiles[x, y] = TileType.Floor;
             if (layout.Tiles[x, y] == DungeonTileType.Wall)
                 layout.Tiles[x, y] = DungeonTileType.CorridorFloor;
         }
@@ -277,6 +278,28 @@ public sealed class MazeGenerator
             x += dx;
             y += dy;
             path.Add((x, y));
+        }
+    }
+
+    /// <summary>
+    /// Turn the marked doorways into real doors on the terrain grid. Every room-to-corridor
+    /// connector becomes one, which is what gives rooms their privacy: a shut door blocks sight, so
+    /// you no longer see a room's whole contents from the corridor outside it.
+    ///
+    /// Doors are left closed, not open — opening happens by walking into them. Path search routes
+    /// through closed doors (Maze.IsTraversable), so this never severs a room from the map.
+    /// </summary>
+    private static void PlaceDoors(Maze maze, DungeonLayout layout)
+    {
+        int width = layout.Tiles.GetLength(0);
+        int height = layout.Tiles.GetLength(1);
+        for (int x = 0; x < width; x++)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                if (layout.Tiles[x, y] == DungeonTileType.Doorway)
+                    maze.Tiles[x, y] = TileType.DoorClosed;
+            }
         }
     }
 

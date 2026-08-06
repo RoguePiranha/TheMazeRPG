@@ -83,11 +83,16 @@ public class MovementSystem
             return;
         }
 
-        MoveEnemyAlongPath(enemy, path[1]);
+        MoveEnemyAlongPath(enemy, path[1], maze);
     }
 
-    private static void MoveEnemyAlongPath(Enemy enemy, (int x, int y) next)
+    private static void MoveEnemyAlongPath(Enemy enemy, (int x, int y) next, Maze maze)
     {
+        // Routes may lead through a closed door, since path search asks IsTraversable. Shoulder it
+        // open on arrival and hold position this tick — the same bump-to-open the hero gets.
+        if (maze.TryOpenDoor(next.x, next.y)) return;
+        if (!maze.IsWalkable(next.x, next.y)) return;
+
         float dx = next.x - enemy.X;
         float dy = next.y - enemy.Y;
         float distance = MathF.Sqrt(dx * dx + dy * dy);
@@ -161,7 +166,7 @@ public class MovementSystem
             return;
         }
 
-        MoveEnemyAlongPath(enemy, path[1]);
+        MoveEnemyAlongPath(enemy, path[1], maze);
     }
     
     /// <summary>
@@ -247,7 +252,7 @@ public class MovementSystem
                 int gridX = (int)MathF.Round(newX);
                 int gridY = (int)MathF.Round(newY);
                 
-                if (IsWalkable(maze, gridX, gridY))
+                if (TryStep(maze, gridX, gridY))
                 {
                     hero.X = newX;
                     hero.Y = newY;
@@ -266,7 +271,7 @@ public class MovementSystem
                 // line of sight rather than staying pinned with no line to the target.
                 float newX = hero.X + dx * speed;
                 float newY = hero.Y + dy * speed;
-                if (IsWalkable(maze, (int)MathF.Round(newX), (int)MathF.Round(newY)))
+                if (TryStep(maze, (int)MathF.Round(newX), (int)MathF.Round(newY)))
                 {
                     hero.X = newX;
                     hero.Y = newY;
@@ -526,7 +531,7 @@ public class MovementSystem
                 int newX = x + dx;
                 int newY = y + dy;
                 
-                if (IsWalkable(maze, newX, newY) && !visited.Contains((newX, newY)))
+                if (CanRouteThrough(maze, newX, newY) && !visited.Contains((newX, newY)))
                 {
                     visited.Add((newX, newY));
                     var newPath = new List<(int x, int y)>(path) { (newX, newY) };
@@ -567,7 +572,7 @@ public class MovementSystem
                 int newX = x + dx;
                 int newY = y + dy;
                 
-                if (IsWalkable(maze, newX, newY) && !visited.Contains((newX, newY)))
+                if (CanRouteThrough(maze, newX, newY) && !visited.Contains((newX, newY)))
                 {
                     visited.Add((newX, newY));
                     var newPath = new List<(int x, int y)>(path) { (newX, newY) };
@@ -609,12 +614,31 @@ public class MovementSystem
         return null;
     }
     
+    /// <summary>Can an actor physically occupy this cell right now? A shut door can't be — but see
+    /// <see cref="TryStep"/>, which is what movement should call.</summary>
     private bool IsWalkable(Maze maze, int x, int y)
     {
         if (x < 0 || x >= maze.Width || y < 0 || y >= maze.Height)
             return false;
-        
+
         return !maze.Walls[x, y];
+    }
+
+    /// <summary>Can a route pass through this cell, opening what's in the way? Path search uses
+    /// this so a closed door doesn't sever its room from the map.</summary>
+    private static bool CanRouteThrough(Maze maze, int x, int y) => maze.IsTraversable(x, y);
+
+    /// <summary>
+    /// Attempt to move into a cell. Walkable cells simply admit the mover. Walking into a closed
+    /// door opens it instead of moving (owner ruling: bump-to-open, no extra input) — the mover
+    /// steps through on a following tick, so shouldering a door costs a moment, which is the point.
+    /// Locked doors don't yield: they need their key.
+    /// </summary>
+    private bool TryStep(Maze maze, int x, int y)
+    {
+        if (IsWalkable(maze, x, y)) return true;
+        maze.TryOpenDoor(x, y);
+        return false;
     }
     
     /// <summary>

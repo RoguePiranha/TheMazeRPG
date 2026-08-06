@@ -29,7 +29,9 @@ public static class DungeonGenerationValidator
             for (int y = 0; y < maze.Height; y++)
             {
                 bool semanticWall = layout.Tiles[x, y] == DungeonTileType.Wall;
-                if (maze.Walls[x, y] != semanticWall)
+                // Compare against traversability rather than the blocking bitmap: a shut door
+                // legitimately blocks movement while being semantically open ground.
+                if (maze.IsTraversable(x, y) == semanticWall)
                     errors.Add($"Collision and semantic tiles disagree at ({x},{y})");
             }
         }
@@ -77,10 +79,13 @@ public static class DungeonGenerationValidator
             }
         }
 
-        int walkableCount = maze.GetEmptyCells().Count;
+        // Connectivity is measured over traversable ground (doors included, since you open them),
+        // which is the same graph BfsDistancesFrom walks — counting only currently-walkable tiles
+        // would compare two different graphs and report a phantom mismatch.
+        int traversableCount = maze.GetTraversableCells().Count;
         var distances = maze.BfsDistancesFrom(layout.EntranceX, layout.EntranceY);
-        if (distances.Count != walkableCount)
-            errors.Add($"Only {distances.Count} of {walkableCount} walkable tiles are connected");
+        if (distances.Count != traversableCount)
+            errors.Add($"Only {distances.Count} of {traversableCount} traversable tiles are connected");
 
         var exitRooms = layout.Rooms.Where(room => room.Role == DungeonRoomRole.Exit).ToList();
         if (exitRooms.Count != 1)
@@ -115,7 +120,9 @@ public static class DungeonGenerationValidator
                                   layout.Tiles[x + 1, y] == DungeonTileType.RoomFloor ||
                                   layout.Tiles[x, y - 1] == DungeonTileType.RoomFloor ||
                                   layout.Tiles[x, y + 1] == DungeonTileType.RoomFloor;
-                if (!besideRoom || maze.Walls[x, y])
+                // A doorway should hold an actual door (or bare floor, where a door wasn't placed) —
+                // never solid wall.
+                if (!besideRoom || !maze.IsTraversable(x, y))
                     errors.Add($"Invalid doorway at ({x},{y})");
             }
         }

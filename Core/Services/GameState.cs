@@ -251,7 +251,9 @@ public class GameState
 
             foreach (var next in CardinalCells(current.x, current.y))
             {
-                if (previous.ContainsKey(next) || !CurrentMaze.IsWalkable(next.x, next.y) ||
+                // Traversable, not walkable: a route may pass through a closed door, which the
+                // mover opens on arrival (see MovementSystem's bump-to-open).
+                if (previous.ContainsKey(next) || !CurrentMaze.IsTraversable(next.x, next.y) ||
                     IsEnemyOccupyingCell(next.x, next.y))
                     continue;
                 previous[next] = current;
@@ -867,7 +869,7 @@ public class GameState
             if (current == target) break;
             foreach (var next in CardinalCells(current.x, current.y))
             {
-                if (previous.ContainsKey(next) || !CurrentMaze.IsWalkable(next.x, next.y)) continue;
+                if (previous.ContainsKey(next) || !CurrentMaze.IsTraversable(next.x, next.y)) continue;
                 bool isHeroTarget = next == target && next == (Hero.GridX, Hero.GridY);
                 if (!isHeroTarget && !CanEnemyOccupyCell(next.x, next.y, actor, positions)) continue;
                 previous[next] = current;
@@ -3445,7 +3447,7 @@ public class GameState
             for (int y = 0; y < height; y++)
             {
                 bool isBorder = x == 0 || x == width - 1 || y == 0 || y == height - 1;
-                maze.Walls[x, y] = isBorder;
+                maze.Tiles[x, y] = isBorder ? TileType.Wall : TileType.Floor;
                 if (!isBorder) maze.Explored[x, y] = true; // fully lit; nothing to explore
             }
         }
@@ -3464,7 +3466,7 @@ public class GameState
         for (int y = 0; y < height; y++)
         {
             bool border = x == 0 || x == width - 1 || y == 0 || y == height - 1;
-            maze.Walls[x, y] = border;
+            maze.Tiles[x, y] = border ? TileType.Wall : TileType.Floor;
             if (!border) maze.Explored[x, y] = true;
         }
         return maze;
@@ -4682,7 +4684,7 @@ public class GameState
         for (int x = Math.Min(startGX, endGX); x <= Math.Max(startGX, endGX); x++)
         {
             if (x >= 0 && x < CurrentMaze.Width && gy >= 0 && gy < CurrentMaze.Height)
-                CurrentMaze.Walls[x, gy] = false;
+                CurrentMaze.Tiles[x, gy] = TileType.Floor;
         }
         Console.WriteLine($"Starting simulation: Hero at ({Hero.X},{Hero.Y}), Enemy at ({enemy.X},{enemy.Y})");
 

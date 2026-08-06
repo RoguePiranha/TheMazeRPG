@@ -34,7 +34,7 @@ public static class OverworldGenerator
             for (int y = 0; y < height; y++)
             {
                 bool isBorder = x == 0 || x == width - 1 || y == 0 || y == height - 1;
-                maze.Walls[x, y] = isBorder;
+                maze.Tiles[x, y] = isBorder ? TileType.Wall : TileType.Floor;
                 if (!isBorder) maze.Explored[x, y] = true; // fully lit; this is not a fog-of-war space
             }
         }
