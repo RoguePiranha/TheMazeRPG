@@ -16,6 +16,11 @@ public class Projectile
     public float Speed { get; set; } = 0.3f;
     public AttackAnimation Type { get; set; }
     public string AttackName { get; set; } = ""; // Display name (kept for HUD/labels)
+
+    /// <summary>Who fired this, as a display string (e.g. "Goblin Mage") — a projectile doesn't hold
+    /// a reference to its shooter, and by the time one lands the shooter may already be dead. Used
+    /// to describe a hero's cause of death in their legacy record.</summary>
+    public string SourceLabel { get; set; } = "";
     // Stable visual style, chosen from the attack's id (not name substrings) — the renderer
     // switches on this so renaming an attack never changes/breaks its effect.
     public VisualStyle Visual { get; set; } = VisualStyle.Blade;

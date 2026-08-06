@@ -29,11 +29,17 @@ public enum ResumePoint
 /// </summary>
 public class SaveData
 {
-    public int Version { get; set; } = 4;
+    public int Version { get; set; } = 5;
 
-    /// <summary>Identifies this save slot on disk (Saves/{SaveId}.json) — stable across repeated
-    /// saves of the same character so re-saving overwrites rather than multiplying files.</summary>
+    /// <summary>Identifies this save slot on disk (Saves/Worlds/{WorldId}/Characters/{SaveId}.json)
+    /// — stable across repeated saves of the same character so re-saving overwrites rather than
+    /// multiplying files.</summary>
     public string SaveId { get; set; } = "";
+
+    /// <summary>The world this character lives in. Redundant with the folder path, deliberately —
+    /// it makes a character file self-describing if one is ever moved or inspected on its own.
+    /// </summary>
+    public string WorldId { get; set; } = "";
     public double PlaytimeSeconds { get; set; }
     public DateTime SavedAtUtc { get; set; }
 
@@ -81,6 +87,11 @@ public class SaveData
     /// <summary>Elemental affinity profile, so grow-with-use progress survives a restart.
     /// Null for saves predating the field — the class/race seed applies.</summary>
     public Affinities? Affinities { get; set; }
+
+    /// <summary>This character's own kill count, for the legacy record they leave behind on death.
+    /// Distinct from CodexService's PlayStats.TotalKills, which is per-install across all characters.
+    /// </summary>
+    public int Kills { get; set; }
 
     /// <summary>World-clock time (total game minutes). 0 for saves predating the clock.</summary>
     public double WorldGameMinutes { get; set; }

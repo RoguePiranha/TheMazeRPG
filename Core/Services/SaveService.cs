@@ -8,16 +8,21 @@ using TheMazeRPG.Core.Models;
 namespace TheMazeRPG.Core.Services;
 
 /// <summary>
-/// Writes/reads hero save slots to Saves/{SaveId}.json — one file per character, the same
-/// JSON-file convention as CodexService, but a plain static utility (Save/Load/List) rather than
-/// a singleton holding live data, since there's no ongoing in-memory state to track between
-/// discrete save/load actions.
+/// Writes/reads hero save slots to Saves/Worlds/{worldId}/Characters/{SaveId}.json — one file per
+/// character, the same JSON-file convention as CodexService, but a plain static utility
+/// (Save/Load/List) rather than a singleton holding live data, since there's no ongoing in-memory
+/// state to track between discrete save/load actions.
 /// </summary>
 public static class SaveService
 {
-    // A subdirectory of Saves/, not Saves/ itself — CodexService also writes Saves/codex.json,
-    // and a naive glob over Saves/*.json would misparse that as a phantom (empty) save slot.
-    private static string SavesDirectory => GamePaths.Save("Saves", "Characters");
+    // Characters live inside a world (see WorldService): a world's generated map is shared by every
+    // character in it, and the world outlives them. EnsureActiveWorld resolves (and if necessary
+    // creates) that scope, so callers who don't care about worlds — the headless TEST_* demos, the
+    // frozen Avalonia client — keep working without a world-selection step of their own.
+    // Still a subdirectory rather than the world folder itself: delta.json/world.json live there,
+    // and a naive glob would misparse them as phantom save slots.
+    private static string SavesDirectory =>
+        WorldService.CharactersDirectory(WorldService.EnsureActiveWorld());
     private static readonly JsonSerializerOptions ReadOptions = new() { PropertyNameCaseInsensitive = true };
 
     private static string PathFor(string saveId) => Path.Combine(SavesDirectory, $"{saveId}.json");
@@ -80,8 +85,9 @@ public static class SaveService
         var hero = gameState.Hero;
         var data = new SaveData
         {
-            Version = 4,
+            Version = 5,
             SaveId = gameState.SaveId,
+            WorldId = gameState.WorldId,
             PlaytimeSeconds = gameState.TotalPlaytimeSeconds,
             SavedAtUtc = DateTime.UtcNow,
             // Where this save resumes, derived from where the hero is right now: a safe-room
@@ -116,6 +122,7 @@ public static class SaveService
             Equipment = new Dictionary<EquipmentSlot, Combinable>(hero.Equipment),
             WeaponTraining = new HashSet<WeaponType>(hero.WeaponTraining),
             Affinities = hero.Affinities.Clone(),
+            Kills = hero.Kills,
             WorldGameMinutes = gameState.Clock.TotalGameMinutes,
             HotbarAssignments = new List<string?>(hero.HotbarAssignments),
             HotbarKnownIds = new List<string>(hero.HotbarKnownIds)
@@ -126,6 +133,8 @@ public static class SaveService
             Directory.CreateDirectory(SavesDirectory);
             var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(PathFor(data.SaveId), json);
+            // Keep the world's displayed elapsed time in step with its furthest-travelled character.
+            WorldService.RecordWorldTime(data.WorldId, data.WorldGameMinutes);
             GameLog.Debug($"Saved progress: {hero.Name} the {hero.Race} {hero.Class}, Level {hero.Level}, Gold {hero.Gold}");
         }
         catch (Exception ex)

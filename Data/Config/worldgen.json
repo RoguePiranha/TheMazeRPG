@@ -1,0 +1,12 @@
+{
+  "sizes": {
+    "Small":  { "regionWidth": 72,  "regionHeight": 48, "population": 60,  "forestDepth": 4 },
+    "Medium": { "regionWidth": 96,  "regionHeight": 64, "population": 100, "forestDepth": 6 },
+    "Large":  { "regionWidth": 128, "regionHeight": 84, "population": 150, "forestDepth": 9 }
+  },
+  "hostility": {
+    "Peaceful": { "enemyDensity": 0.7, "levelOffset": -1, "eliteChance": 0.10, "trapChanceDelta": -0.1 },
+    "Normal":   { "enemyDensity": 1.0, "levelOffset":  0, "eliteChance": 0.18, "trapChanceDelta":  0.0 },
+    "Hostile":  { "enemyDensity": 1.4, "levelOffset":  1, "eliteChance": 0.28, "trapChanceDelta":  0.1 }
+  }
+}

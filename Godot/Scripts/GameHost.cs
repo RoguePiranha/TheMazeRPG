@@ -32,6 +32,10 @@ public partial class GameHost : Node
     private bool _startCharacter;
     private bool _startCharacterCustom;
     private bool _startSaves;
+    private bool _startWorlds;
+    private bool _startWorldCreation;
+    /// <summary>Whether the worlds screen is on the way to creating a character or picking one.</summary>
+    private bool _pendingNewCharacter;
     private bool _startCharacterSheet;
     private bool _startProgression;
     private bool _startOffers;
@@ -77,6 +81,14 @@ public partial class GameHost : Node
             ShowTitle();
             if (_startCodex) _ui.ShowCodex();
             if (_startSettings) _ui.ShowSettings(_clientSettings);
+        }
+        else if (_startWorlds)
+        {
+            ShowWorlds();
+        }
+        else if (_startWorldCreation)
+        {
+            _ui.ShowWorldCreation();
         }
         else if (_startSaves)
         {
@@ -165,7 +177,9 @@ public partial class GameHost : Node
             ShowTitle();
         }
 
-        GD.Print($"GODOT_SHELL_READY saves={SaveService.ListSaves().Count}");
+        // Counts worlds, not saves: listing saves resolves the active world scope, which would
+        // create an empty world just because the app launched.
+        GD.Print($"GODOT_SHELL_READY worlds={WorldService.ListWorlds().Count}");
     }
 
     public override void _Process(double delta)
@@ -429,12 +443,27 @@ public partial class GameHost : Node
 
     private void WireUi()
     {
+        // Both "new character" and "continue" go through the worlds screen first: a character only
+        // exists inside a world, so the world has to be chosen before either makes sense.
         _ui.NewGameRequested += () =>
         {
             _deathShown = false;
-            _ui.ShowCharacterCreation(new CharacterDataService());
+            _pendingNewCharacter = true;
+            ShowWorlds();
         };
-        _ui.ContinueRequested += ShowSaves;
+        _ui.ContinueRequested += () =>
+        {
+            _pendingNewCharacter = false;
+            ShowWorlds();
+        };
+        _ui.WorldSelected += EnterWorld;
+        _ui.WorldCreateRequested += (options, name) =>
+        {
+            WorldData world = WorldService.Create(options, name);
+            EnterWorld(world.WorldId);
+        };
+        _ui.WorldDeleteRequested += id => { WorldService.Delete(id); ShowWorlds(); };
+        _ui.BackToWorldsRequested += ShowWorlds;
         _ui.CharacterCreated += selection => StartNewGame(selection, persist: true);
         _ui.SaveLoadRequested += LoadGame;
         _ui.SaveDeleteRequested += id => { SaveService.Delete(id); ShowSaves(); };
@@ -500,7 +529,27 @@ public partial class GameHost : Node
         _deathShown = false;
         _gameState.IsRunning = false;
         _gameState.SetManualMoveIntent(0, 0);
-        _ui.ShowTitle(SaveService.HasAnySaves());
+        // Continue is offered when there's any world to continue in; whether it holds characters is
+        // the worlds screen's business to show.
+        _ui.ShowTitle(WorldService.HasAnyWorlds());
+    }
+
+    private void ShowWorlds() => _ui.ShowWorlds(WorldService.ListWorlds());
+
+    /// <summary>
+    /// Scope every subsequent save operation to the chosen world, then continue to whichever step
+    /// the player was heading for — creating a character or picking an existing one.
+    /// </summary>
+    private void EnterWorld(string worldId)
+    {
+        WorldService.ActiveWorldId = worldId;
+        if (_pendingNewCharacter)
+        {
+            _pendingNewCharacter = false;
+            _ui.ShowCharacterCreation(new CharacterDataService());
+            return;
+        }
+        ShowSaves();
     }
 
     private void ShowSaves() => _ui.ShowSaves(SaveService.ListSaves());
@@ -740,8 +789,16 @@ public partial class GameHost : Node
         string saveRoot = ProjectSettings.GlobalizePath("user://");
         MigrateLegacyProgress(contentRoot, saveRoot);
         GamePaths.Configure(contentRoot, saveRoot);
+        // Clears the pre-split Saves/Characters folder (owner ruling 2026-08-05: no save migration)
+        // and must run after the paths are configured so it targets the right save root.
+        WorldService.Initialize();
     }
 
+    /// <summary>
+    /// Brings the codex over from a working-directory-rooted install into user://. Character saves
+    /// are deliberately NOT copied: they predate the world layout and are removed by
+    /// WorldService.Initialize rather than carried forward.
+    /// </summary>
     private static void MigrateLegacyProgress(string contentRoot, string saveRoot)
     {
         try
@@ -755,16 +812,6 @@ public partial class GameHost : Node
             string targetCodex = Path.Combine(targetSaves, "codex.json");
             if (File.Exists(legacyCodex) && !File.Exists(targetCodex))
                 File.Copy(legacyCodex, targetCodex);
-
-            string legacyCharacters = Path.Combine(legacySaves, "Characters");
-            if (!Directory.Exists(legacyCharacters)) return;
-            string targetCharacters = Path.Combine(targetSaves, "Characters");
-            Directory.CreateDirectory(targetCharacters);
-            foreach (string source in Directory.EnumerateFiles(legacyCharacters, "*.json"))
-            {
-                string target = Path.Combine(targetCharacters, Path.GetFileName(source));
-                if (!File.Exists(target)) File.Copy(source, target);
-            }
         }
         catch (Exception exception)
         {
@@ -786,6 +833,8 @@ public partial class GameHost : Node
         _startCharacter = arguments.Any(value => value.Equals("--start-character", StringComparison.OrdinalIgnoreCase));
         _startCharacterCustom = arguments.Any(value => value.Equals("--start-character-custom", StringComparison.OrdinalIgnoreCase));
         _startSaves = arguments.Any(value => value.Equals("--start-saves", StringComparison.OrdinalIgnoreCase));
+        _startWorlds = arguments.Any(value => value.Equals("--start-worlds", StringComparison.OrdinalIgnoreCase));
+        _startWorldCreation = arguments.Any(value => value.Equals("--start-world-creation", StringComparison.OrdinalIgnoreCase));
         _startCharacterSheet = arguments.Any(value => value.Equals("--start-character-sheet", StringComparison.OrdinalIgnoreCase));
         _startProgression = arguments.Any(value => value.Equals("--start-progression", StringComparison.OrdinalIgnoreCase));
         _startOffers = arguments.Any(value => value.Equals("--start-offers", StringComparison.OrdinalIgnoreCase));

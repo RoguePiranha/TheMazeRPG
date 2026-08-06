@@ -54,6 +54,7 @@ public partial class GameUi : Control
 
     private readonly List<string> _raceNames = new();
     private readonly List<SaveSummary> _saveSummaries = new();
+    private readonly List<WorldSummary> _worldSummaries = new();
     private string? _pendingDeleteId;
 
     public bool IsModalOpen => _modal.Visible;
@@ -66,6 +67,13 @@ public partial class GameUi : Control
     public event Action<string>? SaveLoadRequested;
     public event Action<string>? SaveDeleteRequested;
     public event Action? BackToTitleRequested;
+
+    /// <summary>A world was chosen from the worlds screen — enter it and show its characters.</summary>
+    public event Action<string>? WorldSelected;
+    public event Action<WorldGenOptions, string>? WorldCreateRequested;
+    public event Action<string>? WorldDeleteRequested;
+    /// <summary>Back out of world creation to the worlds list.</summary>
+    public event Action? BackToWorldsRequested;
     public event Action? SaveRequested;
     public event Action? QuitToTitleRequested;
     public event Action? QuitToDesktopRequested;
@@ -277,10 +285,19 @@ public partial class GameUi : Control
         if (startCustom) BuildCustomMode();
         else BuildKitMode();
 
+        // Where they come into existence. Dungeon is the canonical opening (a newly-sentient being
+        // waking in the maze); Town starts them as a resident, with the dungeon a choice they make.
+        var origin = new OptionButton { CustomMinimumSize = new Vector2(0, 38) };
+        origin.AddThemeFontSizeOverride("font_size", 15);
+        origin.AddItem("The Dungeon — wake in the maze, no past", (int)StartLocation.Dungeon);
+        origin.AddItem("The Town — begin as a resident", (int)StartLocation.Town);
+        origin.Selected = 0;
+        body.AddChild(Labeled("ORIGIN", origin));
+
         var actions = ActionsRow();
         var back = CommandButton("BACK", Muted, 150);
-        back.Pressed += () => BackToTitleRequested?.Invoke();
-        var begin = CommandButton("BEGIN DIVE", Gold, 200);
+        back.Pressed += () => BackToWorldsRequested?.Invoke();
+        var begin = CommandButton("BEGIN", Gold, 200);
         begin.Pressed += () =>
         {
             string heroName = string.IsNullOrWhiteSpace(name.Text) ? "Wayfarer" : name.Text.Trim();
@@ -301,6 +318,7 @@ public partial class GameUi : Control
             else
                 selection = loadouts.SelectionFromKit(
                     heroName, raceName, loadouts.Catalog.Kits[selectedKitIndex].Id);
+            selection.StartLocation = (StartLocation)origin.GetItemId(Math.Max(0, origin.Selected));
             CharacterCreated?.Invoke(selection);
         };
         actions.AddChild(back);
@@ -377,6 +395,202 @@ public partial class GameUi : Control
         actions.AddChild(load);
         body.AddChild(actions);
         AddFrontPanel(body, new Vector2(740, 540));
+    }
+
+    /// <summary>
+    /// The worlds list — the step above characters. A world holds the generated region every
+    /// character in it shares, and it survives their deaths, so picking one comes before picking a
+    /// hero (owner rulings 2026-08-05).
+    /// </summary>
+    public void ShowWorlds(IReadOnlyList<WorldSummary> worlds)
+    {
+        CloseModal(false);
+        _hud.Visible = false;
+        _frontShade.Visible = true;
+        _frontEnd.Visible = true;
+        ClearChildren(_frontEnd);
+        _pendingDeleteId = null;
+        _worldSummaries.Clear();
+        _worldSummaries.AddRange(worlds);
+
+        var body = new VBoxContainer { CustomMinimumSize = new Vector2(680, 460) };
+        body.AddThemeConstantOverride("separation", 12);
+        body.AddChild(LabelOf("WORLDS", 28, Gold, HorizontalAlignment.Center));
+        body.AddChild(LabelOf("Characters live in a world. Worlds outlive them.", 13, Muted, HorizontalAlignment.Center));
+
+        var list = new ItemList
+        {
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            SelectMode = ItemList.SelectModeEnum.Single,
+            CustomMinimumSize = new Vector2(0, 280)
+        };
+        list.AddThemeFontSizeOverride("font_size", 16);
+        foreach (WorldSummary world in worlds)
+            list.AddItem($"{world.Name}     {world.DescriptionLine}     {world.PopulationLine}");
+        if (worlds.Count > 0) list.Select(0);
+        body.AddChild(list);
+
+        var status = LabelOf(worlds.Count == 0 ? "No worlds yet — create one to begin." : "",
+            13, Muted, HorizontalAlignment.Center);
+        body.AddChild(status);
+
+        var actions = ActionsRow();
+        var back = CommandButton("BACK", Muted, 130);
+        back.Pressed += () => BackToTitleRequested?.Invoke();
+        var create = CommandButton("NEW WORLD", Green, 175);
+        create.Pressed += () => ShowWorldCreation();
+        var delete = CommandButton("DELETE", Red, 150);
+        delete.Disabled = worlds.Count == 0;
+        var enter = CommandButton("ENTER", Blue, 150);
+        enter.Disabled = worlds.Count == 0;
+
+        enter.Pressed += () =>
+        {
+            int selected = SelectedIndex(list, -1);
+            if (selected >= 0) WorldSelected?.Invoke(_worldSummaries[selected].WorldId);
+        };
+        // Two-click confirm, the same idiom as deleting a character — deleting a world takes every
+        // character inside it, so it earns the extra beat.
+        delete.Pressed += () =>
+        {
+            int selected = SelectedIndex(list, -1);
+            if (selected < 0) return;
+            string id = _worldSummaries[selected].WorldId;
+            if (_pendingDeleteId == id)
+            {
+                WorldDeleteRequested?.Invoke(id);
+                return;
+            }
+            _pendingDeleteId = id;
+            delete.Text = "CONFIRM DELETE";
+            WorldSummary world = _worldSummaries[selected];
+            status.Text = $"Delete {world.Name} and its {world.LivingCharacters} character(s)? This cannot be undone.";
+        };
+        list.ItemSelected += _ =>
+        {
+            _pendingDeleteId = null;
+            delete.Text = "DELETE";
+            status.Text = "";
+        };
+
+        actions.AddChild(back);
+        actions.AddChild(create);
+        actions.AddChild(delete);
+        actions.AddChild(enter);
+        body.AddChild(actions);
+        AddFrontPanel(body, new Vector2(760, 560));
+    }
+
+    /// <summary>
+    /// World creation: the options a world is generated from (owner ruling 2026-08-05). The seed is
+    /// shown and editable so worlds can be shared. Deliberately no resource-richness knob —
+    /// abundance comes from the region's environment, not a slider.
+    /// </summary>
+    public void ShowWorldCreation()
+    {
+        CloseModal(false);
+        _hud.Visible = false;
+        _frontShade.Visible = true;
+        _frontEnd.Visible = true;
+        ClearChildren(_frontEnd);
+
+        var body = new VBoxContainer { CustomMinimumSize = new Vector2(760, 0) };
+        body.AddThemeConstantOverride("separation", 10);
+        body.AddChild(LabelOf("CREATE WORLD", 28, Gold, HorizontalAlignment.Center));
+
+        var name = new LineEdit
+        {
+            Text = "Origins",
+            PlaceholderText = "World name",
+            MaxLength = 28,
+            CustomMinimumSize = new Vector2(0, 42)
+        };
+        name.AddThemeFontSizeOverride("font_size", 16);
+        body.AddChild(Labeled("NAME", name));
+
+        var seed = new LineEdit
+        {
+            Text = new Random().Next().ToString(),
+            PlaceholderText = "Seed",
+            MaxLength = 12,
+            CustomMinimumSize = new Vector2(0, 42)
+        };
+        seed.AddThemeFontSizeOverride("font_size", 16);
+        body.AddChild(Labeled("SEED", seed));
+
+        var sizeNames = Enum.GetNames<WorldSize>().ToList();
+        var sizeList = SelectionList(sizeNames, out VBoxContainer sizeColumn, "WORLD SIZE");
+        var sizeDetail = DetailLabel(76);
+        sizeColumn.AddChild(sizeDetail);
+
+        var hostilityNames = Enum.GetNames<Hostility>().ToList();
+        var hostilityList = SelectionList(hostilityNames, out VBoxContainer hostilityColumn, "HOSTILITY");
+        var hostilityDetail = DetailLabel(76);
+        hostilityColumn.AddChild(hostilityDetail);
+
+        // SelectionList sizes itself for a long roster (the race list); these hold three options
+        // each, so stop them expanding or the detail text is flung to the bottom of the panel.
+        foreach (ItemList list in new[] { sizeList, hostilityList })
+        {
+            list.SizeFlagsVertical = SizeFlags.Fill;
+            list.CustomMinimumSize = new Vector2(340, 104);
+        }
+
+        var columns = new HBoxContainer();
+        columns.AddThemeConstantOverride("separation", 16);
+        sizeColumn.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        hostilityColumn.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        columns.AddChild(sizeColumn);
+        columns.AddChild(hostilityColumn);
+        body.AddChild(columns);
+        body.AddChild(Spacer(8));
+
+        void UpdateSize(int index)
+        {
+            var profile = WorldService.ResolveProfile(new WorldGenOptions { Size = Enum.Parse<WorldSize>(sizeNames[index]) });
+            sizeDetail.Text =
+                $"Region {profile.Size.RegionWidth}x{profile.Size.RegionHeight}, about {profile.Size.Population} residents.\n" +
+                "Scales the region, not the number of towns.";
+        }
+
+        void UpdateHostility(int index)
+        {
+            var profile = WorldService.ResolveProfile(new WorldGenOptions { Hostility = Enum.Parse<Hostility>(hostilityNames[index]) });
+            hostilityDetail.Text =
+                $"Enemy density x{profile.EnemyDensity:0.0}, levels {profile.LevelOffset:+0;-0;+0}, " +
+                $"elites {profile.EliteChance:P0}.";
+        }
+
+        sizeList.ItemSelected += index => UpdateSize((int)index);
+        hostilityList.ItemSelected += index => UpdateHostility((int)index);
+        int defaultSize = Math.Max(0, sizeNames.IndexOf(nameof(WorldSize.Medium)));
+        int defaultHostility = Math.Max(0, hostilityNames.IndexOf(nameof(Hostility.Normal)));
+        sizeList.Select(defaultSize);
+        hostilityList.Select(defaultHostility);
+        UpdateSize(defaultSize);
+        UpdateHostility(defaultHostility);
+
+        var actions = ActionsRow();
+        var back = CommandButton("BACK", Muted, 130);
+        back.Pressed += () => BackToWorldsRequested?.Invoke();
+        var create = CommandButton("CREATE", Green, 175);
+        create.Pressed += () =>
+        {
+            var options = new WorldGenOptions
+            {
+                // A non-numeric or empty seed field falls back to a random one rather than 0, so a
+                // stray keystroke can't quietly funnel every world onto the same seed.
+                Seed = int.TryParse(seed.Text.Trim(), out int parsed) ? parsed : new Random().Next(),
+                Size = Enum.Parse<WorldSize>(sizeNames[Math.Max(0, SelectedIndex(sizeList, defaultSize))]),
+                Hostility = Enum.Parse<Hostility>(hostilityNames[Math.Max(0, SelectedIndex(hostilityList, defaultHostility))])
+            };
+            WorldCreateRequested?.Invoke(options, name.Text.Trim());
+        };
+        actions.AddChild(back);
+        actions.AddChild(create);
+        body.AddChild(actions);
+
+        AddFrontPanel(body, new Vector2(820, 520));
     }
 
     public void ShowGame(GameState state)

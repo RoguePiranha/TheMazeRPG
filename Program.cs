@@ -1,7 +1,9 @@
 ﻿using Avalonia;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text.Json;
 using TheMazeRPG.Core.Models;
 using TheMazeRPG.Core.Services;
 using TheMazeRPG.Core.Systems;
@@ -16,6 +18,10 @@ sealed class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // Clears the pre-split Saves/Characters folder (owner ruling 2026-08-05: no save migration).
+        // Runs before anything can touch a save, demos included.
+        WorldService.Initialize();
+
         // If TEST_SIM is set, run headless simulation for testing and exit
         var testSim = Environment.GetEnvironmentVariable("TEST_SIM");
         if (!string.IsNullOrEmpty(testSim) && testSim == "1")
@@ -193,7 +199,203 @@ sealed class Program
             return;
         }
 
+        // If TEST_WORLD is set, verify the world layer — creation, the world/character save split,
+        // hostility profiles, legacy records on death, and start-location choice — and exit
+        if (Environment.GetEnvironmentVariable("TEST_WORLD") == "1")
+        {
+            RunWorldDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+
+    private static void Expect(bool condition, string what)
+    {
+        Console.WriteLine($"  {(condition ? "ok  " : "FAIL")} {what}");
+        if (!condition) throw new InvalidOperationException($"TEST_WORLD assertion failed: {what}");
+    }
+
+    // Debug/test entrypoint: if TEST_WORLD=1 is set, verify the world layer and exit.
+    // Covers: world creation + folder structure, generation determinism, the world/character save
+    // split (two characters coexisting in one world), permadeath writing a legacy record while
+    // leaving the world intact, hostility profiles actually reaching spawn counts, the pre-split
+    // save purge, and start-location choice.
+    public static void RunWorldDemo()
+    {
+        Console.WriteLine("=== World creation, save split, and legacy ===");
+
+        // The demos share one process and each GameState save resolves the active world scope, so
+        // start from a known-clean scope rather than whatever a previous demo left behind.
+        WorldService.ResetCachesForTesting();
+
+        // Every world this demo makes gets removed at the end — otherwise repeated runs silt the
+        // save tree up with probe worlds full of dead test characters.
+        var scratchWorlds = new List<string>();
+
+        // --- 1. Creation + folder structure ---
+        Console.WriteLine("\n-- Creation --");
+        var options = new WorldGenOptions { Seed = 4242, Size = WorldSize.Small, Hostility = Hostility.Normal };
+        var world = WorldService.Create(options, "Testholm");
+        scratchWorlds.Add(world.WorldId);
+        string worldDir = WorldService.WorldDirectory(world.WorldId);
+        Expect(File.Exists(Path.Combine(worldDir, "world.json")), "world.json written");
+        Expect(File.Exists(Path.Combine(worldDir, "delta.json")), "delta.json written");
+        Expect(Directory.Exists(Path.Combine(worldDir, "Characters")), "Characters/ created");
+        Expect(world.EffectiveSeed == 4242, $"effective seed recorded ({world.EffectiveSeed})");
+
+        // --- 2. Determinism: identical options produce an identical generation payload ---
+        // Identity fields (world id, name, creation timestamp) differ by design, so the comparison
+        // is over the recipe and its result — which is what PR 6's generated map extends.
+        Console.WriteLine("\n-- Determinism --");
+        var twin = WorldService.Create(options, "Testholm");
+        string PayloadOf(WorldData data) => JsonSerializer.Serialize(new { data.Options, data.EffectiveSeed });
+        Expect(PayloadOf(world) == PayloadOf(twin), "same options → identical generation payload");
+        Expect(world.WorldId != twin.WorldId, "but distinct world ids");
+        WorldService.Delete(twin.WorldId);
+
+        // --- 3. Two characters coexist inside one world ---
+        Console.WriteLine("\n-- Two characters, one world --");
+        WorldService.ActiveWorldId = world.WorldId;
+        var alice = new GameState(11, "Alice", "Warrior", "Human") { IsRunning = true };
+        alice.Hero.Gold = 30;
+        SaveService.Save(alice);
+        var bob = new GameState(12, "Bob", "Mage Apprentice", "Elf") { IsRunning = true };
+        SaveService.Save(bob);
+
+        Expect(alice.WorldId == world.WorldId && bob.WorldId == world.WorldId, "both characters carry the world id");
+        var slots = SaveService.ListSaves();
+        Expect(slots.Count == 2, $"world lists 2 characters ({slots.Count})");
+        Expect(slots.All(s => File.Exists(Path.Combine(worldDir, "Characters", $"{s.SaveId}.json"))),
+            "both character files sit inside the world folder");
+        var summary = WorldService.ListWorlds().Single(w => w.WorldId == world.WorldId);
+        Expect(summary.LivingCharacters == 2, $"worlds picker counts 2 living ({summary.LivingCharacters})");
+
+        // --- 4. Permadeath: character deleted, world remembers ---
+        Console.WriteLine("\n-- Permadeath writes a legacy record --");
+        alice.Hero.Kills = 7;
+        string aliceSaveId = alice.SaveId;
+        int aliceFloor = alice.CurrentFloor;
+        alice.Hero.CurrentHp = 0;
+        alice.Tick(); // the death tick: records the legacy, then deletes the slot
+
+        Expect(alice.IsHeroDead, "hero registered dead");
+        Expect(SaveService.Load(aliceSaveId) == null, "character file deleted (permadeath)");
+        Expect(File.Exists(Path.Combine(worldDir, "world.json")), "world survives the death");
+
+        var delta = WorldService.LoadDelta(world.WorldId);
+        Expect(delta.FallenHeroes.Count == 1, $"one fallen hero recorded ({delta.FallenHeroes.Count})");
+        var fallen = delta.FallenHeroes[0];
+        Console.WriteLine($"     legacy: {fallen.SummaryLine}");
+        Expect(fallen.Name == "Alice", "legacy name correct");
+        Expect(fallen.Race == "Human" && fallen.Class == "Warrior", "legacy race/class correct");
+        Expect(fallen.Kills == 7, $"legacy kill count correct ({fallen.Kills})");
+        Expect(fallen.Gold == 30, $"legacy gold correct ({fallen.Gold})");
+        Expect(fallen.DeathLocation == $"the Dungeon, floor {aliceFloor}",
+            $"legacy death location correct ({fallen.DeathLocation})");
+        Expect(fallen.DaysLived >= 1, $"legacy days lived recorded ({fallen.DaysLived})");
+        Expect(fallen.InnocentKills == 0, "innocent kills 0 until NPCs exist");
+
+        // --- 5. Character B still loads out of the same world afterwards ---
+        Console.WriteLine("\n-- The surviving character is unaffected --");
+        var bobData = SaveService.Load(bob.SaveId);
+        Expect(bobData != null, "surviving character still loads");
+        Expect(bobData!.WorldId == world.WorldId, "and still belongs to the world");
+        Expect(SaveService.ListSaves().Count == 1, "world now lists 1 character");
+        Expect(WorldService.ListWorlds().Single(w => w.WorldId == world.WorldId).FallenCharacters == 1,
+            "worlds picker counts 1 fallen");
+
+        // --- 6. Cause of death from a real killing blow ---
+        Console.WriteLine("\n-- Cause of death names the killer --");
+        var victim = new GameState(77, "Victim", "Warrior", "Human") { IsRunning = true };
+        var killer = victim.Enemies.FirstOrDefault();
+        if (killer != null)
+        {
+            // Stand next to a real enemy with 1 HP and let its attack land, so the cause of death
+            // comes from the projectile's own attribution rather than a hand-set string.
+            victim.Hero.X = killer.X + 0.6f;
+            victim.Hero.Y = killer.Y;
+            victim.Hero.CurrentHp = 1;
+            for (int t = 0; t < 400 && !victim.IsHeroDead; t++) victim.Tick();
+
+            var victimDelta = WorldService.LoadDelta(victim.WorldId);
+            var victimRecord = victimDelta.FallenHeroes.LastOrDefault(h => h.Name == "Victim");
+            Expect(victimRecord != null, "victim recorded in the world delta");
+            Console.WriteLine($"     cause: {victimRecord!.CauseOfDeath}");
+            Expect(victimRecord.CauseOfDeath.StartsWith("slain by", StringComparison.Ordinal),
+                "cause of death attributes a killer");
+        }
+        else Console.WriteLine("  (skipped: floor 1 spawned no enemies)");
+
+        // --- 7. Hostility profiles actually reach the game ---
+        Console.WriteLine("\n-- Hostility profiles apply --");
+        var peaceful = WorldService.ResolveProfile(new WorldGenOptions { Hostility = Hostility.Peaceful });
+        var hostile = WorldService.ResolveProfile(new WorldGenOptions { Hostility = Hostility.Hostile });
+        Expect(peaceful.EnemyDensity < 1f && hostile.EnemyDensity > 1f, "density multipliers straddle 1.0");
+        Expect(peaceful.EliteChance < hostile.EliteChance, "elite chance rises with hostility");
+
+        int peacefulSpawns = CountSpawnsUnder(Hostility.Peaceful);
+        int hostileSpawns = CountSpawnsUnder(Hostility.Hostile);
+        Console.WriteLine($"     floor-5 spawns over 10 seeds — Peaceful {peacefulSpawns}, Hostile {hostileSpawns}");
+        Expect(hostileSpawns > peacefulSpawns, "a Hostile world really does spawn more enemies");
+
+        // Level bands shift too, and never fall below level 1 on shallow Peaceful floors.
+        var quiet = WorldService.Create(new WorldGenOptions { Seed = 5, Hostility = Hostility.Peaceful }, "Quiet");
+        scratchWorlds.Add(quiet.WorldId);
+        WorldService.ActiveWorldId = quiet.WorldId;
+        var (peacefulMin, _) = EnemyFactory.LevelRange(1);
+        Expect(peacefulMin >= 1, $"Peaceful floor 1 still spawns level >= 1 ({peacefulMin})");
+
+        // --- 8. Start location ---
+        Console.WriteLine("\n-- Start location --");
+        var townborn = new GameState(21, new CharacterCreationSelection
+        {
+            Name = "Townie",
+            RaceName = "Human",
+            StartLocation = StartLocation.Town
+        });
+        Expect(townborn.IsInOverworld, "a Town-origin character begins in the town");
+        Expect(townborn.CurrentFloor == 0, $"and has never been down ({townborn.CurrentFloor})");
+
+        var dungeonborn = new GameState(22, new CharacterCreationSelection
+        {
+            Name = "Delver",
+            RaceName = "Human",
+            StartLocation = StartLocation.Dungeon
+        });
+        Expect(!dungeonborn.IsInOverworld, "a Dungeon-origin character begins in the dungeon");
+        Expect(dungeonborn.CurrentFloor == 1, $"on floor 1 ({dungeonborn.CurrentFloor})");
+
+        // --- 9. The pre-split save folder is gone ---
+        Console.WriteLine("\n-- Pre-split saves purged --");
+        Expect(!Directory.Exists(GamePaths.Save("Saves", "Characters")),
+            "legacy Saves/Characters/ no longer exists");
+
+        // --- Cleanup: deleting a world takes its characters and delta with it ---
+        Console.WriteLine("\n-- Cleanup --");
+        foreach (string id in scratchWorlds) WorldService.Delete(id);
+        Expect(scratchWorlds.All(id => !Directory.Exists(WorldService.WorldDirectory(id))),
+            $"all {scratchWorlds.Count} scratch world(s) removed");
+
+        Console.WriteLine("\nPASS: world creation, determinism, save split, permadeath legacy, " +
+                          "hostility profiles, start location, and the legacy purge all verified.");
+    }
+
+    /// <summary>Total enemies generated across 10 floor-5 dives in a world of the given hostility —
+    /// enough samples that the density multiplier dominates per-seed variation.</summary>
+    private static int CountSpawnsUnder(Hostility hostility)
+    {
+        var world = WorldService.Create(new WorldGenOptions { Seed = 900, Hostility = hostility }, $"Probe-{hostility}");
+        WorldService.ActiveWorldId = world.WorldId;
+        int total = 0;
+        for (int seed = 1; seed <= 10; seed++)
+        {
+            var probe = new GameState(seed, "Probe", "Warrior", "Human");
+            probe.ExecuteDebugCommand("moveplayer dungeon 5");
+            total += probe.Enemies.Count;
+        }
+        WorldService.Delete(world.WorldId);
+        return total;
     }
 
     // Debug/test entrypoint: verify the ruled damage pipeline — weapon × stats × proficiency ×
@@ -2192,7 +2394,8 @@ sealed class Program
 
         SaveService.Save(game);
         SaveData? saved = SaveService.Load(game.SaveId);
-        Require(saved?.CreationSelection is { KitId: "soldier" } && saved.Version == 4,
+        // Version 5 added the world split (SaveData.WorldId) and the per-character kill count.
+        Require(saved?.CreationSelection is { KitId: "soldier" } && saved.Version == 5,
             "Equipment-first creation choices were not persisted.");
         GameState restored = GameState.FromSave(913, saved!);
         Require(restored.Hero.Class == "Warrior" && restored.Hero.Progression.CharacterLevel == 1 &&

@@ -439,6 +439,9 @@ public class CombatSystem
             Speed = speed,
             Type = animation,
             AttackName = atk?.Name ?? "Enemy Attack",
+            // Same "{Race} {Class}" identity the Codex bestiary uses, so a death reads
+            // "slain by a Goblin Mage".
+            SourceLabel = $"{enemy.Race} {enemy.Class}".Trim(),
             Visual = atk != null ? AttackVisuals.For(atk) : VisualStyle.Blade,
             Element = atk != null ? MagicElements.For(atk) : MagicElement.None,
             Accuracy = enemy.Dexterity,

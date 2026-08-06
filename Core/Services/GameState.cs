@@ -922,12 +922,47 @@ public class GameState
         if (Hero.IsAlive || IsHeroDead) return;
 
         Hero.CurrentHp = 0;
+        HandleHeroDeath();
+    }
+
+    /// <summary>
+    /// The single death path, shared by the real-time and turn-based loops (they detect the death
+    /// tick differently but must handle it identically). Permadeath destroys the character's save
+    /// slot — but the world records that they lived first, because character death never deletes the
+    /// world (owner ruling 2026-08-05).
+    /// </summary>
+    private void HandleHeroDeath()
+    {
         IsHeroDead = true;
         DeathTimer = 0;
         CodexService.Instance.RecordDeath(CurrentFloor);
         LogMessage($"{Hero.Name} has died on floor {CurrentFloor}.", MessageKind.Warning);
+
+        WorldService.RecordFallenHero(WorldId, BuildLegacyRecord());
         SaveService.Delete(SaveId);
     }
+
+    /// <summary>The fallen hero as the world will remember them (see LegacyHero).</summary>
+    private LegacyHero BuildLegacyRecord() => new()
+    {
+        Name = Hero.Name,
+        Race = Hero.Race,
+        Class = Hero.Class,
+        Level = Hero.Progression.CharacterLevel,
+        // Lifetime levels arrive with PR 1's XP rework; current level is the best stand-in.
+        TotalLevelsGained = Hero.Progression.CharacterLevel,
+        DaysLived = Clock.Day,
+        CauseOfDeath = string.IsNullOrEmpty(_lastHeroDamageSource)
+            ? "died of unknown causes"
+            : $"slain by {_lastHeroDamageSource}",
+        DeathLocation = IsInOverworld ? "the town"
+            : IsInSafeRoom ? $"a safe room below floor {CurrentFloor}"
+            : $"the Dungeon, floor {CurrentFloor}",
+        Kills = Hero.Kills,
+        InnocentKills = 0, // no NPCs to murder yet (PR 8)
+        Gold = Hero.Gold,
+        DiedAtUtc = DateTime.UtcNow
+    };
 
     private void ApplyPendingGuardianVictory()
     {
@@ -1300,11 +1335,29 @@ public class GameState
     public int CurrentFloor { get; private set; } = 0;
     public bool IsRunning { get; set; }
 
-    /// <summary>Identifies this character's save slot (Saves/{SaveId}.json) — generated fresh for
-    /// a new character, or restored from the loaded SaveData in LoadFrom so re-saving overwrites
-    /// the same file rather than multiplying save slots.</summary>
+    /// <summary>Identifies this character's save slot (Saves/Worlds/{WorldId}/Characters/{SaveId}.json)
+    /// — generated fresh for a new character, or restored from the loaded SaveData in LoadFrom so
+    /// re-saving overwrites the same file rather than multiplying save slots.</summary>
     public string SaveId { get; private set; } = Guid.NewGuid().ToString();
+
+    private string _worldId = "";
+
+    /// <summary>
+    /// The world this character lives in. Resolved lazily — on first read, which is whenever the
+    /// character first needs persisting (a save, or the legacy record on death) — rather than at
+    /// construction, so merely building a GameState (the Godot client's title-screen preview state,
+    /// a diagnostic screen) doesn't conjure a world the player never asked for. Restored from the
+    /// save on load; a character never changes worlds.
+    /// </summary>
+    public string WorldId => string.IsNullOrEmpty(_worldId)
+        ? _worldId = WorldService.EnsureActiveWorld()
+        : _worldId;
     public CharacterCreationSelection? CreationSelection => _creationSelection?.Clone();
+
+    // What last hurt the hero, as a display string, so their legacy record can say how they died.
+    // Recorded at each damage site because the killing blow itself carries no attribution: an
+    // enemy projectile outlives its shooter, and hazards have no actor at all.
+    private string _lastHeroDamageSource = "";
 
     // Playtime accumulated in prior sessions (from a loaded save); TotalPlaytimeSeconds adds the
     // current session's elapsed ticks on top so it stays accurate without a per-tick save write.
@@ -1357,6 +1410,8 @@ public class GameState
         _characterName = characterName;
         _className = className;
         _raceName = raceName;
+        // Characters exist inside a world, but WorldId resolves lazily — see the property.
+        _worldId = WorldService.ActiveWorldId ?? "";
 
         // Derive all real-time durations from the authoritative tick rate.
         _ticksPerSecond = Math.Max(1, GameSettings.Current.TickRate);
@@ -1448,6 +1503,9 @@ public class GameState
         Hero.CurrentMana = Hero.MaxMana;
         Hero.CurrentFaith = Hero.MaxFaith;
         RefreshAttacks();
+
+        // The base constructor always opened a floor-1 dive; a town-born character is redirected.
+        if (creation.StartLocation == StartLocation.Town) StartInTown();
     }
 
     public static GameState FromSave(int seed, SaveData data)
@@ -1471,17 +1529,10 @@ public class GameState
             if (ScreenShake < 0.1f) ScreenShake = 0f;
         }
 
-        // Check if hero died this tick
+        // Check if hero died this tick. Permadeath destroys the save slot (after the world records
+        // the fallen hero) — see HandleHeroDeath. The game stops but keeps ticking for the timer.
         if (!Hero.IsAlive && !IsHeroDead)
-        {
-            IsHeroDead = true;
-            DeathTimer = 0;
-            CodexService.Instance.RecordDeath(CurrentFloor);
-            LogMessage($"{Hero.Name} has died on floor {CurrentFloor}.", MessageKind.Warning);
-            // Permadeath: death destroys this hero's save slot — no reloading out of it.
-            SaveService.Delete(SaveId);
-            // Stop the game but keep ticking for the timer
-        }
+            HandleHeroDeath();
         
         // Handle death timer and auto-restart
         if (IsHeroDead)
@@ -2260,6 +2311,8 @@ public class GameState
 
                     int heroHit = Math.Max(1, p.Damage);
                     Hero.CurrentHp -= heroHit;
+                    _lastHeroDamageSource = string.IsNullOrEmpty(p.SourceLabel)
+                        ? "an unseen attacker" : $"a {p.SourceLabel}";
                     AddFloatingText(heroHit.ToString(), Hero.X, Hero.Y - 0.4f, FloatingTextKind.HeroDamage);
                     // Screen shake scales with the hit's severity relative to max HP, capped modestly.
                     ScreenShake = MathF.Max(ScreenShake, MathF.Min(5f, (p.Damage / (float)Hero.MaxHp) * 45f));
@@ -2301,6 +2354,7 @@ public class GameState
     /// </summary>
     private void HandleEnemyDefeated(Enemy enemy)
     {
+        Hero.Kills++; // this character's own tally, for the legacy record they leave behind
         int xpGain = (int)((10 + enemy.MaxHp / 4) * enemy.XpMultiplier);
         // Merge resolution: remote's shared-XP progression path wins (XP banks for player
         // allocation), with the local level-up feedback kept — it fires whenever allocation
@@ -2905,6 +2959,7 @@ public class GameState
     {
         int damage = 8 + CurrentFloor * 2;
         Hero.CurrentHp = Math.Max(0, Hero.CurrentHp - damage);
+        _lastHeroDamageSource = "a trap";
         ScreenShake = MathF.Max(ScreenShake, 4f);
         HitEffects.Add(new HitEffect
         {
@@ -3014,6 +3069,7 @@ public class GameState
     private void ApplyThemeHazard(DungeonThemeFeature feature, int damage, string message)
     {
         Hero.CurrentHp = Math.Max(0, Hero.CurrentHp - damage);
+        _lastHeroDamageSource = ThemeHazardDeathCause(feature.Type);
         ScreenShake = MathF.Max(ScreenShake, 4f);
         HitEffects.Add(new HitEffect
         {
@@ -3026,6 +3082,18 @@ public class GameState
         });
         LogMessage($"{message} -{damage} HP", MessageKind.Warning);
     }
+
+    /// <summary>How a theme hazard reads in a legacy record's cause of death.</summary>
+    private static string ThemeHazardDeathCause(DungeonThemeFeatureType type) => type switch
+    {
+        DungeonThemeFeatureType.CastleAlarm => "a castle alarm's defences",
+        DungeonThemeFeatureType.SewerRunoff => "toxic sewer runoff",
+        DungeonThemeFeatureType.RestlessGrave => "a restless grave",
+        DungeonThemeFeatureType.ArcaneWard => "an arcane ward",
+        DungeonThemeFeatureType.HeatVent => "a forge heat vent",
+        DungeonThemeFeatureType.HideoutTripwire => "a hideout tripwire",
+        _ => "the dungeon itself"
+    };
 
     /// <summary>
     /// Each tick, give the hero a Wisdom-based chance to notice nearby hidden traps (within
@@ -3198,6 +3266,7 @@ public class GameState
         chest.ChestTrapDetected = true;
         int damage = 8 + CurrentFloor * 2;
         Hero.CurrentHp = Math.Max(0, Hero.CurrentHp - damage);
+        _lastHeroDamageSource = "a chest trap";
         ScreenShake = MathF.Max(ScreenShake, 4f);
         LogMessage($"The chest trap hits you for {damage} damage!", MessageKind.Warning);
     }
@@ -3411,17 +3480,48 @@ public class GameState
         HitEffects.Clear();
         StairsLocation = null;
 
-        IsInOverworld = true;
-        NearbyInteractable = null;
-        ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
-        CurrentMaze = OverworldGenerator.Generate();
-        PlaceHeroAtOverworldArrival();
+        EnterTown();
         LogMessage("You emerge into the town by the dungeon mouth. Progress saved.", MessageKind.System);
 
         // Auto-save checkpoint: the hero just survived leaving the dungeon, bank that progress
         // to disk. There's no player-driven "Save" action yet (no input system at all), so this
         // is the natural automatic checkpoint until one exists.
         SaveService.Save(this);
+    }
+
+    /// <summary>
+    /// Put the hero in the town: the shared body of arriving there, whichever way they came.
+    /// Used by the shrine hand-off (EnterOverworld), an Overworld-resume load, and a character who
+    /// chose StartLocation.Town at creation.
+    /// </summary>
+    private void EnterTown()
+    {
+        IsInOverworld = true;
+        NearbyInteractable = null;
+        ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
+        CurrentMaze = OverworldGenerator.Generate();
+        PlaceHeroAtOverworldArrival();
+    }
+
+    /// <summary>
+    /// A character created with StartLocation.Town begins as a resident rather than a newly-sentient
+    /// being in the dungeon. Called right after construction (which always builds a floor-1 dive, the
+    /// canonical opening) to redirect them into the town instead — the dungeon is then somewhere they
+    /// choose to go, via the entrance's Press-E.
+    /// </summary>
+    public void StartInTown()
+    {
+        Enemies.Clear();
+        Projectiles.Clear();
+        HitEffects.Clear();
+        Boss = null;
+        StairsLocation = null;
+        IsInSafeRoom = false;
+        CurrentFloor = 0; // they've never been down; a fresh dive still starts at floor 1
+
+        EnterTown();
+        Messages.Clear(); // drop StartNewFloor's "you descend" opener — it never happened
+        LogMessage($"{Hero.Name} wakes in the town beside the dungeon mouth.", MessageKind.System);
     }
 
     /// <summary>
@@ -3432,6 +3532,9 @@ public class GameState
     public void LoadFrom(SaveData data)
     {
         SaveId = data.SaveId;
+        // Older saves predate the world layout; the active scope they were just loaded from is the
+        // correct answer for them, which the lazy resolve supplies.
+        if (!string.IsNullOrEmpty(data.WorldId)) _worldId = data.WorldId;
         _priorPlaytimeSeconds = data.PlaytimeSeconds;
         _characterName = data.HeroName;
         _className = data.ClassName;
@@ -3466,6 +3569,7 @@ public class GameState
             data.ClassName, data.Level, data.Experience);
         ProgressionService.Instance.Normalize(Hero);
         Hero.Gold = data.Gold;
+        Hero.Kills = data.Kills;
         Hero.Resources = new Dictionary<string, int>(data.Resources);
         Hero.Loadout = new List<Combinable>(data.Loadout
             .Where(item => item is Spell && !LegacyClassActionIds.Contains(item.Id)));
@@ -3503,11 +3607,7 @@ public class GameState
         }
         else
         {
-            IsInOverworld = true;
-            NearbyInteractable = null;
-            ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
-            CurrentMaze = OverworldGenerator.Generate();
-            PlaceHeroAtOverworldArrival();
+            EnterTown();
         }
     }
 
@@ -4198,7 +4298,8 @@ public class GameState
         _manualMoveY = 0f;
         _dashTicksRemaining = 0;
         _dashCooldownRemaining = 0;
-        
+        _lastHeroDamageSource = ""; // a new hero doesn't inherit the last one's cause of death
+
         // Reset game state (StartNewFloor increments CurrentFloor to 1 for the first floor)
         TickCount = 0;
         CurrentFloor = 0;
@@ -4255,7 +4356,10 @@ public class GameState
 
         // Start new floor
         StartNewFloor();
-        
+
+        // A town-born character's replacement is also town-born (same creation choices).
+        if (_creationSelection?.StartLocation == StartLocation.Town) StartInTown();
+
         IsRunning = true;
     }
     
@@ -4306,7 +4410,9 @@ public class GameState
         Boss = null;
         IsInSafeRoom = false;
         StairsLocation = null;
-        int enemyCount = 3 + CurrentFloor;
+        // Scaled by the active world's hostility profile (Peaceful ×0.7 / Hostile ×1.4); never
+        // empties a floor, so even a Peaceful world's shallowest floor still has something in it.
+        int enemyCount = Math.Max(1, (int)MathF.Round((3 + CurrentFloor) * WorldService.Profile.EnemyDensity));
 
         // Place stairs in the generated exit room, then favor its most distant cells. The BFS
         // fallback keeps this compatible with any older/non-semantic maze implementation.
@@ -4351,8 +4457,10 @@ public class GameState
                 floorChest.Inventory.Add(LootService.Roll(CurrentFloor, _random));
             CurrentMaze.Features.Add(floorChest);
         }
-        // Occasionally place a trap (environmental hazard, not every floor)
-        if (emptyCells.Count > 0 && _random.NextDouble() < 0.4)
+        // Occasionally place a trap (environmental hazard, not every floor). The base 0.4 chance is
+        // shifted by the active world's hostility profile (Peaceful -0.1 / Hostile +0.1).
+        float trapChance = Math.Clamp(0.4f + WorldService.Profile.TrapChanceDelta, 0f, 1f);
+        if (emptyCells.Count > 0 && _random.NextDouble() < trapChance)
         {
             var trapCell = TakeRoomAwareCell(emptyCells, DungeonRoomRole.Hazard);
             // Hidden: nearly invisible until the hero notices it (a Wisdom spot roll) or examines it.

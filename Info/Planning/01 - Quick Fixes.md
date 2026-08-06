@@ -20,6 +20,7 @@ Four small items, one PR. All are bug/gap closures found in the 2026-08-04 audit
 **Defect:** `SaveData.cs` has no affinity field; `Hero.Affinities` (grow-with-use, AffinityService.cs:135-154) resets to the class/race seed on every load.
 
 **Fix:**
+
 - `SaveData.Affinities : Dictionary<string, float>?` (string keys = `MagicElement` names, JSON-friendly, null for old saves).
 - `SaveService.Save`: copy from `Hero.Affinities`.
 - `GameState.LoadFrom` (GameState.cs:1672+): if null → keep the freshly-seeded values (old-save behavior is correct already); else overwrite wholesale.

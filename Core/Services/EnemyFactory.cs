@@ -37,8 +37,9 @@ public static class EnemyFactory
         ["Warrior"] = 1,
     };
 
-    // Chance a regular spawn rolls as Elite instead of Basic.
-    private const float EliteChance = 0.18f;
+    // Chance a regular spawn rolls as Elite instead of Basic. Comes from the active world's
+    // hostility profile (Peaceful 0.10 / Normal 0.18 / Hostile 0.28) — see Data/Config/worldgen.json.
+    private static float EliteChance => WorldService.Profile.EliteChance;
 
     // HP multiplier and visual radius by tier. Boss values match the original hand-tuned boss.
     private static float TierHpMultiplier(EnemyTier tier) => tier switch
@@ -63,8 +64,14 @@ public static class EnemyFactory
         _ => 1.0f
     };
 
-    /// <summary>Level range for regular enemies on a floor. Boss uses the top of this + 1.</summary>
-    public static (int min, int max) LevelRange(int floor) => (floor, floor + 2);
+    /// <summary>Level range for regular enemies on a floor. Boss uses the top of this + 1. Shifted
+    /// by the active world's hostility profile (Peaceful -1 / Hostile +1), clamped so a Peaceful
+    /// floor 1 still spawns level-1 enemies rather than level 0.</summary>
+    public static (int min, int max) LevelRange(int floor)
+    {
+        int offset = WorldService.Profile.LevelOffset;
+        return (Math.Max(1, floor + offset), Math.Max(1, floor + 2 + offset));
+    }
 
     /// <summary>A random regular enemy for a floor (weighted class, random race, random level in range,
     /// small chance to roll Elite).</summary>

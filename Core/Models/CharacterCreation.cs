@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace TheMazeRPG.Core.Models;
 
@@ -12,13 +13,20 @@ public class CharacterCreationSelection
     public bool IsCustom { get; set; }
     public List<string> ItemIds { get; set; } = new();
 
+    /// <summary>Where this character comes into existence. Dungeon by default, which is the
+    /// canonical opening — see StartLocation. Saves predating the field deserialize to Dungeon,
+    /// which is what they did.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public StartLocation StartLocation { get; set; } = StartLocation.Dungeon;
+
     public CharacterCreationSelection Clone() => new()
     {
         Name = Name,
         RaceName = RaceName,
         KitId = KitId,
         IsCustom = IsCustom,
-        ItemIds = new List<string>(ItemIds)
+        ItemIds = new List<string>(ItemIds),
+        StartLocation = StartLocation
     };
 }
 

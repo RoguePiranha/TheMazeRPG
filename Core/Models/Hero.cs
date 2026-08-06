@@ -146,6 +146,11 @@ public class Hero
     // Overworld currency, earned by selling items at a Stall.
     public int Gold { get; set; } = 0;
 
+    // This character's own kills, for the legacy record they leave in the world when they die.
+    // CodexService's PlayStats.TotalKills counts every character on the install, so it can't
+    // describe one hero's life.
+    public int Kills { get; set; } = 0;
+
     // Elemental affinity profile — drives magic damage, mana cost, resistance, and learnable
     // spell tier per element, and grows with use (see AffinityService). Seeded from race+class.
     public Affinities Affinities { get; set; } = new();
