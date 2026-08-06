@@ -132,7 +132,8 @@ public static class SaveService
         {
             Directory.CreateDirectory(SavesDirectory);
             var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(PathFor(data.SaveId), json);
+            // Atomic replace: a crash mid-save must never truncate the only copy of the slot.
+            AtomicFile.WriteAllText(PathFor(data.SaveId), json);
             // Keep the world's displayed elapsed time in step with its furthest-travelled character.
             WorldService.RecordWorldTime(data.WorldId, data.WorldGameMinutes);
             GameLog.Debug($"Saved progress: {hero.Name} the {hero.Race} {hero.Class}, Level {hero.Level}, Gold {hero.Gold}");

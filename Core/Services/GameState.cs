@@ -210,8 +210,21 @@ public class GameState
 
         int targetX = Hero.GridX + dx;
         int targetY = Hero.GridY + dy;
-        if (!CurrentMaze.IsWalkable(targetX, targetY) || IsEnemyOccupyingCell(targetX, targetY))
-            return false;
+        if (IsEnemyOccupyingCell(targetX, targetY)) return false;
+
+        // Bump-to-open: stepping into a closed door spends the movement point opening it; the
+        // hero comes through on a later step. Locked doors (and walls) simply refuse.
+        if (!CurrentMaze.IsWalkable(targetX, targetY))
+        {
+            if (!CurrentMaze.TryOpenDoor(targetX, targetY)) return false;
+            _lastMoveDirX = dx;
+            _lastMoveDirY = dy;
+            TacticalTurn.MovementRemaining--;
+            RefreshTacticalIntentPreview(rememberObserved: true);
+            UpdateNearbyInteractable();
+            EndTacticalTurnIfSpent();
+            return true;
+        }
 
         Hero.X = targetX;
         Hero.Y = targetY;
@@ -283,6 +296,17 @@ public class GameState
         {
             _lastMoveDirX = cell.x - previousX;
             _lastMoveDirY = cell.y - previousY;
+
+            // The route may pass through a closed door; opening it consumes this step
+            // (bump-to-open) and ends the command there — the hero stands at the threshold
+            // rather than ghosting through a door that stays shut behind them.
+            if (CurrentMaze.TryOpenDoor(cell.x, cell.y))
+            {
+                TacticalTurn.MovementRemaining--;
+                RefreshTacticalIntentPreview(rememberObserved: true);
+                break;
+            }
+
             Hero.X = cell.x;
             Hero.Y = cell.y;
             CurrentMaze.Explored[cell.x, cell.y] = true;
@@ -742,6 +766,15 @@ public class GameState
         if (intent.Kind is TacticalIntentKind.Advance or TacticalIntentKind.Reposition &&
             intent.TargetX.HasValue && intent.TargetY.HasValue)
         {
+            // A planned step onto a closed door: opening it IS this turn's move (bump-to-open).
+            // Done here at execution, never in the planner — the intent preview must not mutate
+            // the map.
+            if (CurrentMaze.TryOpenDoor(intent.TargetX.Value, intent.TargetY.Value))
+            {
+                TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: opens the door";
+                _tacticalActionDelayTicks = TacticalActionDelayTicks;
+                return;
+            }
             BeginTacticalEnemyMotion(enemy, intent.TargetX.Value, intent.TargetY.Value);
             TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: {intent.Detail}";
             return;
@@ -871,7 +904,11 @@ public class GameState
             {
                 if (previous.ContainsKey(next) || !CurrentMaze.IsTraversable(next.x, next.y)) continue;
                 bool isHeroTarget = next == target && next == (Hero.GridX, Hero.GridY);
-                if (!isHeroTarget && !CanEnemyOccupyCell(next.x, next.y, actor, positions)) continue;
+                // A closed door may be routed through: no actor can occupy it, but the mover
+                // opens it on arrival (see ExecuteTacticalEnemyAction) rather than being walled.
+                bool closedDoor = CurrentMaze.TileAt(next.x, next.y).IsBumpOpenable();
+                if (!isHeroTarget && !closedDoor &&
+                    !CanEnemyOccupyCell(next.x, next.y, actor, positions)) continue;
                 previous[next] = current;
                 queue.Enqueue(next);
             }
@@ -3482,13 +3519,7 @@ public class GameState
     {
         CodexService.Instance.RecordDungeonExit(CurrentFloor);
 
-        IsInSafeRoom = false;
-        Boss = null;
-        Enemies.Clear();
-        Projectiles.Clear();
-        HitEffects.Clear();
-        StairsLocation = null;
-
+        // EnterTown clears the dungeon actors/projectiles and safe-room state.
         EnterTown();
         LogMessage("You emerge into the town by the dungeon mouth. Progress saved.", MessageKind.System);
 
@@ -3505,6 +3536,16 @@ public class GameState
     /// </summary>
     private void EnterTown()
     {
+        // Arriving in town always means leaving the dungeon behind, whichever route led here.
+        // The clears live in this shared body because the Overworld-resume load path used to
+        // skip them, leaking the constructor's floor-1 enemies into the town map.
+        Enemies.Clear();
+        Projectiles.Clear();
+        HitEffects.Clear();
+        Boss = null;
+        StairsLocation = null;
+        IsInSafeRoom = false;
+
         IsInOverworld = true;
         NearbyInteractable = null;
         ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
@@ -3520,14 +3561,9 @@ public class GameState
     /// </summary>
     public void StartInTown()
     {
-        Enemies.Clear();
-        Projectiles.Clear();
-        HitEffects.Clear();
-        Boss = null;
-        StairsLocation = null;
-        IsInSafeRoom = false;
         CurrentFloor = 0; // they've never been down; a fresh dive still starts at floor 1
 
+        // EnterTown clears the constructor's floor-1 dive (actors, projectiles, stairs).
         EnterTown();
         Messages.Clear(); // drop StartNewFloor's "you descend" opener — it never happened
         LogMessage($"{Hero.Name} wakes in the town beside the dungeon mouth.", MessageKind.System);
@@ -3595,6 +3631,14 @@ public class GameState
         if (data.Affinities != null) Hero.Affinities = data.Affinities.Clone();
         MigrateLegacyLoadout(data);
         RefreshAttacks();
+
+        // The constructor derived stamina/mana/faith maxima from the fresh character's stats;
+        // the loaded stats may be far higher. Re-derive, then fill — currents aren't persisted,
+        // and every resume point (town, safe room) is restful anyway.
+        UpdateHeroResourcePools();
+        Hero.CurrentStamina = Hero.MaxStamina;
+        Hero.CurrentMana = Hero.MaxMana;
+        Hero.CurrentFaith = Hero.MaxFaith;
 
         // World time resumes where it was (0 = a save predating the clock; keep the default).
         if (data.WorldGameMinutes > 0)

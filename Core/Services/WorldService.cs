@@ -117,7 +117,7 @@ public static class WorldService
         try
         {
             Directory.CreateDirectory(CharactersDirectory(world.WorldId));
-            File.WriteAllText(WorldFile(world.WorldId), JsonSerializer.Serialize(world, WriteOptions));
+            AtomicFile.WriteAllText(WorldFile(world.WorldId), JsonSerializer.Serialize(world, WriteOptions));
             SaveDelta(world.WorldId, new WorldDelta());
             GameLog.Debug($"Created world '{world.Name}' ({world.Options.Size}, {world.Options.Hostility}, seed {world.EffectiveSeed}).");
         }
@@ -206,9 +206,9 @@ public static class WorldService
 
     public static WorldDelta LoadDelta(string worldId)
     {
+        var path = DeltaFile(worldId);
         try
         {
-            var path = DeltaFile(worldId);
             if (File.Exists(path))
             {
                 var delta = JsonSerializer.Deserialize<WorldDelta>(File.ReadAllText(path), ReadOptions);
@@ -218,6 +218,10 @@ public static class WorldService
         catch (Exception ex)
         {
             GameLog.Debug($"Could not read world delta for '{worldId}', starting fresh: {ex.Message}");
+            // Callers do load-modify-save, so the fresh delta returned below will overwrite this
+            // file on the next write. Set the unreadable original aside first — fallen heroes and
+            // terrain history shouldn't be erased by one bad read.
+            AtomicFile.TryPreserveCorrupt(path);
         }
         return new WorldDelta();
     }
@@ -227,7 +231,8 @@ public static class WorldService
         try
         {
             Directory.CreateDirectory(WorldDirectory(worldId));
-            File.WriteAllText(DeltaFile(worldId), JsonSerializer.Serialize(delta, WriteOptions));
+            // Atomic replace: the delta is the world's whole memory; never leave it truncated.
+            AtomicFile.WriteAllText(DeltaFile(worldId), JsonSerializer.Serialize(delta, WriteOptions));
         }
         catch (Exception ex)
         {

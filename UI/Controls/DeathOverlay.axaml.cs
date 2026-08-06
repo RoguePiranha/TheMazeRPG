@@ -60,14 +60,27 @@ public partial class DeathOverlay : UserControl, INotifyPropertyChanged
         InitializeComponent();
         DataContext = this;
         ShowOverlay = false;
-        
-        // Update timer to check death state
+
+        // Update timer to check death state. Started/stopped with visual-tree attachment: a
+        // running DispatcherTimer is dispatcher-rooted, so leaving it on would pin this overlay
+        // (and its GameState) forever after the view is torn down.
         _updateTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(100)
         };
         _updateTimer.Tick += UpdateTimer_Tick;
-        _updateTimer.Start();
+    }
+
+    protected override void OnAttachedToVisualTree(Avalonia.VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        _updateTimer?.Start();
+    }
+
+    protected override void OnDetachedFromVisualTree(Avalonia.VisualTreeAttachmentEventArgs e)
+    {
+        base.OnDetachedFromVisualTree(e);
+        _updateTimer?.Stop();
     }
     
     public void SetGameState(GameState gameState)

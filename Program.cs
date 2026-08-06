@@ -126,6 +126,13 @@ sealed class Program
             return;
         }
 
+        // If TEST_DOORS is set, verify bump-to-open through every mover and exit
+        if (Environment.GetEnvironmentVariable("TEST_DOORS") == "1")
+        {
+            RunDoorTraversalDemo();
+            return;
+        }
+
         // If TEST_AFFINITY is set, verify the elemental affinity system and exit
         if (Environment.GetEnvironmentVariable("TEST_AFFINITY") == "1")
         {
@@ -2797,8 +2804,9 @@ sealed class Program
             }
             using var panel = SkiaSharp.SKSurface.Create(new SkiaSharp.SKImageInfo(panelWidth, panelHeight));
             var renderer = new TheMazeRPG.UI.Rendering.MazeRenderer();
+            var snapshot = TheMazeRPG.UI.Rendering.RenderSnapshot.Capture(gameState)!;
             for (int frame = 0; frame < 48; frame++)
-                renderer.Render(panel.Canvas, gameState, panelWidth, panelHeight);
+                renderer.Render(panel.Canvas, gameState, snapshot, panelWidth, panelHeight);
             using var panelImage = panel.Snapshot();
             int column = i % columns;
             int row = i / columns;
@@ -2815,6 +2823,86 @@ sealed class Program
         using var stream = System.IO.File.Open(outputPath, System.IO.FileMode.Create, System.IO.FileAccess.Write);
         data.SaveTo(stream);
         Console.WriteLine($"Rendered six-theme preview: {System.IO.Path.GetFullPath(outputPath)}");
+    }
+
+    /// <summary>
+    /// TEST_DOORS: bump-to-open end-to-end through every mover — manual WASD, auto goal-walk,
+    /// enemy chase, and tactical (single step, click-to-move path). Regression guard for the
+    /// 2026-08-06 door fix: Maze.TryOpenDoor always worked at the model level, but no
+    /// player-facing movement path actually called it, so doors were bump-proof walls.
+    /// </summary>
+    public static void RunDoorTraversalDemo()
+    {
+        Console.WriteLine("=== Door traversal (bump-to-open) ===");
+
+        // A 7x3 corridor: walls all around, floor lane at y=1, a door at (3,1).
+        static Maze CorridorMaze(TileType door)
+        {
+            var maze = new Maze(7, 3);
+            for (int x = 0; x < 7; x++)
+            {
+                maze.Tiles[x, 0] = TileType.Wall;
+                maze.Tiles[x, 2] = TileType.Wall;
+            }
+            maze.Tiles[0, 1] = TileType.Wall;
+            maze.Tiles[6, 1] = TileType.Wall;
+            maze.Tiles[3, 1] = door;
+            return maze;
+        }
+
+        // 1) Manual (WASD): walking into the closed door opens it, then walks through.
+        var movement = new MovementSystem(7);
+        var manualMaze = CorridorMaze(TileType.DoorClosed);
+        var hero = new Hero { X = 1, Y = 1 };
+        for (int i = 0; i < 80; i++) movement.MoveHeroByDirection(hero, 1f, 0f, manualMaze);
+        Console.WriteLine($"Manual bump: door={manualMaze.Tiles[3, 1]} (expect DoorOpen), hero X={hero.X:F2} (expect > 3)");
+
+        // 2) Manual vs locked: stays locked, hero held at the threshold.
+        var lockedMaze = CorridorMaze(TileType.DoorLocked);
+        var held = new Hero { X = 1, Y = 1 };
+        for (int i = 0; i < 80; i++) movement.MoveHeroByDirection(held, 1f, 0f, lockedMaze);
+        Console.WriteLine($"Locked door: door={lockedMaze.Tiles[3, 1]} (expect DoorLocked), hero X={held.X:F2} (expect < 3)");
+
+        // 3) Auto goal-walk: pathing to the far side opens the door en route.
+        var goalMaze = CorridorMaze(TileType.DoorClosed);
+        var walker = new Hero { X = 1, Y = 1 };
+        for (int i = 0; i < 160; i++) movement.MoveHeroTowardTarget(walker, 5, 1, goalMaze);
+        Console.WriteLine($"Goal-walk: door={goalMaze.Tiles[3, 1]} (expect DoorOpen), hero X={walker.X:F2} (expect > 3, through the door)");
+
+        // 4) Enemy chase: the pursuer opens the door instead of gliding through a shut one.
+        var chaseMaze = CorridorMaze(TileType.DoorClosed);
+        var chaser = new Enemy { X = 1, Y = 1, Agility = 4, AttackRange = 1.0f };
+        for (int i = 0; i < 160; i++) movement.MoveEnemyTowardTarget(chaser, 5, 1, chaseMaze);
+        Console.WriteLine($"Enemy chase: door={chaseMaze.Tiles[3, 1]} (expect DoorOpen), enemy X={chaser.X:F2} (expect > 3)");
+
+        // 5) Tactical single-step: bumping the door spends the movement point opening it,
+        // then the next step walks through.
+        var gs = new GameState(4242, "Doorman", "Warrior", "Human") { IsRunning = true };
+        gs.Enemies.Clear();
+        gs.Projectiles.Clear();
+        gs.CurrentMaze = CorridorMaze(TileType.DoorClosed);
+        gs.Hero.X = 1;
+        gs.Hero.Y = 1;
+        gs.SetSimulationMode(SimulationMode.TurnBased);
+        bool step = gs.TryTacticalMove(1, 0);   // (1,1) -> (2,1)
+        bool bump = gs.TryTacticalMove(1, 0);   // opens (3,1) in place
+        var afterBump = gs.CurrentMaze.Tiles[3, 1];
+        bool through = gs.TryTacticalMove(1, 0); // (2,1) -> (3,1)
+        Console.WriteLine($"Tactical step: moved={step}, bump={bump}, door={afterBump} (expect DoorOpen), " +
+            $"through={through}, hero=({gs.Hero.GridX},{gs.Hero.GridY}) (expect (3,1))");
+
+        // 6) Tactical click-to-move: the path routes through the door; opening it consumes the
+        // step and ends the command at the threshold — no ghosting through a shut door.
+        var gs2 = new GameState(4242, "Doorman", "Warrior", "Human") { IsRunning = true };
+        gs2.Enemies.Clear();
+        gs2.Projectiles.Clear();
+        gs2.CurrentMaze = CorridorMaze(TileType.DoorClosed);
+        gs2.Hero.X = 1;
+        gs2.Hero.Y = 1;
+        gs2.SetSimulationMode(SimulationMode.TurnBased);
+        bool moveTo = gs2.TryTacticalMoveTo(4, 1);
+        Console.WriteLine($"Tactical path: accepted={moveTo}, door={gs2.CurrentMaze.Tiles[3, 1]} (expect DoorOpen), " +
+            $"hero=({gs2.Hero.GridX},{gs2.Hero.GridY}) (expect (2,1), stopped at the threshold)");
     }
 
     public static void RunMapGenerationDemo()

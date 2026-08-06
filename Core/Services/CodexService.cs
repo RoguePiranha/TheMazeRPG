@@ -48,7 +48,7 @@ public class CodexService
             var dir = Path.GetDirectoryName(SavePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             var json = JsonSerializer.Serialize(Data, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(SavePath, json);
+            AtomicFile.WriteAllText(SavePath, json);
         }
         catch (Exception ex)
         {

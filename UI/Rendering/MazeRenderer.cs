@@ -132,11 +132,16 @@ public class MazeRenderer
         _ => 2
     };
     
-    public void Render(SKCanvas canvas, GameState gameState, int viewportWidth, int viewportHeight)
+    /// <summary>
+    /// Draws a frame. Runs on the render thread: every mutable collection must come from
+    /// <paramref name="snapshot"/> (captured on the UI thread), never live from
+    /// <paramref name="gameState"/> — see RenderSnapshot. GameState is still passed for scalar
+    /// reads (hero stats, flags, clock), where a torn value is a one-frame blip, not a crash.
+    /// </summary>
+    public void Render(SKCanvas canvas, GameState gameState, RenderSnapshot snapshot, int viewportWidth, int viewportHeight)
     {
-        if (gameState.CurrentMaze == null || gameState.Hero == null)
-            return;
-        
+        var maze = snapshot.Maze;
+
         canvas.Clear(BackgroundColor);
 
         // Smooth camera lerp to follow hero
@@ -149,8 +154,8 @@ public class MazeRenderer
         // Clamp the CENTERING POINT (not the lerp state itself) to the maze bounds, so the
         // viewport never scrolls past the edge into empty void. Clamping the lerp state instead
         // would make the camera "stick" at the edge and jump when the hero moves back inward.
-        float mazePxW = gameState.CurrentMaze.Width * CellSize;
-        float mazePxH = gameState.CurrentMaze.Height * CellSize;
+        float mazePxW = maze.Width * CellSize;
+        float mazePxH = maze.Height * CellSize;
         float centerX = mazePxW > viewportWidth
             ? Math.Clamp(_cameraX, viewportWidth / 2f, mazePxW - viewportWidth / 2f)
             : mazePxW / 2f;
@@ -177,31 +182,31 @@ public class MazeRenderer
         canvas.Translate(offsetX, offsetY);
 
         // Fog-of-war visibility for this frame (regular dungeon floors only)
-        var fog = ComputeFogView(gameState);
+        var fog = ComputeFogView(gameState, maze);
 
         // Draw maze
-        DrawMaze(canvas, gameState.CurrentMaze, fog);
+        DrawMaze(canvas, maze, fog);
 
         // Draw static room dressing below interactive features and actors.
-        DrawDecorations(canvas, gameState.CurrentMaze, fog);
+        DrawDecorations(canvas, maze, fog);
 
         // Theme landmarks are world-space markers with a fixed orthographic orientation.
-        DrawThemeFeatures(canvas, gameState.CurrentMaze, fog);
+        DrawThemeFeatures(canvas, maze, fog);
 
         // Draw features (chests, stairs)
-        DrawFeatures(canvas, gameState.CurrentMaze, fog);
+        DrawFeatures(canvas, maze, snapshot.Features, fog);
 
         // Ambient critters (dungeon rats/bats, the town dog and cat) — under real entities
-        DrawCritters(canvas, gameState, fog);
+        DrawCritters(canvas, snapshot.Critters, fog);
 
         // Draw enemies (only the ones the hero can currently see, under fog)
-        DrawEnemies(canvas, gameState, fog);
-        
+        DrawEnemies(canvas, gameState, snapshot.Enemies, fog);
+
     // Draw projectiles (between enemies and hero)
-    DrawProjectiles(canvas, gameState);
-        
+    DrawProjectiles(canvas, snapshot.Projectiles);
+
         // Draw on-hit flashes above projectiles, below hero
-        DrawHitEffects(canvas, gameState.HitEffects);
+        DrawHitEffects(canvas, snapshot.HitEffects);
         
     // Draw hero (always on top)
         DrawHero(canvas, gameState.Hero);
@@ -218,15 +223,15 @@ public class MazeRenderer
         }
 
         // Rising damage/dodge/level-up feedback (world space, above everything in-world)
-        DrawFloatingTexts(canvas, gameState);
+        DrawFloatingTexts(canvas, snapshot.FloatingTexts);
 
     // Debug overlays (hitboxes, LOS) if enabled
-    DrawDebugOverlay(canvas, gameState);
+    DrawDebugOverlay(canvas, gameState, snapshot.Enemies, snapshot.Projectiles);
 
         canvas.Restore();
 
         // Town night lighting: dark layer with lamp/torch/darkvision light punched out
-        DrawTownLighting(canvas, gameState, viewportWidth, viewportHeight);
+        DrawTownLighting(canvas, gameState, snapshot.Features, viewportWidth, viewportHeight);
 
         // Low-health vignette (screen space, drawn before the HUD text/bars)
         DrawLowHealthVignette(canvas, gameState.Hero, viewportWidth, viewportHeight);
@@ -238,10 +243,10 @@ public class MazeRenderer
         DrawClock(canvas, gameState, viewportWidth);
 
         // Draw the player-facing message log (bottom-left, above the floor info line)
-        DrawMessageLog(canvas, gameState, viewportHeight);
+        DrawMessageLog(canvas, snapshot.Messages, viewportHeight);
 
         // Draw the attack hotbar (bottom-center)
-        DrawHotbar(canvas, gameState, viewportWidth, viewportHeight);
+        DrawHotbar(canvas, gameState, snapshot, viewportWidth, viewportHeight);
     }
 
     /// <summary>
@@ -249,12 +254,14 @@ public class MazeRenderer
     /// numbered 1..N, with the current attack highlighted in gold. Number keys select; the
     /// selected attack is what click-to-fire (and Auto combat) uses.
     /// </summary>
-    private static void DrawHotbar(SKCanvas canvas, GameState gameState, int viewportWidth, int viewportHeight)
+    private static void DrawHotbar(SKCanvas canvas, GameState gameState, RenderSnapshot snapshot, int viewportWidth, int viewportHeight)
     {
         // Fixed bar (owner request 2026-08-05): always HotbarCapacity uniform square slots —
         // empty boxes render as empty boxes — instead of the old variable-width text buttons.
+        // Slot contents come from the snapshot: resolving them live walks Hero.Attacks/Loadout,
+        // which the sim rebuilds mid-frame.
         var hero = gameState.Hero;
-        int slots = Math.Max(1, hero.HotbarCapacity);
+        int slots = snapshot.HotbarAttacks.Length;
         const float slotSize = 44f;
         const float gap = 6f;
         float totalW = slots * slotSize + (slots - 1) * gap;
@@ -265,8 +272,8 @@ public class MazeRenderer
 
         for (int i = 0; i < slots; i++)
         {
-            var attack = gameState.HotbarAttackAt(i);
-            var consumable = attack == null ? gameState.HotbarConsumableAt(i) : null;
+            var attack = snapshot.HotbarAttacks[i];
+            var consumable = snapshot.HotbarConsumables[i];
             bool selected = attack != null && hero.CurrentAttack == attack;
             float x = startX + i * (slotSize + gap);
 
@@ -293,7 +300,7 @@ public class MazeRenderer
                 using var monogram = new SKPaint { Color = new SKColor(0x73, 0xE6, 0x80), TextSize = 15, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
                 canvas.DrawText(AttackAbbrev(consumable.Name), x + slotSize / 2f, y + slotSize / 2f + 5f, monogram);
                 using var countPaint = new SKPaint { Color = new SKColor(0xAA, 0xAA, 0xAA), TextSize = 10, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
-                canvas.DrawText($"x{gameState.HotbarConsumableCount(i)}", x + slotSize / 2f, y + slotSize - 6f, countPaint);
+                canvas.DrawText($"x{snapshot.HotbarConsumableCounts[i]}", x + slotSize / 2f, y + slotSize - 6f, countPaint);
                 continue;
             }
 
@@ -348,9 +355,8 @@ public class MazeRenderer
     /// The scrolling event feed (SimpleRPG's message log), drawn bottom-left above the floor info
     /// line. Shows the most recent messages, newest at the bottom; older lines fade toward the top.
     /// </summary>
-    private static void DrawMessageLog(SKCanvas canvas, GameState gameState, int viewportHeight)
+    private static void DrawMessageLog(SKCanvas canvas, List<GameMessage> messages, int viewportHeight)
     {
-        var messages = gameState.Messages.Messages;
         if (messages.Count == 0) return;
 
         const int maxLines = 6;
@@ -394,10 +400,10 @@ public class MazeRenderer
     /// <summary>Ambient critters: dungeon rats (dart + pause, flee the hero) and bats (drift,
     /// bob), the town's dog and cat. Fog rule matches enemies — dungeon critters render only on
     /// currently-visible tiles.</summary>
-    private static void DrawCritters(SKCanvas canvas, GameState gameState, FogView fog)
+    private static void DrawCritters(SKCanvas canvas, List<Critter> critters, FogView fog)
     {
-        if (gameState.Critters.Count == 0) return;
-        foreach (var c in gameState.Critters)
+        if (critters.Count == 0) return;
+        foreach (var c in critters)
         {
             int cellX = (int)MathF.Round(c.X);
             int cellY = (int)MathF.Round(c.Y);
@@ -449,9 +455,9 @@ public class MazeRenderer
     }
 
     /// <summary>Rising, fading world-space combat feedback ("14", "Dodge!", "LEVEL UP!").</summary>
-    private static void DrawFloatingTexts(SKCanvas canvas, GameState gameState)
+    private static void DrawFloatingTexts(SKCanvas canvas, List<FloatingText> floatingTexts)
     {
-        foreach (var ft in gameState.FloatingTexts)
+        foreach (var ft in floatingTexts)
         {
             float t = ft.LifeT;                       // 1 → 0 over lifetime
             float rise = (1f - t) * 26f;              // px risen so far
@@ -480,7 +486,7 @@ public class MazeRenderer
     /// their full range; a torch buys a pool; bare eyes barely arm's reach), street lamps, and
     /// the smithy's forge glow. The Night Sight skill thins the whole layer instead of widening
     /// a radius. Dungeon floors untouched — their darkness is the fog system.</summary>
-    private void DrawTownLighting(SKCanvas canvas, GameState gameState, int viewportWidth, int viewportHeight)
+    private void DrawTownLighting(SKCanvas canvas, GameState gameState, List<MazeFeature> features, int viewportWidth, int viewportHeight)
     {
         if (!gameState.IsInOverworld) return;
         float darkness = gameState.Clock.Darkness;
@@ -539,7 +545,7 @@ public class MazeRenderer
         bool heroLightIsFire = gameState.HasTorch && !gameState.Hero.HasDarkvision;
         Punch(gameState.Hero.X, gameState.Hero.Y, gameState.HeroLightRadius, 255,
             heroLightIsFire ? Flicker(0f, 0f, 0.08f) : 1f);
-        foreach (var f in gameState.CurrentMaze.Features)
+        foreach (var f in features)
         {
             if (f.Type == MazeFeatureType.Lamp)
                 Punch(f.X, f.Y, 3.8f, 235, Flicker(f.X, f.Y, 0.035f)); // glass-caged: gentle
@@ -550,7 +556,7 @@ public class MazeRenderer
 
         // A faint warm wash over each lamp so night lighting reads as firelight, not gray fog —
         // breathing with the same flicker as its own light pool.
-        foreach (var f in gameState.CurrentMaze.Features)
+        foreach (var f in features)
         {
             if (f.Type != MazeFeatureType.Lamp) continue;
             float fl = Flicker(f.X, f.Y, 0.035f);
@@ -617,7 +623,7 @@ public class MazeRenderer
         canvas.DrawRect(0, 0, viewportWidth, viewportHeight, vignettePaint);
     }
     
-    private void DrawDebugOverlay(SKCanvas canvas, GameState gameState)
+    private void DrawDebugOverlay(SKCanvas canvas, GameState gameState, List<Enemy> enemies, List<Projectile> projectiles)
     {
         // Early out if nothing is enabled
         if (!gameState.DebugDrawHitboxes && !gameState.DebugDrawLOS) return;
@@ -628,13 +634,13 @@ public class MazeRenderer
             // Hero
             DrawDebugCircle(canvas, gameState.Hero.X, gameState.Hero.Y, gameState.Hero.Radius, new SKColor(0, 200, 255, 160));
             // Enemies
-            foreach (var e in gameState.Enemies)
+            foreach (var e in enemies)
             {
                 var col = e.IsAlive ? new SKColor(255, 120, 120, 160) : new SKColor(120, 60, 60, 100);
                 DrawDebugCircle(canvas, e.X, e.Y, e.Radius, col);
             }
             // Projectiles
-            foreach (var p in gameState.Projectiles)
+            foreach (var p in projectiles)
             {
                 var col = p.Team == ProjectileTeam.Hero ? new SKColor(120, 220, 255, 140) : new SKColor(255, 180, 120, 140);
                 DrawDebugCircle(canvas, p.CurrentX, p.CurrentY, p.Radius, col, dashed: true);
@@ -644,7 +650,7 @@ public class MazeRenderer
         // LOS rays: hero-to-enemy lines colored by blockage
         if (gameState.DebugDrawLOS)
         {
-            foreach (var e in gameState.Enemies)
+            foreach (var e in enemies)
             {
                 bool los = gameState.CheckLOS(gameState.Hero.X, gameState.Hero.Y, e.X, e.Y);
                 DrawDebugLine(canvas, gameState.Hero.X, gameState.Hero.Y, e.X, e.Y, los ? new SKColor(80, 220, 120, 150) : new SKColor(220, 80, 80, 150));
@@ -733,9 +739,8 @@ public class MazeRenderer
     /// + line of sight), unioned into the persistent seen-set. Fog only applies on regular
     /// dungeon floors — the Overworld and safe rooms are fully lit spaces.
     /// </summary>
-    private FogView ComputeFogView(GameState gameState)
+    private FogView ComputeFogView(GameState gameState, Maze maze)
     {
-        var maze = gameState.CurrentMaze;
         bool enabled = !gameState.IsInOverworld && !gameState.IsInSafeRoom;
 
         // New maze (new floor/space): forget the old maze's seen tiles.
@@ -796,6 +801,87 @@ public class MazeRenderer
             }
         }
         return (visible, seen);
+    }
+
+    // Door slab colors — deliberately warm wood against the cool masonry palettes so a shut door
+    // reads as "openable" at a glance. Locked doors carry a gold lock plate (gold = key).
+    private static readonly SKColor DoorWoodColor = new(0x9A, 0x6A, 0x35);
+    private static readonly SKColor DoorWoodDarkColor = new(0x5C, 0x3C, 0x1E);
+    private static readonly SKColor DoorLockedWoodColor = new(0x7E, 0x52, 0x2A);
+    private static readonly SKColor DoorHandleColor = new(0xD8, 0xD8, 0xD8);
+    private static readonly SKColor DoorLockColor = new(0xFF, 0xCC, 0x00);
+
+    /// <summary>
+    /// A closed or locked door: dark opening in the wall line with a wood slab across it,
+    /// oriented along the wall run it sits in. Distinct from walls by design — the bump-to-open
+    /// rule only works if the player can tell a door from masonry.
+    /// </summary>
+    private static void DrawShutDoor(SKCanvas canvas, Maze maze, int x, int y, float px, float py,
+        bool locked, bool visible)
+    {
+        byte alpha = visible ? (byte)0xFF : DimAlpha;
+
+        // The cell reads as an opening: dark floor behind the slab, not wall fill.
+        using var backPaint = new SKPaint { Color = FloorColor.WithAlpha(alpha), Style = SKPaintStyle.Fill, IsAntialias = false };
+        canvas.DrawRect(px, py, CellSize, CellSize, backPaint);
+
+        // Slab orientation follows the wall run: solid masonry left+right → horizontal door;
+        // above+below → vertical; anything else (freestanding, double doors) → full-cell slab.
+        bool SolidAt(int nx, int ny)
+        {
+            var t = maze.TileAt(nx, ny);
+            return t.BlocksSight() && !t.IsDoor();
+        }
+        bool horizontal = SolidAt(x - 1, y) && SolidAt(x + 1, y);
+        bool vertical = !horizontal && SolidAt(x, y - 1) && SolidAt(x, y + 1);
+
+        float inset = CellSize * 0.08f;
+        float thickness = CellSize * 0.45f;
+        SKRect slab = horizontal
+            ? new SKRect(px + inset, py + (CellSize - thickness) / 2f, px + CellSize - inset, py + (CellSize + thickness) / 2f)
+            : vertical
+                ? new SKRect(px + (CellSize - thickness) / 2f, py + inset, px + (CellSize + thickness) / 2f, py + CellSize - inset)
+                : new SKRect(px + inset, py + inset, px + CellSize - inset, py + CellSize - inset);
+
+        var wood = (locked ? DoorLockedWoodColor : DoorWoodColor).WithAlpha(alpha);
+        using var slabPaint = new SKPaint { Color = wood, Style = SKPaintStyle.Fill, IsAntialias = false };
+        canvas.DrawRect(slab, slabPaint);
+
+        using var framePaint = new SKPaint { Color = DoorWoodDarkColor.WithAlpha(alpha), Style = SKPaintStyle.Stroke, StrokeWidth = 2f, IsAntialias = false };
+        canvas.DrawRect(slab, framePaint);
+
+        // Plank seams across the slab.
+        using var seamPaint = new SKPaint { Color = DoorWoodDarkColor.WithAlpha(alpha), Style = SKPaintStyle.Stroke, StrokeWidth = 1f, IsAntialias = false };
+        for (int i = 1; i <= 2; i++)
+        {
+            if (horizontal)
+            {
+                float sx = slab.Left + slab.Width * i / 3f;
+                canvas.DrawLine(sx, slab.Top, sx, slab.Bottom, seamPaint);
+            }
+            else
+            {
+                float sy = slab.Top + slab.Height * i / 3f;
+                canvas.DrawLine(slab.Left, sy, slab.Right, sy, seamPaint);
+            }
+        }
+
+        if (locked)
+        {
+            // Gold lock plate with a dark keyhole, dead center.
+            using var lockPaint = new SKPaint { Color = DoorLockColor.WithAlpha(alpha), Style = SKPaintStyle.Fill, IsAntialias = true };
+            canvas.DrawCircle(slab.MidX, slab.MidY, CellSize * 0.09f, lockPaint);
+            using var holePaint = new SKPaint { Color = DoorWoodDarkColor.WithAlpha(alpha), Style = SKPaintStyle.Fill, IsAntialias = true };
+            canvas.DrawCircle(slab.MidX, slab.MidY, CellSize * 0.035f, holePaint);
+        }
+        else
+        {
+            // Plain handle dot, off-center along the slab.
+            using var handlePaint = new SKPaint { Color = DoorHandleColor.WithAlpha(alpha), Style = SKPaintStyle.Fill, IsAntialias = true };
+            float hx = horizontal ? slab.Right - slab.Width * 0.18f : slab.MidX;
+            float hy = horizontal ? slab.MidY : slab.Bottom - slab.Height * 0.18f;
+            canvas.DrawCircle(hx, hy, CellSize * 0.05f, handlePaint);
+        }
     }
 
     private static DungeonPalette PaletteFor(Maze maze) => maze.Dungeon?.Theme switch
@@ -873,7 +959,18 @@ public class MazeRenderer
                 float px = x * CellSize;
                 float py = y * CellSize;
 
-                if (maze.Walls[x, y])
+                var tile = maze.Tiles[x, y];
+                if (tile is TileType.DoorClosed or TileType.DoorLocked)
+                {
+                    // Shut doors block movement and sight like walls, so they take wall-style
+                    // fog lighting — but they must never LOOK like walls (a door drawn as
+                    // masonry is an invisible door the player walks past).
+                    var (doorVisible, doorSeen) = WallLight(fog, maze, x, y);
+                    if (!doorVisible && !doorSeen) continue; // never seen: pure black void
+                    DrawShutDoor(canvas, maze, x, y, px, py,
+                        locked: tile == TileType.DoorLocked, visible: doorVisible);
+                }
+                else if (maze.Walls[x, y])
                 {
                     var (visible, seen) = WallLight(fog, maze, x, y);
                     if (!visible && !seen) continue; // never seen: pure black void
@@ -906,7 +1003,10 @@ public class MazeRenderer
                     bool textured = maze.Dungeon != null && TerrainService.DrawTile(
                         canvas, maze.Dungeon.Theme, terrainSprite, x, y, px, py, CellSize,
                         visible ? (byte)170 : (byte)51);
-                    if (maze.Dungeon?.Tiles[x, y] == DungeonTileType.Doorway)
+                    // Threshold marking for doorway cells — including an opened door outside a
+                    // dungeon (town buildings), so the doorway stays readable once it's open.
+                    if (maze.Dungeon?.Tiles[x, y] == DungeonTileType.Doorway ||
+                        maze.Tiles[x, y] == TileType.DoorOpen)
                     {
                         DrawDoorwayThreshold(canvas, terrainSprite, px, py,
                             visible ? doorwayBackPaint : doorwayBackPaintDim,
@@ -984,9 +1084,9 @@ public class MazeRenderer
     private static bool IsOpen(Maze maze, int x, int y) =>
         x >= 0 && y >= 0 && x < maze.Width && y < maze.Height && !maze.Walls[x, y];
     
-    private void DrawFeatures(SKCanvas canvas, Maze maze, FogView fog)
+    private void DrawFeatures(SKCanvas canvas, Maze maze, List<MazeFeature> features, FogView fog)
     {
-        foreach (var feature in maze.Features)
+        foreach (var feature in features)
         {
             if (feature.IsUsed) continue;
 
@@ -1576,9 +1676,9 @@ public class MazeRenderer
         }
     }
     
-    private void DrawEnemies(SKCanvas canvas, GameState gameState, FogView fog)
+    private void DrawEnemies(SKCanvas canvas, GameState gameState, List<Enemy> enemies, FogView fog)
     {
-        foreach (var enemy in gameState.Enemies)
+        foreach (var enemy in enemies)
         {
             // Fog: an enemy only renders while the hero can actually see it (in sight range with
             // clear line of sight) — SimpleRPG's rule; no minimap-style omniscience.
@@ -1749,9 +1849,8 @@ public class MazeRenderer
         _ => (defGlow, defCore)
     };
 
-    private void DrawProjectiles(SKCanvas canvas, GameState gameState)
+    private void DrawProjectiles(SKCanvas canvas, List<Projectile> projectiles)
     {
-        var projectiles = gameState.Projectiles;
         foreach (var projectile in projectiles)
         {
             float px = projectile.CurrentX * CellSize + CellSize / 2f;

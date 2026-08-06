@@ -225,6 +225,14 @@ public class MovementSystem
             {
                 // Move along the path
                 var target = path[1];
+
+                // Bump-to-open: shoulder a closed door on the route open and hold this tick.
+                if (maze.TryOpenDoor(target.x, target.y))
+                {
+                    maze.Explored[hero.GridX, hero.GridY] = true;
+                    return;
+                }
+
                 float targetDx = target.x - hero.X;
                 float targetDy = target.y - hero.Y;
                 float targetDistance = MathF.Sqrt(targetDx * targetDx + targetDy * targetDy);
@@ -315,10 +323,12 @@ public class MovementSystem
         float dy = dirY * speed;
 
         // Per-axis so a wall on one axis doesn't cancel movement on the other (wall sliding).
+        // TryStep rather than IsWalkable: walking into a closed door shoulders it open
+        // (bump-to-open) and the hero passes through on a following tick.
         float newX = hero.X + dx;
-        if (IsWalkable(maze, (int)MathF.Round(newX), (int)MathF.Round(hero.Y))) hero.X = newX;
+        if (TryStep(maze, (int)MathF.Round(newX), (int)MathF.Round(hero.Y))) hero.X = newX;
         float newY = hero.Y + dy;
-        if (IsWalkable(maze, (int)MathF.Round(hero.X), (int)MathF.Round(newY))) hero.Y = newY;
+        if (TryStep(maze, (int)MathF.Round(hero.X), (int)MathF.Round(newY))) hero.Y = newY;
 
         maze.Explored[hero.GridX, hero.GridY] = true;
     }
@@ -338,6 +348,15 @@ public class MovementSystem
         {
             // Move along the path
             var nextStep = path[1];
+
+            // Routes may lead through a closed door (path search asks IsTraversable). Shoulder
+            // it open on arrival and hold this tick — the same bump-to-open every mover gets.
+            if (maze.TryOpenDoor(nextStep.x, nextStep.y))
+            {
+                maze.Explored[hero.GridX, hero.GridY] = true;
+                return;
+            }
+
             float dx = nextStep.x - hero.X;
             float dy = nextStep.y - hero.Y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
@@ -393,6 +412,11 @@ public class MovementSystem
         {
             // Move along the path until within attack range
             var next = path[1];
+
+            // Bump-to-open on the chase path too, so a pursuing enemy opens a door rather than
+            // gliding through it (idle movement already does this in MoveEnemyAlongPath).
+            if (maze.TryOpenDoor(next.x, next.y)) return;
+
             float dx = next.x - enemy.X;
             float dy = next.y - enemy.Y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
@@ -472,7 +496,14 @@ public class MovementSystem
         {
             // Get target position (next step in path)
             var target = path[1];
-            
+
+            // Bump-to-open: a closed door on the route is opened in place of this tick's step.
+            if (maze.TryOpenDoor(target.x, target.y))
+            {
+                maze.Explored[hero.GridX, hero.GridY] = true;
+                return;
+            }
+
             // Move smoothly toward target
             float dx = target.x - hero.X;
             float dy = target.y - hero.Y;

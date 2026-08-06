@@ -21,22 +21,38 @@ public class GameCanvas : Control
     private readonly MazeRenderer _renderer;
     private GameState? _gameState;
     
+    private readonly DispatcherTimer _renderTimer;
+
     public GameCanvas()
     {
         _renderer = new MazeRenderer();
 
-        // Request render updates at ~60 FPS
-        var timer = new DispatcherTimer
+        // Request render updates at ~60 FPS. Held as a field and started/stopped with visual-tree
+        // attachment: a running DispatcherTimer is rooted by the dispatcher, so an always-on
+        // constructor timer would pin this canvas — and through it the whole retired GameState —
+        // forever after every quit-to-menu.
+        _renderTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(16)
         };
-        timer.Tick += (s, e) => InvalidateVisual();
-        timer.Start();
+        _renderTimer.Tick += (s, e) => InvalidateVisual();
 
         // Click-to-fire: aim the hero's current attack toward the clicked point (Manual mode).
         PointerPressed += OnPointerPressed;
         // Scroll wheel cycles the selected hotbar attack.
         PointerWheelChanged += OnPointerWheel;
+    }
+
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        _renderTimer.Start();
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnDetachedFromVisualTree(e);
+        _renderTimer.Stop();
     }
 
     public void SetGameState(GameState gameState)
@@ -110,40 +126,48 @@ public class GameCanvas : Control
     public override void Render(DrawingContext context)
     {
         if (_gameState == null) return;
-        
-        context.Custom(new CustomDrawOp(new Rect(0, 0, Bounds.Width, Bounds.Height), _renderer, _gameState));
+
+        // Snapshot the sim's mutable collections HERE, on the UI thread — the draw op below
+        // executes on the render thread while Tick keeps mutating the live lists, and
+        // enumerating those there crashes intermittently (see RenderSnapshot).
+        var snapshot = RenderSnapshot.Capture(_gameState);
+        if (snapshot == null) return;
+
+        context.Custom(new CustomDrawOp(new Rect(0, 0, Bounds.Width, Bounds.Height), _renderer, _gameState, snapshot));
     }
-    
+
     private class CustomDrawOp : ICustomDrawOperation
     {
         private readonly Rect _bounds;
         private readonly MazeRenderer _renderer;
         private readonly GameState _gameState;
-        
-        public CustomDrawOp(Rect bounds, MazeRenderer renderer, GameState gameState)
+        private readonly RenderSnapshot _snapshot;
+
+        public CustomDrawOp(Rect bounds, MazeRenderer renderer, GameState gameState, RenderSnapshot snapshot)
         {
             _bounds = bounds;
             _renderer = renderer;
             _gameState = gameState;
+            _snapshot = snapshot;
         }
-        
+
         public void Dispose() { }
-        
+
         public Rect Bounds => _bounds;
-        
+
         public bool HitTest(Point p) => _bounds.Contains(p);
-        
+
         public bool Equals(ICustomDrawOperation? other) => false;
-        
+
         public void Render(ImmediateDrawingContext context)
         {
             var leaseFeature = context.TryGetFeature<ISkiaSharpApiLeaseFeature>();
             if (leaseFeature == null) return;
-            
+
             using var lease = leaseFeature.Lease();
             var canvas = lease.SkCanvas;
-            
-            _renderer.Render(canvas, _gameState, (int)_bounds.Width, (int)_bounds.Height);
+
+            _renderer.Render(canvas, _gameState, _snapshot, (int)_bounds.Width, (int)_bounds.Height);
         }
     }
 }
