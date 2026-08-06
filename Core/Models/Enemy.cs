@@ -46,6 +46,15 @@ public class Enemy
     public string Class { get; set; } = "Warrior"; // Character class (Warrior/Mage/Rogue/...) — drives gear, stats, shape
     public string Race { get; set; } = "Human";
     public EnemyTier Tier { get; set; } = EnemyTier.Basic;
+
+    /// <summary>
+    /// Whether this creature can work a door (owner ruling 2026-08-06: anything with hands and
+    /// the wits to use them opens doors like the hero does — bump-to-open; a shut door only
+    /// stops what can't manage a handle). True for every current humanoid enemy; note 14's
+    /// creature templates set this false for the mindless and the handless — zombies, beasts,
+    /// oozes — for whom a closed door genuinely ends a pursuit.
+    /// </summary>
+    public bool CanOpenDoors { get; set; } = true;
     public bool IsBoss => Tier == EnemyTier.Boss;
     public bool IsElite => Tier == EnemyTier.Elite;
 

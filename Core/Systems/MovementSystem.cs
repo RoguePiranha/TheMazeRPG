@@ -76,7 +76,8 @@ public class MovementSystem
             enemy.TempData["idleRecalc"] = recalcIn - 1;
         }
 
-        var path = FindPathToTarget(enemyX, enemyY, targetX, targetY, maze);
+        var path = FindPathToTarget(enemyX, enemyY, targetX, targetY, maze,
+            routeThroughDoors: enemy.CanOpenDoors);
         if (path == null || path.Count <= 1)
         {
             enemy.TempData["idleRecalc"] = 0;
@@ -88,9 +89,11 @@ public class MovementSystem
 
     private static void MoveEnemyAlongPath(Enemy enemy, (int x, int y) next, Maze maze)
     {
-        // Routes may lead through a closed door, since path search asks IsTraversable. Shoulder it
-        // open on arrival and hold position this tick — the same bump-to-open the hero gets.
-        if (maze.TryOpenDoor(next.x, next.y)) return;
+        // Routes may lead through a closed door for door-capable creatures. Shoulder it open on
+        // arrival and hold position this tick — the same bump-to-open the hero gets. The
+        // incapable never get door cells in their paths, and the walkability check below holds
+        // them at the threshold if one appears anyway.
+        if (enemy.CanOpenDoors && maze.TryOpenDoor(next.x, next.y)) return;
         if (!maze.IsWalkable(next.x, next.y)) return;
 
         float dx = next.x - enemy.X;
@@ -127,7 +130,7 @@ public class MovementSystem
         bool needNewTarget = recalcIn <= 0 || targetX < 0 || targetY < 0 || !IsWalkable(maze, targetX, targetY);
         if (needNewTarget)
         {
-            var cell = FindRandomReachableCell(enemyGX, enemyGY, maze, 4, 10);
+            var cell = FindRandomReachableCell(enemyGX, enemyGY, maze, 4, 10, enemy.CanOpenDoors);
             if (cell.HasValue)
             {
                 targetX = cell.Value.x;
@@ -158,7 +161,8 @@ public class MovementSystem
             return;
         }
 
-        var path = FindPathToTarget(enemyGX, enemyGY, targetX, targetY, maze);
+        var path = FindPathToTarget(enemyGX, enemyGY, targetX, targetY, maze,
+            routeThroughDoors: enemy.CanOpenDoors);
         if (path == null || path.Count <= 1)
         {
             // Can't path; try new target next tick
@@ -387,10 +391,10 @@ public class MovementSystem
     }
     
     /// <summary>
-    /// Move enemy toward a target position during combat. Chase routes never pass through closed
-    /// doors (note 02 ruling: enemies don't open doors in v1 — a shut door legitimately breaks
-    /// pursuit; doors are player-paced safety valves). Idle movement differs: patrols route
-    /// through and open doors (MoveEnemyAlongPath), the seam note 09's NPCs will share.
+    /// Move enemy toward a target position during combat. Door handling follows the creature's
+    /// capability (owner ruling 2026-08-06): anything with hands and wits shoulders doors open
+    /// mid-chase exactly like the hero; a mindless or handless pursuer can't route through them,
+    /// so for zombies and beasts a shut door genuinely breaks pursuit.
     /// </summary>
     public void MoveEnemyTowardTarget(Enemy enemy, float targetX, float targetY, Maze maze)
     {
@@ -401,7 +405,8 @@ public class MovementSystem
     int heroGridX = (int)MathF.Round(targetX);
     int heroGridY = (int)MathF.Round(targetY);
 
-    var path = FindPathToTarget(startX, startY, heroGridX, heroGridY, maze, routeThroughDoors: false);
+    var path = FindPathToTarget(startX, startY, heroGridX, heroGridY, maze,
+        routeThroughDoors: enemy.CanOpenDoors);
 
     // Enemy desired range: aim slightly inside their attack range to ensure they close the distance
     float desiredRange = enemy.AttackRange - 0.15f;
@@ -415,6 +420,12 @@ public class MovementSystem
         {
             // Move along the path until within attack range
             var next = path[1];
+
+            // A door-capable pursuer shoulders a closed door open and holds this tick — the
+            // same bump-to-open the hero gets (the path only routes through doors when
+            // CanOpenDoors is set, so this never fires for the mindless).
+            if (enemy.CanOpenDoors && maze.TryOpenDoor(next.x, next.y)) return;
+
             float dx = next.x - enemy.X;
             float dy = next.y - enemy.Y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
@@ -623,7 +634,7 @@ public class MovementSystem
     /// Pick a random reachable walkable cell within [minRadius, maxRadius] from the start.
     /// Uses path existence as a reachability check.
     /// </summary>
-    private (int x, int y)? FindRandomReachableCell(int startX, int startY, Maze maze, int minRadius, int maxRadius)
+    private (int x, int y)? FindRandomReachableCell(int startX, int startY, Maze maze, int minRadius, int maxRadius, bool routeThroughDoors = true)
     {
         if (minRadius < 1) minRadius = 1;
         if (maxRadius < minRadius) maxRadius = minRadius + 1;
@@ -638,7 +649,7 @@ public class MovementSystem
             if (tx < 0 || tx >= maze.Width || ty < 0 || ty >= maze.Height) continue;
             if (!IsWalkable(maze, tx, ty)) continue;
 
-            var path = FindPathToTarget(startX, startY, tx, ty, maze);
+            var path = FindPathToTarget(startX, startY, tx, ty, maze, routeThroughDoors);
             if (path != null && path.Count > 1)
             {
                 return (tx, ty);

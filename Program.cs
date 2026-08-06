@@ -2869,14 +2869,21 @@ sealed class Program
         for (int i = 0; i < 160; i++) movement.MoveHeroTowardTarget(walker, 5, 1, goalMaze);
         Console.WriteLine($"Goal-walk: door={goalMaze.Tiles[3, 1]} (expect DoorOpen), hero X={walker.X:F2} (expect > 3, through the door)");
 
-        // 4) Enemy chase: enemies never open doors (note 02 v1 ruling) — the shut door breaks
-        // pursuit; the chaser neither opens it nor ghosts through it.
+        // 4) Enemy chase, door-capable (owner ruling 2026-08-06: hands open doors): the pursuer
+        // shoulders the door open mid-chase, exactly like the hero.
         var chaseMaze = CorridorMaze(TileType.DoorClosed);
         var chaser = new Enemy { X = 1, Y = 1, Agility = 4, AttackRange = 1.0f };
         for (int i = 0; i < 160; i++) movement.MoveEnemyTowardTarget(chaser, 5, 1, chaseMaze);
-        Console.WriteLine($"Enemy chase: door={chaseMaze.Tiles[3, 1]} (expect DoorClosed), enemy X={chaser.X:F2} (expect < 3, pursuit broken)");
+        Console.WriteLine($"Enemy chase (hands): door={chaseMaze.Tiles[3, 1]} (expect DoorOpen), enemy X={chaser.X:F2} (expect > 3)");
 
-        // 5) Tactical single-step: bumping the door spends the movement point opening it,
+        // 5) Enemy chase, mindless (CanOpenDoors=false — the future zombie/beast case): the
+        // shut door genuinely breaks pursuit; no opening, no ghosting through.
+        var doorProofMaze = CorridorMaze(TileType.DoorClosed);
+        var shambler = new Enemy { X = 1, Y = 1, Agility = 4, AttackRange = 1.0f, CanOpenDoors = false };
+        for (int i = 0; i < 160; i++) movement.MoveEnemyTowardTarget(shambler, 5, 1, doorProofMaze);
+        Console.WriteLine($"Enemy chase (mindless): door={doorProofMaze.Tiles[3, 1]} (expect DoorClosed), enemy X={shambler.X:F2} (expect < 3, pursuit broken)");
+
+        // 6) Tactical single-step: bumping the door spends the movement point opening it,
         // then the next step walks through.
         var gs = new GameState(4242, "Doorman", "Warrior", "Human") { IsRunning = true };
         gs.Enemies.Clear();
@@ -2892,7 +2899,7 @@ sealed class Program
         Console.WriteLine($"Tactical step: moved={step}, bump={bump}, door={afterBump} (expect DoorOpen), " +
             $"through={through}, hero=({gs.Hero.GridX},{gs.Hero.GridY}) (expect (3,1))");
 
-        // 6) Tactical click-to-move: the path routes through the door; opening it consumes the
+        // 7) Tactical click-to-move: the path routes through the door; opening it consumes the
         // step and ends the command at the threshold — no ghosting through a shut door.
         var gs2 = new GameState(4242, "Doorman", "Warrior", "Human") { IsRunning = true };
         gs2.Enemies.Clear();

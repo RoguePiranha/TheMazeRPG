@@ -766,6 +766,17 @@ public class GameState
         if (intent.Kind is TacticalIntentKind.Advance or TacticalIntentKind.Reposition &&
             intent.TargetX.HasValue && intent.TargetY.HasValue)
         {
+            // A planned step onto a closed door: opening it IS this turn's move (bump-to-open,
+            // door-capable actors only — the planner never routes the mindless through one).
+            // Done here at execution, never in the planner: the intent preview must not mutate
+            // the map.
+            if (enemy.CanOpenDoors &&
+                CurrentMaze.TryOpenDoor(intent.TargetX.Value, intent.TargetY.Value))
+            {
+                TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: opens the door";
+                _tacticalActionDelayTicks = TacticalActionDelayTicks;
+                return;
+            }
             BeginTacticalEnemyMotion(enemy, intent.TargetX.Value, intent.TargetY.Value);
             TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: {intent.Detail}";
             return;
@@ -895,10 +906,13 @@ public class GameState
             {
                 if (previous.ContainsKey(next) || !CurrentMaze.IsTraversable(next.x, next.y)) continue;
                 bool isHeroTarget = next == target && next == (Hero.GridX, Hero.GridY);
-                // CanEnemyOccupyCell is IsWalkable-based, so closed doors block enemy routes.
-                // Deliberate (note 02 v1 ruling): enemies never open doors — a shut door
-                // legitimately breaks pursuit, in real-time and tactical mode alike.
-                if (!isHeroTarget && !CanEnemyOccupyCell(next.x, next.y, actor, positions)) continue;
+                // Door-capable actors may route through a closed door — no one can OCCUPY it,
+                // but the mover opens it at execution (owner ruling 2026-08-06: hands open
+                // doors). The mindless never get door cells, so shut doors break their pursuit.
+                bool closedDoor = actor.CanOpenDoors &&
+                    CurrentMaze.TileAt(next.x, next.y).IsBumpOpenable();
+                if (!isHeroTarget && !closedDoor &&
+                    !CanEnemyOccupyCell(next.x, next.y, actor, positions)) continue;
                 previous[next] = current;
                 queue.Enqueue(next);
             }
