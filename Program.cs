@@ -2473,6 +2473,7 @@ sealed class Program
         int totalPatrols = 0;
         int eastWestDoorways = 0;
         int northSouthDoorways = 0;
+        int doorsGenerated = 0;
         var themeCounts = Enum.GetValues<DungeonTheme>().ToDictionary(theme => theme, _ => 0);
 
         Console.WriteLine("=== Dungeon map generation validation ===");
@@ -2533,6 +2534,22 @@ sealed class Program
                             eastWestDoorways++;
                         else
                             northSouthDoorways++;
+
+                        // Every doorway carries a real door, and it starts shut: blocking movement
+                        // and sight, but never severing the room behind it from the map.
+                        if (maze.Tiles[x, y] != TileType.DoorClosed)
+                            throw new InvalidOperationException(
+                                $"Seed {seed}, floor {floor}: doorway ({x},{y}) is {maze.Tiles[x, y]}, expected DoorClosed.");
+                        if (maze.IsWalkable(x, y))
+                            throw new InvalidOperationException(
+                                $"Seed {seed}, floor {floor}: shut door ({x},{y}) is walkable.");
+                        if (!maze.BlocksSight(x, y))
+                            throw new InvalidOperationException(
+                                $"Seed {seed}, floor {floor}: shut door ({x},{y}) does not block sight.");
+                        if (!maze.IsTraversable(x, y))
+                            throw new InvalidOperationException(
+                                $"Seed {seed}, floor {floor}: shut door ({x},{y}) is not traversable — it would cut off its room.");
+                        doorsGenerated++;
                     }
                 }
             }
@@ -2625,6 +2642,45 @@ sealed class Program
                 throw new InvalidOperationException($"{landmark.Type} did not trigger on contact.");
         }
 
+        // --- Door behaviour, on a real generated floor ---
+        {
+            var doorGame = new GameState(7, "Door Tester", "Warrior", "Human") { IsRunning = true };
+            var doorMaze = doorGame.CurrentMaze;
+            var door = FirstCellWhere(doorMaze, TileType.DoorClosed)
+                ?? throw new InvalidOperationException("Door behaviour test: floor generated no doors.");
+
+            // A shut door must not cut its room off: everything traversable stays reachable.
+            var reachable = doorMaze.BfsDistancesFrom(doorMaze.Dungeon!.EntranceX, doorMaze.Dungeon.EntranceY);
+            if (reachable.Count != doorMaze.GetTraversableCells().Count)
+                throw new InvalidOperationException("Door behaviour test: shut doors severed part of the floor.");
+
+            // Sight is blocked while shut, and passes once open.
+            if (!doorMaze.BlocksSight(door.x, door.y))
+                throw new InvalidOperationException("Door behaviour test: a shut door did not block sight.");
+
+            // Bump-to-open: walking into it opens it, after which it's walkable and see-through.
+            if (!doorMaze.TryOpenDoor(door.x, door.y))
+                throw new InvalidOperationException("Door behaviour test: bumping a closed door did not open it.");
+            if (!doorMaze.IsWalkable(door.x, door.y) || doorMaze.BlocksSight(door.x, door.y))
+                throw new InvalidOperationException("Door behaviour test: an opened door still blocks.");
+            if (doorMaze.TryOpenDoor(door.x, door.y))
+                throw new InvalidOperationException("Door behaviour test: an already-open door reported opening again.");
+
+            // Locked doors need their key: bumping does nothing, and they do sever the graph,
+            // which is what will make a vault a vault.
+            doorMaze.Tiles[door.x, door.y] = TileType.DoorLocked;
+            if (doorMaze.TryOpenDoor(door.x, door.y))
+                throw new InvalidOperationException("Door behaviour test: bumping opened a locked door.");
+            if (doorMaze.IsTraversable(door.x, door.y))
+                throw new InvalidOperationException("Door behaviour test: a locked door was still traversable.");
+            if (!doorMaze.TryUnlockDoor(door.x, door.y) ||
+                !doorMaze.IsWalkable(door.x, door.y))
+                throw new InvalidOperationException("Door behaviour test: unlocking did not open the door.");
+
+            Console.WriteLine($"Doors: {doorsGenerated} generated across the sweep; " +
+                              "shut = blocks movement + sight but stays traversable; bump opens; locked needs a key.");
+        }
+
         Console.WriteLine($"Validated {generated} floors ({seedCount} seeds x {floorCount} floors).");
         Console.WriteLine($"Rooms: {minimumRooms}-{maximumRooms}; exit BFS distance: {minimumExitDistance}-{maximumExitDistance}; " +
                           $"average loops: {(double)totalLoops / generated:0.00}.");
@@ -2633,6 +2689,15 @@ sealed class Program
         Console.WriteLine($"Doorways: east-west={eastWestDoorways}, north-south={northSouthDoorways}.");
         Console.WriteLine("Themes: " + string.Join(", ", themeCounts.Select(item => $"{item.Key}={item.Value}")));
         Console.WriteLine("Validated deterministic themes, room archetypes, and grouped population for 50 GameState seeds.");
+    }
+
+    private static (int x, int y)? FirstCellWhere(Maze maze, TileType tile)
+    {
+        for (int x = 0; x < maze.Width; x++)
+            for (int y = 0; y < maze.Height; y++)
+                if (maze.Tiles[x, y] == tile)
+                    return (x, y);
+        return null;
     }
 
     private static string[] ExpectedThemeRaces(DungeonTheme theme) => theme switch

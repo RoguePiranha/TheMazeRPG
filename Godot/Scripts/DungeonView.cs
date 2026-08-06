@@ -230,6 +230,15 @@ public partial class DungeonView : Node2D
     private void DrawCell(Maze maze, int x, int y, Palette palette, bool dimmed)
     {
         Rect2 cell = new(x * CellSize, y * CellSize, CellSize, CellSize);
+
+        // Shut doors block, so they'd otherwise fall into the wall branch and read as solid stone.
+        // Drawn before that check so a closed door looks like something you can open.
+        if (maze.TileAt(x, y).IsDoor())
+        {
+            DrawDoor(maze, x, y, cell, palette, dimmed);
+            return;
+        }
+
         if (maze.Walls[x, y])
         {
             DrawRect(cell, FogColor(palette.Wall, dimmed));
@@ -257,6 +266,59 @@ public partial class DungeonView : Node2D
             Vector2 half = eastWest ? new Vector2(0, 15) : new Vector2(15, 0);
             DrawLine(center - half, center + half, FogColor(palette.DoorwayEdge, dimmed), 3f);
         }
+    }
+
+    /// <summary>
+    /// A door reads at a glance: shut ones fill their frame so you can see they're in the way, open
+    /// ones swing aside leaving the threshold clear, locked ones carry a keyhole mark.
+    /// </summary>
+    private void DrawDoor(Maze maze, int x, int y, Rect2 cell, Palette palette, bool dimmed)
+    {
+        TileType tile = maze.TileAt(x, y);
+        bool eastWest = maze.Dungeon?.DoorwayOrientationAt(x, y) == DungeonPassageOrientation.EastWest;
+
+        // Floor underneath, so an open doorway reads as passable ground.
+        DrawRect(cell, FogColor(palette.Doorway, dimmed));
+
+        Color timber = tile == TileType.DoorLocked
+            ? new Color(0.42f, 0.29f, 0.16f)
+            : new Color(0.53f, 0.37f, 0.20f);
+        Color frame = new(0.24f, 0.17f, 0.10f);
+        Vector2 center = cell.GetCenter();
+
+        if (tile == TileType.DoorOpen)
+        {
+            // Swung aside: a leaf folded back against the jamb, threshold left clear.
+            Vector2 leafSize = eastWest ? new Vector2(CellSize * 0.72f, 7) : new Vector2(7, CellSize * 0.72f);
+            Vector2 leafAt = eastWest
+                ? new Vector2(cell.Position.X + CellSize * 0.14f, cell.Position.Y + 2)
+                : new Vector2(cell.Position.X + 2, cell.Position.Y + CellSize * 0.14f);
+            DrawRect(new Rect2(leafAt, leafSize), FogColor(timber, dimmed));
+            return;
+        }
+
+        // Shut: fills the opening, with a visible frame and plank seams.
+        Rect2 slab = eastWest
+            ? new Rect2(cell.Position.X, cell.Position.Y + CellSize * 0.18f, CellSize, CellSize * 0.64f)
+            : new Rect2(cell.Position.X + CellSize * 0.18f, cell.Position.Y, CellSize * 0.64f, CellSize);
+        DrawRect(slab, FogColor(timber, dimmed));
+        DrawRect(slab, FogColor(frame, dimmed), false, 2f);
+
+        for (int i = 1; i <= 2; i++)
+        {
+            float t = i / 3f;
+            Vector2 from = eastWest
+                ? new Vector2(slab.Position.X + slab.Size.X * t, slab.Position.Y)
+                : new Vector2(slab.Position.X, slab.Position.Y + slab.Size.Y * t);
+            Vector2 to = eastWest
+                ? new Vector2(slab.Position.X + slab.Size.X * t, slab.End.Y)
+                : new Vector2(slab.End.X, slab.Position.Y + slab.Size.Y * t);
+            DrawLine(from, to, FogColor(frame, dimmed), 1f);
+        }
+
+        DrawCircle(center, 3f, FogColor(tile == TileType.DoorLocked
+            ? new Color(0.85f, 0.72f, 0.30f)   // brass keyhole: this one needs a key
+            : new Color(0.20f, 0.15f, 0.09f), dimmed));
     }
 
     private void DrawExposedWallEdges(Maze maze, int x, int y, Rect2 cell, Color color)

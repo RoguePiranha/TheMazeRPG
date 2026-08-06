@@ -35,6 +35,7 @@ public partial class GameHost : Node
     private bool _startWorlds;
     private bool _startWorldCreation;
     private string? _scaleProbe;
+    private string? _debugCommands;
     private int _probeFramesRemaining;
     private double _probeWorstFrameMs;
     private double _probeTotalMs;
@@ -184,6 +185,16 @@ public partial class GameHost : Node
         else
         {
             ShowTitle();
+        }
+
+        if (_debugCommands != null && _inGame)
+        {
+            foreach (string command in _debugCommands["--debug-cmd=".Length..]
+                         .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                GD.Print($"GODOT_DEBUG_CMD {command} -> {_gameState.ExecuteDebugCommand(command)}");
+            }
+            _dungeonView.QueueRedraw();
         }
 
         // Counts worlds, not saves: listing saves resolves the active world scope, which would
@@ -895,6 +906,10 @@ public partial class GameHost : Node
         _startWorldCreation = arguments.Any(value => value.Equals("--start-world-creation", StringComparison.OrdinalIgnoreCase));
         _scaleProbe = arguments.FirstOrDefault(value =>
             value.StartsWith("--scale-probe=", StringComparison.OrdinalIgnoreCase));
+        // --debug-cmd="reveal;settime 22" — run console commands once the game is up, so a
+        // screenshot can be set up without hand-driving the client.
+        _debugCommands = arguments.FirstOrDefault(value =>
+            value.StartsWith("--debug-cmd=", StringComparison.OrdinalIgnoreCase));
         _startCharacterSheet = arguments.Any(value => value.Equals("--start-character-sheet", StringComparison.OrdinalIgnoreCase));
         _startProgression = arguments.Any(value => value.Equals("--start-progression", StringComparison.OrdinalIgnoreCase));
         _startOffers = arguments.Any(value => value.Equals("--start-offers", StringComparison.OrdinalIgnoreCase));

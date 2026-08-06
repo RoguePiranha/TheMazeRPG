@@ -4020,7 +4020,7 @@ public class GameState
             case "help": case "?":
                 result = "addxp N | addlevel N | addpoints N | addgold N | addprofession <id> | additem <id> [n] | " +
                          "addspell <id> [n] | moveplayer dungeon N|overworld|safe N | settime <hour> | " +
-                         "towngen <w> <h> | reset health|mana|stamina|faith|all | listitems";
+                         "towngen <w> <h> | reveal | reset health|mana|stamina|faith|all | listitems";
                 break;
 
             case "addxp": case "xp":
@@ -4080,6 +4080,22 @@ public class GameState
                 int hour = Math.Clamp(IntArg(1, 12), 0, 23);
                 Clock.TotalGameMinutes = (Clock.Day - 1) * 1440 + hour * 60;
                 result = $"World clock -> {Clock.TimeDisplay} (darkness {Clock.Darkness:0.00})";
+                break;
+            }
+
+            case "reveal":
+            {
+                // Mark the whole floor explored — for inspecting generated layouts (rooms, doors,
+                // corridors) without walking them first.
+                int revealed = 0;
+                for (int x = 0; x < CurrentMaze.Width; x++)
+                    for (int y = 0; y < CurrentMaze.Height; y++)
+                        if (!CurrentMaze.Walls[x, y] && !CurrentMaze.Explored[x, y])
+                        {
+                            CurrentMaze.Explored[x, y] = true;
+                            revealed++;
+                        }
+                result = $"Revealed {revealed} tile(s) on floor {CurrentFloor}";
                 break;
             }
 
