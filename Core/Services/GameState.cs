@@ -766,15 +766,6 @@ public class GameState
         if (intent.Kind is TacticalIntentKind.Advance or TacticalIntentKind.Reposition &&
             intent.TargetX.HasValue && intent.TargetY.HasValue)
         {
-            // A planned step onto a closed door: opening it IS this turn's move (bump-to-open).
-            // Done here at execution, never in the planner — the intent preview must not mutate
-            // the map.
-            if (CurrentMaze.TryOpenDoor(intent.TargetX.Value, intent.TargetY.Value))
-            {
-                TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: opens the door";
-                _tacticalActionDelayTicks = TacticalActionDelayTicks;
-                return;
-            }
             BeginTacticalEnemyMotion(enemy, intent.TargetX.Value, intent.TargetY.Value);
             TacticalTurn.LastEnemyAction = $"{TacticalTurn.ActiveEnemy}: {intent.Detail}";
             return;
@@ -904,11 +895,10 @@ public class GameState
             {
                 if (previous.ContainsKey(next) || !CurrentMaze.IsTraversable(next.x, next.y)) continue;
                 bool isHeroTarget = next == target && next == (Hero.GridX, Hero.GridY);
-                // A closed door may be routed through: no actor can occupy it, but the mover
-                // opens it on arrival (see ExecuteTacticalEnemyAction) rather than being walled.
-                bool closedDoor = CurrentMaze.TileAt(next.x, next.y).IsBumpOpenable();
-                if (!isHeroTarget && !closedDoor &&
-                    !CanEnemyOccupyCell(next.x, next.y, actor, positions)) continue;
+                // CanEnemyOccupyCell is IsWalkable-based, so closed doors block enemy routes.
+                // Deliberate (note 02 v1 ruling): enemies never open doors — a shut door
+                // legitimately breaks pursuit, in real-time and tactical mode alike.
+                if (!isHeroTarget && !CanEnemyOccupyCell(next.x, next.y, actor, positions)) continue;
                 previous[next] = current;
                 queue.Enqueue(next);
             }
@@ -990,7 +980,7 @@ public class GameState
         Level = Hero.Progression.CharacterLevel,
         // Lifetime levels arrive with PR 1's XP rework; current level is the best stand-in.
         TotalLevelsGained = Hero.Progression.CharacterLevel,
-        DaysLived = Clock.Day,
+        DaysLived = Math.Max(0, Clock.Day - _characterStartDay),
         CauseOfDeath = string.IsNullOrEmpty(_lastHeroDamageSource)
             ? "died of unknown causes"
             : $"slain by {_lastHeroDamageSource}",
@@ -1026,6 +1016,11 @@ public class GameState
     {
         TacticalTurn.Phase = TacticalPhase.WorldUpkeep;
         TickCount += _tacticalResolutionTicksPerTurn;
+        // World time passes in turn-based mode too — a tactical turn compresses the same
+        // simulated ticks the real-time loop would have run, and "a dive costs a slice of the
+        // day" only holds if the clock sees every one of them.
+        for (int tick = 0; tick < _tacticalResolutionTicksPerTurn; tick++)
+            Clock.AdvanceTick(_ticksPerSecond);
         RegenerateTacticalResources(_tacticalResolutionTicksPerTurn);
         for (int tick = 0; tick < _tacticalResolutionTicksPerTurn && CurrentActivity != null; tick++)
             UpdateCurrentActivity();
@@ -1037,7 +1032,9 @@ public class GameState
                 enemyPursuitTicks[enemy] = Math.Max(0, pursuit - _tacticalResolutionTicksPerTurn);
         }
         for (int tick = 0; tick < _tacticalResolutionTicksPerTurn; tick++) UpdatePerception();
-        UpdateDungeonThemeFeatures();
+        // Same per-simulated-tick cadence the real-time loop gives theme features.
+        for (int tick = 0; tick < _tacticalResolutionTicksPerTurn; tick++)
+            UpdateDungeonThemeFeatures();
 
         Hero.InCombat = Enemies.Any(enemy => enemy.IsAlive && enemy.InCombat);
         if (!Hero.InCombat) CheckFeatures();
@@ -1405,6 +1402,10 @@ public class GameState
     // enemy projectile outlives its shooter, and hazards have no actor at all.
     private string _lastHeroDamageSource = "";
 
+    // The world-clock day this character's life began (0 for the world's first character; set by
+    // RestartGame so a replacement doesn't inherit the fallen hero's days in their legacy record).
+    private int _characterStartDay;
+
     // Playtime accumulated in prior sessions (from a loaded save); TotalPlaytimeSeconds adds the
     // current session's elapsed ticks on top so it stays accurate without a per-tick save write.
     private double _priorPlaytimeSeconds;
@@ -1654,16 +1655,9 @@ public class GameState
             _accumulatedHealthRegen -= hpToRestore;
         }
         
-        // Dash timers: advance an active dash, then run down its cooldown.
-        if (_dashTicksRemaining > 0)
-        {
-            _dashTicksRemaining--;
-            if (_dashTicksRemaining == 0) _dashCooldownRemaining = _dashCooldownTicks;
-        }
-        else if (_dashCooldownRemaining > 0)
-        {
-            _dashCooldownRemaining--;
-        }
+        // (Dash timers advance at the END of Tick — after the movement and the i-frame check in
+        // projectile collisions have consumed this tick — so an N-tick dash yields N moved,
+        // invulnerable ticks rather than N-1.)
 
         // Move hero (unless busy with an activity)
         if (CurrentActivity == null)
@@ -1839,8 +1833,21 @@ public class GameState
                 }
             }
         }
+
+        // Dash timers: advance an active dash, then run down its cooldown. Last on purpose —
+        // every consumer of this tick's dash state (movement above, IsHeroInvulnerable in the
+        // projectile pass) has already run, so the configured tick count is honored exactly.
+        if (_dashTicksRemaining > 0)
+        {
+            _dashTicksRemaining--;
+            if (_dashTicksRemaining == 0) _dashCooldownRemaining = _dashCooldownTicks;
+        }
+        else if (_dashCooldownRemaining > 0)
+        {
+            _dashCooldownRemaining--;
+        }
     }
-    
+
     private void CheckCombat()
     {
         // Gather all enemies that are engaged (either seen by hero, see the hero, or close/persistent)
@@ -2274,16 +2281,28 @@ public class GameState
                 // Check against all living enemies
                 foreach (var enemy in Enemies.Where(e => e.IsAlive))
                 {
+                    // Multi-hit (AoE): each enemy resolves against this projectile at most once
+                    // over its whole lifetime — an expanding ring overlapping a target for many
+                    // ticks is one hit, not one hit per tick.
+                    if (p.CanHitMultiple && p.HitTargets.Contains(enemy)) continue;
+
                     float dx = p.CurrentX - enemy.X;
                     float dy = p.CurrentY - enemy.Y;
                     float dist = MathF.Sqrt(dx * dx + dy * dy);
                     if (dist <= (pr + enemy.Radius))
                     {
-                        // Dodge check: an agile enemy may evade the hit entirely.
+                        // Dodge check: an agile enemy may evade the hit entirely. For an AoE,
+                        // the dodger alone is exempted — the effect keeps going for everyone
+                        // else rather than being consumed by one nimble target.
                         if (RollDodge(enemy.Agility, p.Accuracy))
                         {
                             LogMessage($"The {enemy.Race} {enemy.Class} dodges!", MessageKind.Combat);
                             AddFloatingText("Dodge", enemy.X, enemy.Y - 0.4f, FloatingTextKind.Dodge);
+                            if (p.CanHitMultiple)
+                            {
+                                p.HitTargets.Add(enemy);
+                                continue;
+                            }
                             p.ConsumedOnHit = true;
                             p.LifeTime = p.MaxLifeTime;
                             break;
@@ -2292,7 +2311,7 @@ public class GameState
                         // Directional (manual) shots resolve their damage here against the enemy
                         // actually struck; auto-combat shots use the damage pre-baked at spawn.
                         int applied = p.StatDamage > 0
-                            ? ResolveStatDamage(p.StatDamage, enemy, p.Type == AttackAnimation.Magic, p.Element)
+                            ? ResolveStatDamage(p.StatDamage, enemy, p.IsMagic, p.Element)
                             : Math.Max(1, p.Damage);
                         enemy.Hp -= applied;
                         AddFloatingText(applied.ToString(), enemy.X, enemy.Y - 0.4f, FloatingTextKind.EnemyDamage);
@@ -2307,15 +2326,20 @@ public class GameState
                             Team = ProjectileTeam.Hero
                         });
 
-                        // End combat if enemy dies
+                        // Handle the kill — but only stand the hero down when no other engaged
+                        // enemy remains. Ending combat on every kill in a pack fight stomped the
+                        // hero's attack cooldown and re-imposed the engage wind-up per kill.
                         if (!enemy.IsAlive)
                         {
                             GameLog.Debug("  ✓ Enemy defeated by hit!");
                             HandleEnemyDefeated(enemy);
-                            Hero.InCombat = false;
                             enemy.InCombat = false;
-                            Hero.AnimationOffsetX = 0;
-                            Hero.AnimationOffsetY = 0;
+                            if (!Enemies.Any(e => e.IsAlive && e.InCombat))
+                            {
+                                Hero.InCombat = false;
+                                Hero.AnimationOffsetX = 0;
+                                Hero.AnimationOffsetY = 0;
+                            }
                             // Do not clear other projectiles; allow other combats to continue
                         }
 
@@ -2323,9 +2347,11 @@ public class GameState
                         {
                             p.ConsumedOnHit = true;
                             p.LifeTime = p.MaxLifeTime; // deactivate
+                            break;
                         }
-                        // If multi-hit, keep active for others this tick
-                        break;
+                        // Multi-hit: remember this target and keep sweeping — the same tick may
+                        // strike several enemies standing inside the effect.
+                        p.HitTargets.Add(enemy);
                     }
                 }
             }
@@ -2889,12 +2915,22 @@ public class GameState
     /// <summary>
     /// Sell an owned Combinable for gold at the Stall. Price reuses CombinationEngine's
     /// RarityPoints scale (the same one rarity-averaging already uses) rather than a second,
-    /// unrelated formula. Works whether the item is equipped (Loadout) or not (Inventory);
-    /// returns 0 (no gold) if the hero doesn't actually own the item.
+    /// unrelated formula. Works wherever the item lives — inventory, action-bar Loadout, or a
+    /// worn Equipment slot (physical gear equips into Equipment, not Loadout, and used to be
+    /// unsellable despite this method's contract); returns 0 if the hero doesn't own it.
     /// </summary>
     public int SellItem(Combinable item)
     {
         bool wasEquipped = Hero.Loadout.Remove(item);
+        if (!wasEquipped)
+        {
+            var slot = Hero.Equipment.FirstOrDefault(kv => ReferenceEquals(kv.Value, item));
+            if (slot.Value != null)
+            {
+                Hero.Equipment.Remove(slot.Key);
+                wasEquipped = true;
+            }
+        }
         bool owned = Hero.Inventory.Remove(item) || wasEquipped;
         if (!owned)
         {
@@ -3360,10 +3396,11 @@ public class GameState
         LogMessage($"The corpse of a level {enemy.Level} {enemy.Race} {enemy.Class}. It carries {carry}.", MessageKind.System);
     }
 
-    /// <summary>Move one item from a corpse to the hero's inventory. Returns true on success.</summary>
+    /// <summary>Move one item from a corpse to the hero's inventory. Returns true on success.
+    /// Corpses only — a living enemy's inventory is theirs (same guard LootGold has).</summary>
     public bool LootItem(Enemy corpse, Combinable item)
     {
-        if (corpse == null || item == null || !corpse.Inventory.Remove(item)) return false;
+        if (corpse == null || corpse.IsAlive || item == null || !corpse.Inventory.Remove(item)) return false;
         AcquireLoot(item);
         return true;
     }
@@ -3396,15 +3433,15 @@ public class GameState
     /// <summary>Move one item from the hero's inventory back onto a corpse (drag player→body).</summary>
     public bool DepositToCorpse(Enemy corpse, Combinable item)
     {
-        if (corpse == null || item == null || !Hero.Inventory.Remove(item)) return false;
+        if (corpse == null || corpse.IsAlive || item == null || !Hero.Inventory.Remove(item)) return false;
         corpse.Inventory.Add(item);
         return true;
     }
 
-    /// <summary>Take everything (items + gold) from a corpse.</summary>
+    /// <summary>Take everything (items + gold) from a corpse. Corpses only.</summary>
     public void LootAll(Enemy corpse)
     {
-        if (corpse == null) return;
+        if (corpse == null || corpse.IsAlive) return;
         foreach (var item in corpse.Inventory.ToList())
         {
             corpse.Inventory.Remove(item);
@@ -3706,8 +3743,35 @@ public class GameState
     /// when the generated town lands, only this method changes.</summary>
     private void PlaceHeroAtOverworldArrival()
     {
-        var entrance = CurrentMaze.Features.First(f => f.Type == MazeFeatureType.DungeonEntrance);
-        Hero.X = entrance.X + 1;
+        // Feature lookup, never coordinates (note 01 §0.3) — but a generated map that somehow
+        // lacks the entrance must degrade to a walkable spawn, not crash the load/exit path.
+        var entrance = CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.DungeonEntrance);
+        if (entrance == null)
+        {
+            GameLog.Debug("Town map has no DungeonEntrance feature — spawning at a fallback walkable cell.");
+            var fallback = CurrentMaze.GetEmptyCells().FirstOrDefault();
+            Hero.X = fallback.x;
+            Hero.Y = fallback.y;
+            return;
+        }
+        // Prefer the tile one east of the entrance; if that generated blocked, take any
+        // walkable neighbour rather than standing inside the structure.
+        if (CurrentMaze.IsWalkable(entrance.X + 1, entrance.Y))
+        {
+            Hero.X = entrance.X + 1;
+            Hero.Y = entrance.Y;
+            return;
+        }
+        foreach (var (dx, dy) in new[] { (-1, 0), (0, 1), (0, -1) })
+        {
+            if (CurrentMaze.IsWalkable(entrance.X + dx, entrance.Y + dy))
+            {
+                Hero.X = entrance.X + dx;
+                Hero.Y = entrance.Y + dy;
+                return;
+            }
+        }
+        Hero.X = entrance.X;
         Hero.Y = entrance.Y;
     }
 
@@ -3774,10 +3838,15 @@ public class GameState
         var yield = MiningService.Roll(tile, _random, MiningDepthAt(x, y));
         foreach (var (materialId, amount) in yield.Materials)
         {
-            AddHeroResource(materialId, SkillAdjustedYield("mining", amount));
+            // Roll the skill-adjusted amount ONCE: SkillAdjustedYield has a probabilistic
+            // round-up, so a second call for the log could report a different number than was
+            // granted — and the extra draw perturbed the seeded RNG stream the TEST_* demos
+            // depend on.
+            int granted = SkillAdjustedYield("mining", amount);
+            AddHeroResource(materialId, granted);
             var name = MaterialDataService.Instance.Materials.TryGetValue(materialId, out var def)
                 ? def.Name : materialId;
-            LogMessage($"Mined {SkillAdjustedYield("mining", amount)}x {name}", MessageKind.Loot);
+            LogMessage($"Mined {granted}x {name}", MessageKind.Loot);
         }
         if (yield.StruckGem)
         {
@@ -3914,74 +3983,20 @@ public class GameState
     /// </summary>
     private bool EnemyCanSeeHero(Enemy enemy)
     {
-        int scanSteps = 8; // 8 directions (every 45 degrees)
-        float scanStepRad = 2 * MathF.PI / scanSteps;
-        for (int i = 0; i < scanSteps; i++)
-        {
-            float facing = i * scanStepRad;
-            var visibleCells = GetDirectionalSightCone(enemy.X, enemy.Y, facing, VisionRange, VisionConeAngleRad);
-            int heroCellX = (int)MathF.Round(Hero.X);
-            int heroCellY = (int)MathF.Round(Hero.Y);
-            if (visibleCells.Contains((heroCellX, heroCellY)))
-                return true;
-        }
-        return false;
+        // Enemies watch all around (this used to scan 8 overlapping 90° sight cones — a full
+        // circle), so "can see" reduces to: hero's cell within vision range of the enemy's
+        // position, with line of sight to that cell center. Same answer as the cone union, but
+        // one Bresenham walk instead of ~8 × range² of them per enemy per tick.
+        int heroCellX = (int)MathF.Round(Hero.X);
+        int heroCellY = (int)MathF.Round(Hero.Y);
+        float dx = heroCellX - enemy.X;
+        float dy = heroCellY - enemy.Y;
+        if (dx * dx + dy * dy > VisionRange * VisionRange) return false;
+        return HasLineOfSight(enemy.X, enemy.Y, heroCellX, heroCellY);
     }
     
-    private bool HasLineOfSight(float x1, float y1, float x2, float y2)
-    {
-        // Use Bresenham's line algorithm to check if there's a wall between two points.
-        // Round maps a position to its containing cell (integer coords = cell centers),
-        // consistent with entity GridX/GridY, movement, and spawns.
-        int startX = (int)MathF.Round(x1);
-        int startY = (int)MathF.Round(y1);
-        int endX = (int)MathF.Round(x2);
-        int endY = (int)MathF.Round(y2);
-        
-        int dx = Math.Abs(endX - startX);
-        int dy = Math.Abs(endY - startY);
-        int sx = startX < endX ? 1 : -1;
-        int sy = startY < endY ? 1 : -1;
-        int err = dx - dy;
-        
-        int currentX = startX;
-        int currentY = startY;
-        
-        while (true)
-        {
-            // Check if current position is a wall
-            if (currentX >= 0 && currentX < CurrentMaze.Width && 
-                currentY >= 0 && currentY < CurrentMaze.Height)
-            {
-                if (CurrentMaze.Walls[currentX, currentY])
-                {
-                    return false; // Wall blocks line of sight
-                }
-            }
-            
-            // Reached the end point
-            if (currentX == endX && currentY == endY)
-            {
-                break;
-            }
-            
-            int err2 = 2 * err;
-            
-            if (err2 > -dy)
-            {
-                err -= dy;
-                currentX += sx;
-            }
-            
-            if (err2 < dx)
-            {
-                err += dx;
-                currentY += sy;
-            }
-        }
-        
-        return true; // No walls in the way
-    }
+    private bool HasLineOfSight(float x1, float y1, float x2, float y2) =>
+        SightLine.Clear(CurrentMaze, x1, y1, x2, y2);
     
     /// <summary>Extra MaxHp granted per Constitution point spent, scaled by racial effectiveness —
     /// mirrors the level-up HP formula's Constitution contribution so raising Con pays off in HP
@@ -4648,6 +4663,12 @@ public class GameState
         StairsLocation = null;
         IsInSafeRoom = false;
 
+        // The replacement character's own record starts now: no inherited playtime (the slot is
+        // reused but the run is fresh), and days-lived counts from today — the world clock keeps
+        // running because the world outlives its characters (owner ruling 2026-08-05).
+        _priorPlaytimeSeconds = 0;
+        _characterStartDay = Clock.Day;
+
         // Recreate systems with the new seed
         _random = new Random(Seed);
         _mazeGenerator = new MazeGenerator(Seed);
@@ -4684,6 +4705,10 @@ public class GameState
             Hero.Loadout = new List<Combinable>();
             Hero.Equipment = AttackFactory.GetStartingEquipment(_className);
         }
+        // Same starting torch the constructor grants — without it a restarted non-darkvision
+        // character is stuck at bare-eyes light radius with no way to get the guaranteed torch.
+        if (!Hero.Inventory.Concat(Hero.Loadout).Any(c => c.Id == "torch"))
+            Hero.Inventory.Add(CombinableCatalog.Torch());
         ProgressionService.Instance.Normalize(Hero);
         
         // Update resource pools based on attributes

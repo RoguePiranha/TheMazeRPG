@@ -172,10 +172,16 @@ public class Hero
     
     public void GainExperience(int amount)
     {
-        // Charisma boosts experience gains (effective value)
+        // Charisma boosts experience gains (effective value). NOTE: the real XP flow is
+        // ProgressionService.GrantSharedXp (kills, chests); this legacy path remains only for
+        // the debug demo and is slated for the note 01 §0.4 rework (Cha bonus removed,
+        // underdog bonus added at the kill site).
         int bonusXP = (int)(amount * (1.0f + EffectiveCharisma * 0.05f));
         Experience += bonusXP;
-        while (Experience >= ExperienceToNext)
+        // Guard: after ProgressionService.SyncLegacyFields, Experience holds BANKED unallocated
+        // XP and ExperienceToNext can be 0 — an unguarded `while (Experience >= 0)` here would
+        // cascade spurious level-ups (permanent HP/stat gains) off the banked total.
+        while (ExperienceToNext > 0 && Experience >= ExperienceToNext)
         {
             LevelUp();
         }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace TheMazeRPG.Core.Models;
 
@@ -30,6 +31,10 @@ public class Projectile
     // The attacker's accuracy (their effective Dexterity at fire time), used against the target's
     // Agility to roll a dodge on contact (see GameState.RollDodge).
     public float Accuracy { get; set; }
+    /// <summary>Whether this attack counts as magic for the target's 20% magic resist — decided
+    /// at spawn (Magic animation OR a mana/faith cost), so contact-time resolution matches the
+    /// target-locked path exactly.</summary>
+    public bool IsMagic { get; set; }
     // Combat fields
     public ProjectileTeam Team { get; set; } = ProjectileTeam.Neutral;
     public int Damage { get; set; } = 0;
@@ -44,6 +49,13 @@ public class Projectile
     public bool CanHitMultiple { get; set; } = false;
     // Internal: has already dealt its single-target hit
     public bool ConsumedOnHit { get; set; } = false;
+    /// <summary>
+    /// Multi-hit memory: enemies this projectile has already resolved against (hit OR dodged).
+    /// An AoE that overlaps a target for many ticks must damage it exactly once, not once per
+    /// tick — and a dodge exempts that enemy without cancelling the effect for everyone else.
+    /// Transient like the projectile itself; never persisted.
+    /// </summary>
+    public HashSet<Enemy> HitTargets { get; } = new();
     public int LifeTime { get; set; } = 0;
     public int MaxLifeTime { get; set; } = 30;
     public bool IsActive => LifeTime < MaxLifeTime && !HitWall;

@@ -73,19 +73,36 @@ public partial class MainWindowViewModel : ViewModelBase
             while (await _timer.WaitForNextTickAsync(_cts.Token))
             {
                 _gameState.Tick();
-                
-                // TODO: Trigger UI refresh / notify property changed
-                // This will be handled by the renderer
             }
         }
         catch (OperationCanceledException)
         {
             // Timer stopped
         }
+        catch (Exception ex)
+        {
+            // A Tick() fault used to vanish into the fire-and-forget task: rendering kept going,
+            // so the player saw a fully drawn world where nothing moved and no error existed
+            // anywhere. Log loudly and say so in-game — a visible failure can be reported.
+            GameLog.Debug($"Simulation loop crashed: {ex}");
+            Console.Error.WriteLine($"Simulation loop crashed: {ex}");
+            try
+            {
+                _gameState.Messages.Add(
+                    "The simulation hit an internal error and stopped — please save this session's log and report it.",
+                    MessageKind.Warning, _gameState.TickCount);
+            }
+            catch
+            {
+                // The state that just threw may be unusable; the console/debug log above stands.
+            }
+        }
     }
-    
+
     public void Stop()
     {
         _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
     }
 }

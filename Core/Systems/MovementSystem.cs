@@ -387,7 +387,10 @@ public class MovementSystem
     }
     
     /// <summary>
-    /// Move enemy toward a target position during combat
+    /// Move enemy toward a target position during combat. Chase routes never pass through closed
+    /// doors (note 02 ruling: enemies don't open doors in v1 — a shut door legitimately breaks
+    /// pursuit; doors are player-paced safety valves). Idle movement differs: patrols route
+    /// through and open doors (MoveEnemyAlongPath), the seam note 09's NPCs will share.
     /// </summary>
     public void MoveEnemyTowardTarget(Enemy enemy, float targetX, float targetY, Maze maze)
     {
@@ -398,7 +401,7 @@ public class MovementSystem
     int heroGridX = (int)MathF.Round(targetX);
     int heroGridY = (int)MathF.Round(targetY);
 
-    var path = FindPathToTarget(startX, startY, heroGridX, heroGridY, maze);
+    var path = FindPathToTarget(startX, startY, heroGridX, heroGridY, maze, routeThroughDoors: false);
 
     // Enemy desired range: aim slightly inside their attack range to ensure they close the distance
     float desiredRange = enemy.AttackRange - 0.15f;
@@ -412,11 +415,6 @@ public class MovementSystem
         {
             // Move along the path until within attack range
             var next = path[1];
-
-            // Bump-to-open on the chase path too, so a pursuing enemy opens a door rather than
-            // gliding through it (idle movement already does this in MoveEnemyAlongPath).
-            if (maze.TryOpenDoor(next.x, next.y)) return;
-
             float dx = next.x - enemy.X;
             float dy = next.y - enemy.Y;
             float distance = MathF.Sqrt(dx * dx + dy * dy);
@@ -531,9 +529,11 @@ public class MovementSystem
     }
     
     /// <summary>
-    /// BFS to find path to a specific target
+    /// BFS to find path to a specific target. By default routes may pass through closed doors
+    /// (the mover bumps them open on arrival); pass routeThroughDoors: false for movers that
+    /// must not open doors — enemy chase, per the note 02 v1 ruling.
     /// </summary>
-    private List<(int x, int y)>? FindPathToTarget(int startX, int startY, int targetX, int targetY, Maze maze)
+    private List<(int x, int y)>? FindPathToTarget(int startX, int startY, int targetX, int targetY, Maze maze, bool routeThroughDoors = true)
     {
         if (startX == targetX && startY == targetY)
             return new List<(int x, int y)> { (startX, startY) };
@@ -561,8 +561,11 @@ public class MovementSystem
             {
                 int newX = x + dx;
                 int newY = y + dy;
-                
-                if (CanRouteThrough(maze, newX, newY) && !visited.Contains((newX, newY)))
+
+                bool passable = routeThroughDoors
+                    ? CanRouteThrough(maze, newX, newY)
+                    : IsWalkable(maze, newX, newY);
+                if (passable && !visited.Contains((newX, newY)))
                 {
                     visited.Add((newX, newY));
                     var newPath = new List<(int x, int y)>(path) { (newX, newY) };
@@ -570,10 +573,10 @@ public class MovementSystem
                 }
             }
         }
-        
+
         return null; // No path found
     }
-    
+
     /// <summary>
     /// BFS to find path to nearest unexplored cell
     /// </summary>
@@ -672,58 +675,7 @@ public class MovementSystem
         return false;
     }
     
-    /// <summary>
-    /// Check if there's a clear line of sight between two points (no walls blocking)
-    /// </summary>
-    private bool CheckLineOfSight(float x1, float y1, float x2, float y2, Maze maze)
-    {
-        // Use Bresenham's line algorithm. Round maps a position to its containing cell
-        // (integer coords = cell centers), consistent with entity GridX/movement.
-        int startX = (int)MathF.Round(x1);
-        int startY = (int)MathF.Round(y1);
-        int endX = (int)MathF.Round(x2);
-        int endY = (int)MathF.Round(y2);
-        
-        int dx = Math.Abs(endX - startX);
-        int dy = Math.Abs(endY - startY);
-        int sx = startX < endX ? 1 : -1;
-        int sy = startY < endY ? 1 : -1;
-        int err = dx - dy;
-        
-        int currentX = startX;
-        int currentY = startY;
-        
-        while (true)
-        {
-            // Check if current position is a wall
-            if (currentX >= 0 && currentX < maze.Width && 
-                currentY >= 0 && currentY < maze.Height)
-            {
-                if (maze.Walls[currentX, currentY])
-                {
-                    return false; // Wall blocks line of sight
-                }
-            }
-            
-            // Reached the end point
-            if (currentX == endX && currentY == endY)
-            {
-                break;
-            }
-            
-            int e2 = 2 * err;
-            if (e2 > -dy)
-            {
-                err -= dy;
-                currentX += sx;
-            }
-            if (e2 < dx)
-            {
-                err += dx;
-                currentY += sy;
-            }
-        }
-        
-        return true; // Clear line of sight
-    }
+    /// <summary>Clear line between two points — delegates to the one shared walk (SightLine).</summary>
+    private static bool CheckLineOfSight(float x1, float y1, float x2, float y2, Maze maze) =>
+        SightLine.Clear(maze, x1, y1, x2, y2);
 }

@@ -23,6 +23,12 @@ public static class GamePaths
 
         _contentRoot = Path.GetFullPath(contentRoot);
         _saveRoot = Path.GetFullPath(saveRoot);
+
+        // Anything cached against the old roots is now wrong. Without this, a settings/config
+        // touch that happened before Configure silently pinned defaults from the wrong
+        // directory with no way to recover.
+        GameSettings.Invalidate();
+        WorldService.InvalidateCaches();
     }
 
     public static string Content(params string[] segments) => Combine(_contentRoot, segments);

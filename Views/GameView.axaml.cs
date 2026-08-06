@@ -115,13 +115,22 @@ public partial class GameView : UserControl
     /// <summary>Called by the shell window's KeyDown routing.</summary>
     public void HandleKey(KeyEventArgs e)
     {
+        // The death screen is modal: it offers its own buttons and nothing else. No key may open
+        // an overlay over it — a pause menu on top would freeze the restart countdown behind it.
+        if (_viewModel?.GameState.IsHeroDead == true)
+        {
+            e.Handled = true;
+            return;
+        }
+
         // Debug console: the backtick (`/~) key toggles it. While open it owns the keyboard —
         // Enter runs the command, Esc/backtick close it, and every other key falls through to the
-        // focused TextBox so typing works (we deliberately don't mark those Handled).
+        // focused TextBox so typing works (we deliberately don't mark those Handled). It only
+        // OPENS from gameplay: over another overlay it would stack two pause claims.
         if (e.Key == Key.OemTilde)
         {
             e.Handled = true;
-            ToggleConsole();
+            if (IsConsoleOpen || !AnyOverlayOpen) ToggleConsole();
             return;
         }
         if (IsConsoleOpen)
@@ -135,9 +144,9 @@ public partial class GameView : UserControl
         if (e.Key == Key.Tab)
         {
             e.Handled = true; // Prevent default Tab focus traversal
-            // Don't stack the stats panel on top of another modal overlay.
-            if (!IsPauseMenuOpen && !IsInventoryOpen && !IsLootOpen && !IsContextMenuOpen)
-                ToggleStats();
+            // Toggle only from gameplay or from the stats panel itself — never stacked on
+            // another overlay.
+            if (IsStatsOpen || !AnyOverlayOpen) ToggleStats();
         }
         else if (e.Key == Key.Escape)
         {
@@ -150,10 +159,11 @@ public partial class GameView : UserControl
             else if (IsStatsOpen) ToggleStats();
             else TogglePauseMenu();
         }
-        else if (e.Key == Key.I && !IsPauseMenuOpen)
+        else if (e.Key == Key.I)
         {
             e.Handled = true;
-            ToggleInventory();
+            // Same rule as Tab: toggle from gameplay or from the inventory itself only.
+            if (IsInventoryOpen || !AnyOverlayOpen) ToggleInventory();
         }
         else if (e.Key == Key.E && !AnyOverlayOpen && _viewModel?.GameState.NearbyInteractable is { } structure)
         {
@@ -245,7 +255,13 @@ public partial class GameView : UserControl
         _viewModel.GameState.SetManualMoveIntent(dx, dy);
     }
 
-    private void StatsButton_Click(object? sender, RoutedEventArgs e) => ToggleStats();
+    private void StatsButton_Click(object? sender, RoutedEventArgs e)
+    {
+        // The button floats above everything, so it needs the same rules as the Tab key: dead
+        // heroes get the death screen only, and stats never stacks on another overlay.
+        if (_viewModel?.GameState.IsHeroDead == true) return;
+        if (IsStatsOpen || !AnyOverlayOpen) ToggleStats();
+    }
 
     private bool IsStatsOpen => _statsOverlay?.IsOverlayVisible == true;
 
@@ -257,14 +273,12 @@ public partial class GameView : UserControl
         if (IsStatsOpen)
         {
             _statsOverlay.IsOverlayVisible = false;
-            _viewModel.GameState.IsRunning = true;
+            SyncPauseToOverlays();
         }
         else
         {
-            _viewModel.GameState.IsRunning = false;
-            _heldMoveKeys.Clear();
-            _viewModel.GameState.SetManualMoveIntent(0, 0);
             _statsOverlay.IsOverlayVisible = true;
+            OnOverlayOpened();
         }
     }
 
@@ -286,11 +300,8 @@ public partial class GameView : UserControl
         var overlay = this.FindControl<Border>("DebugConsoleOverlay");
         if (overlay == null || _viewModel == null) return;
 
-        _viewModel.GameState.IsRunning = false;
-        _heldMoveKeys.Clear();
-        _viewModel.GameState.SetManualMoveIntent(0, 0);
-
         overlay.IsVisible = true;
+        OnOverlayOpened();
         var input = this.FindControl<TextBox>("DebugConsoleInput");
         if (input != null)
         {
@@ -305,7 +316,7 @@ public partial class GameView : UserControl
         var overlay = this.FindControl<Border>("DebugConsoleOverlay");
         if (overlay == null || _viewModel == null) return;
         overlay.IsVisible = false;
-        _viewModel.GameState.IsRunning = true;
+        SyncPauseToOverlays();
     }
 
     /// <summary>Run whatever's in the console input, show the result on the output line, and clear
@@ -339,12 +350,8 @@ public partial class GameView : UserControl
         var overlay = this.FindControl<Border>("PauseMenuOverlay");
         if (overlay == null || _viewModel == null) return;
 
-        // Pause the simulation while the menu is up. Release any held movement so the hero
-        // doesn't keep drifting when we un-pause (key-ups may not arrive while paused).
-        _viewModel.GameState.IsRunning = false;
-        _heldMoveKeys.Clear();
-        _viewModel.GameState.SetManualMoveIntent(0, 0);
         overlay.IsVisible = true;
+        OnOverlayOpened();
 
         // Saving is only allowed in the Overworld or an unengaged safe room (GameState.CanSave).
         bool canSave = _viewModel.GameState.CanSave;
@@ -367,7 +374,7 @@ public partial class GameView : UserControl
         if (overlay == null || _viewModel == null) return;
 
         overlay.IsVisible = false;
-        _viewModel.GameState.IsRunning = true;
+        SyncPauseToOverlays();
     }
 
     private void ResumeButton_Click(object? sender, RoutedEventArgs e) =>
@@ -502,6 +509,33 @@ public partial class GameView : UserControl
         IsPauseMenuOpen || IsInventoryOpen || IsLootOpen || IsSellOpen ||
         IsStatsOpen || IsContextMenuOpen || IsConsoleOpen;
 
+    /// <summary>The overlays that pause the sim while up (the right-click context menu
+    /// deliberately does not pause).</summary>
+    private bool AnyPausingOverlayOpen =>
+        IsPauseMenuOpen || IsInventoryOpen || IsLootOpen || IsSellOpen ||
+        IsStatsOpen || IsConsoleOpen;
+
+    /// <summary>
+    /// The single authority for the pause flag: derived from what's actually on screen, called
+    /// after every overlay visibility change. The per-overlay `IsRunning = true` writes this
+    /// replaces could resume the sim while another overlay was still up (e.g. closing the debug
+    /// console under the pause menu let enemies attack behind the "PAUSED" screen).
+    /// </summary>
+    private void SyncPauseToOverlays()
+    {
+        if (_viewModel == null) return;
+        _viewModel.GameState.IsRunning = !AnyPausingOverlayOpen;
+    }
+
+    /// <summary>Release held movement when an overlay takes the keyboard (key-ups may never
+    /// arrive while it's up), then re-derive the pause flag.</summary>
+    private void OnOverlayOpened()
+    {
+        _heldMoveKeys.Clear();
+        _viewModel?.GameState.SetManualMoveIntent(0, 0);
+        SyncPauseToOverlays();
+    }
+
     private Button AddMenuItem(StackPanel panel, string text, Action onClick)
     {
         var btn = new Button
@@ -549,12 +583,9 @@ public partial class GameView : UserControl
         var overlay = this.FindControl<Border>("SellOverlay");
         if (overlay == null || _viewModel == null) return;
 
-        _viewModel.GameState.IsRunning = false;
-        _heldMoveKeys.Clear();
-        _viewModel.GameState.SetManualMoveIntent(0, 0);
-
         PopulateSell();
         overlay.IsVisible = true;
+        OnOverlayOpened();
     }
 
     private void CloseSell()
@@ -562,7 +593,7 @@ public partial class GameView : UserControl
         var overlay = this.FindControl<Border>("SellOverlay");
         if (overlay == null || _viewModel == null) return;
         overlay.IsVisible = false;
-        _viewModel.GameState.IsRunning = true;
+        SyncPauseToOverlays();
     }
 
     private void SellCloseButton_Click(object? sender, RoutedEventArgs e) => CloseSell();
@@ -582,8 +613,8 @@ public partial class GameView : UserControl
         if (panel == null) return;
         panel.Children.Clear();
 
-        // SellItem works on both inventory and equipped gear.
-        var items = hero.Inventory.Concat(hero.Loadout).ToList();
+        // SellItem works on inventory, action-bar loadout, AND worn Equipment slots.
+        var items = hero.Inventory.Concat(hero.Loadout).Concat(hero.Equipment.Values).ToList();
         if (items.Count == 0)
         {
             panel.Children.Add(MutedRow("You have no items to sell."));
@@ -617,14 +648,12 @@ public partial class GameView : UserControl
         if (overlay == null || _viewModel == null) return;
 
         _lootCorpse = corpse;
-        _viewModel.GameState.IsRunning = false; // pause while looting
-        _heldMoveKeys.Clear();
-        _viewModel.GameState.SetManualMoveIntent(0, 0);
 
         var title = this.FindControl<TextBlock>("LootTitle");
         if (title != null) title.Text = $"Loot — {corpse.Race} {corpse.Class}";
         PopulateLoot();
         overlay.IsVisible = true;
+        OnOverlayOpened();
     }
 
     private void CloseLoot()
@@ -633,7 +662,7 @@ public partial class GameView : UserControl
         if (overlay == null || _viewModel == null) return;
         overlay.IsVisible = false;
         _lootCorpse = null;
-        _viewModel.GameState.IsRunning = true;
+        SyncPauseToOverlays();
     }
 
     private void LootCloseButton_Click(object? sender, RoutedEventArgs e) => CloseLoot();
@@ -709,13 +738,9 @@ public partial class GameView : UserControl
         var overlay = this.FindControl<Border>("InventoryOverlay");
         if (overlay == null || _viewModel == null) return;
 
-        // Pause + release movement while managing gear (mirrors the pause menu).
-        _viewModel.GameState.IsRunning = false;
-        _heldMoveKeys.Clear();
-        _viewModel.GameState.SetManualMoveIntent(0, 0);
-
         PopulateInventory();
         overlay.IsVisible = true;
+        OnOverlayOpened();
     }
 
     private void CloseInventory()
@@ -724,7 +749,7 @@ public partial class GameView : UserControl
         if (overlay == null || _viewModel == null) return;
 
         overlay.IsVisible = false;
-        _viewModel.GameState.IsRunning = true;
+        SyncPauseToOverlays();
     }
 
     private void PopulateInventory()

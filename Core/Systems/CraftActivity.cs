@@ -48,22 +48,43 @@ public class CraftActivity : Activity
             }
         }
 
-        foreach (var kv in _recipe.Inputs)
-        {
-            gameState.AddHeroResource(kv.Key, -kv.Value);
-        }
-
         if (_recipe.OutputType == "weapon")
         {
-            // AcquireLoot logs the "Equipped/Found ..." message itself.
+            // Build the output BEFORE consuming inputs: a recipe whose OutputId the catalog
+            // doesn't know (typo, not yet implemented) must abort with the ingredients intact,
+            // not eat them and "succeed" with nothing to show.
+            var items = new List<Combinable>();
             for (int i = 0; i < _recipe.OutputAmount; i++)
             {
                 var item = CraftedItemCatalog.Build(_recipe.OutputId);
-                if (item != null) gameState.AcquireLoot(item);
+                if (item == null)
+                {
+                    GameLog.Debug($"CraftActivity '{_recipe.Name}': unknown output '{_recipe.OutputId}' — nothing crafted, inputs kept.");
+                    gameState.LogMessage($"{_recipe.Name} failed — the pattern is unknown. Materials kept.", MessageKind.Warning);
+                    _onComplete(gameState);
+                    return;
+                }
+                items.Add(item);
+            }
+
+            foreach (var kv in _recipe.Inputs)
+            {
+                gameState.AddHeroResource(kv.Key, -kv.Value);
+            }
+
+            // AcquireLoot logs the "Equipped/Found ..." message itself.
+            foreach (var item in items)
+            {
+                gameState.AcquireLoot(item);
             }
         }
         else
         {
+            foreach (var kv in _recipe.Inputs)
+            {
+                gameState.AddHeroResource(kv.Key, -kv.Value);
+            }
+
             gameState.AddHeroResource(_recipe.OutputId, _recipe.OutputAmount);
             var name = MaterialDataService.Instance.Materials.TryGetValue(_recipe.OutputId, out var def)
                 ? def.Name : _recipe.OutputId;

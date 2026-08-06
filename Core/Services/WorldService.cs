@@ -123,7 +123,11 @@ public static class WorldService
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error creating world '{world.Name}': {ex.Message}");
+            // A world that never reached disk must not masquerade as created: callers would
+            // activate the phantom id, every later lookup would find nothing, and the next
+            // EnsureActiveWorld would mint another. A save area that can't be written is not a
+            // continuable state — fail loudly where the cause is still attached.
+            throw new IOException($"Could not create world '{world.Name}' on disk: {ex.Message}", ex);
         }
 
         return world;
@@ -292,6 +296,9 @@ public static class WorldService
         {
             GameLog.Debug($"Failed to load worldgen.json, using defaults: {ex.Message}");
         }
+        // Missing or unreadable config: the built-in WorldSizeProfile/HostilityProfile defaults
+        // (a viable Small-sized world) apply to every size/hostility lookup.
+        GameLog.Debug("worldgen.json unavailable — every world will use built-in Small-world defaults.");
         return new WorldGenConfig();
     }
 
@@ -310,7 +317,11 @@ public static class WorldService
 
     /// <summary>Test/diagnostic hook: drop cached state so a fresh scope can be established without
     /// restarting the process (the TEST_* demos all share one process).</summary>
-    public static void ResetCachesForTesting()
+    public static void ResetCachesForTesting() => InvalidateCaches();
+
+    /// <summary>Drop all cached world/config state so the next read resolves fresh — used by the
+    /// TEST_* demos between scenarios and by GamePaths.Configure when the roots change.</summary>
+    public static void InvalidateCaches()
     {
         _activeWorldId = null;
         _activeProfile = null;

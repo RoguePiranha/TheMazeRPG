@@ -2,16 +2,20 @@ using System.Collections.Generic;
 
 namespace TheMazeRPG.Core.Models;
 
-/// <summary>Region dimensions and population for one WorldSize (Data/Config/worldgen.json).</summary>
+/// <summary>Region dimensions and population for one WorldSize (Data/Config/worldgen.json).
+/// The defaults mirror the "Small" profile so a missing or unparsable worldgen.json degrades to a
+/// playable small world — the region generator's geometry (60-tile mountain, 100-tile cleared
+/// band, forest fringe, river) physically cannot fit in anything much smaller, and an undersized
+/// fallback used to crash town generation outright.</summary>
 public class WorldSizeProfile
 {
-    public int RegionWidth { get; set; } = 96;
-    public int RegionHeight { get; set; } = 64;
-    public int Population { get; set; } = 100;
+    public int RegionWidth { get; set; } = 400;
+    public int RegionHeight { get; set; } = 384;
+    public int Population { get; set; } = 60;
 
     /// <summary>Depth in tiles of the forest fringe beyond the cleared band. Consumed by the region
     /// generator (PR 6); stored now so the size profile is complete in one table.</summary>
-    public int ForestDepth { get; set; } = 6;
+    public int ForestDepth { get; set; } = 32;
 }
 
 /// <summary>

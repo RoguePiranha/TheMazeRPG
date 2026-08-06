@@ -7,8 +7,11 @@ namespace TheMazeRPG.Core.Models;
 /// </summary>
 public class Maze
 {
-    public int Width { get; set; } = 41;
-    public int Height { get; set; } = 31;
+    // Private setters: dimensions are fixed at construction, where the Tiles/Explored arrays are
+    // sized to match. A stray external assignment would desynchronize InBounds from the actual
+    // array bounds (index-out-of-range or silent truncation).
+    public int Width { get; private set; } = 41;
+    public int Height { get; private set; } = 31;
     public int FloorNumber { get; set; } = 1;
 
     /// <summary>

@@ -1,3 +1,4 @@
+using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -137,15 +138,14 @@ public class StatsOverlay : Control
         {
             _isVisible = value;
             IsHitTestVisible = value; // Only intercept input when visible
+            // Idempotent rewiring: always detach first, so setting true twice can never
+            // double-subscribe (a double subscription spends two stat points per click).
+            PointerMoved -= OnPointerMoved;
+            PointerPressed -= OnPointerPressed;
             if (value)
             {
                 PointerMoved += OnPointerMoved;
                 PointerPressed += OnPointerPressed;
-            }
-            else
-            {
-                PointerMoved -= OnPointerMoved;
-                PointerPressed -= OnPointerPressed;
             }
             InvalidateVisual();
         }
@@ -186,29 +186,24 @@ public class StatsOverlay : Control
         UpdateStats();
     }
     
+    /// <summary>Refresh the displayed values from the hero. Deliberately does NOT invalidate:
+    /// Render calls this every pass, and a self-scheduled InvalidateVisual from inside the render
+    /// path pinned the visible panel in a max-rate redraw loop. Callers that change state
+    /// (SpendStatPoint) invalidate explicitly.</summary>
     private void UpdateStats()
     {
         if (_gameState?.Hero == null) return;
-        
-        try
-        {
-            HeroName = _gameState.Hero.Name ?? "Hero";
-            HeroClass = _gameState.Hero.Class ?? "Wanderer";
-            Level = _gameState.Hero.Level;
-            Strength = _gameState.Hero.Strength;
-            Constitution = _gameState.Hero.Constitution;
-            Agility = _gameState.Hero.Agility;
-            Dexterity = _gameState.Hero.Dexterity;
-            Intelligence = _gameState.Hero.Intelligence;
-            Wisdom = _gameState.Hero.Wisdom;
-            Charisma = _gameState.Hero.Charisma;
-            
-            InvalidateVisual();
-        }
-        catch
-        {
-            // Silently ignore update errors
-        }
+
+        HeroName = _gameState.Hero.Name ?? "Hero";
+        HeroClass = _gameState.Hero.Class ?? "Wanderer";
+        Level = _gameState.Hero.Level;
+        Strength = _gameState.Hero.Strength;
+        Constitution = _gameState.Hero.Constitution;
+        Agility = _gameState.Hero.Agility;
+        Dexterity = _gameState.Hero.Dexterity;
+        Intelligence = _gameState.Hero.Intelligence;
+        Wisdom = _gameState.Hero.Wisdom;
+        Charisma = _gameState.Hero.Charisma;
     }
     
     public override void Render(DrawingContext context)
@@ -463,9 +458,11 @@ public class StatsOverlay : Control
             statLabelBrush);
         context.DrawText(hintText, new Point(panelW - 160, panelH - 28));
         }
-        catch
+        catch (Exception ex)
         {
-            // Silently ignore rendering errors
+            // Keep the game alive through a panel-draw fault, but never silently: an eaten
+            // exception here made layout bugs in this panel undiagnosable.
+            Core.Services.GameLog.Debug($"StatsOverlay render failed: {ex}");
         }
     }
     

@@ -15,8 +15,20 @@ namespace TheMazeRPG.UI.Rendering;
 /// </summary>
 public static class TerrainService
 {
-    private const string ManifestPath = "Data/Sprites/terrain.json";
     private const string AssetRoot = "avares://TheMazeRPG/Assets/Sprites/";
+
+    /// <summary>Configured content root first, executable directory second — same rule as
+    /// SpriteService, so terrain art survives being launched from any working directory.</summary>
+    private static string ManifestPath
+    {
+        get
+        {
+            string configured = GamePaths.Content("Data", "Sprites", "terrain.json");
+            return File.Exists(configured)
+                ? configured
+                : Path.Combine(AppContext.BaseDirectory, "Data", "Sprites", "terrain.json");
+        }
+    }
     private static readonly Dictionary<string, TileSetDefinition> Sets = LoadManifest();
     private static readonly Dictionary<string, SKBitmap?> Atlases = new();
 

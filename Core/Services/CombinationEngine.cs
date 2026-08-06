@@ -60,8 +60,15 @@ public static class CombinationEngine
 
         bool sameKind = a.Kind == b.Kind;
         bool sameAttributes = a.Attributes.Count > 0 && a.Attributes.SetEquals(b.Attributes);
+        // Same THING, not merely same shape: two different items that happen to share a kind and
+        // attribute set (Leather Coat + Leather Gloves, both Armor {Light}) must Blend, not
+        // Intensify into a free rarity bump of whichever came first. Identity is the base name
+        // with any "+" suffix stripped, so X + X+ still intensifies.
+        bool sameIdentity = string.Equals(
+            a.Name.TrimEnd('+', ' '), b.Name.TrimEnd('+', ' '),
+            StringComparison.OrdinalIgnoreCase);
 
-        return (sameKind && sameAttributes) ? Intensify(a, b) : Blend(a, b);
+        return (sameKind && sameIdentity && sameAttributes) ? Intensify(a, b) : Blend(a, b);
     }
 
     /// <summary>Same thing + same element → a stronger version of it (rarity bumps, level resets).</summary>
@@ -87,9 +94,11 @@ public static class CombinationEngine
         var kind = ResultKind(a.Kind, b.Kind);
         var rarity = AverageRarity(a.Rarity, b.Rarity);
 
-        // Rarity increase resets level to 0 (Game Idea.md); otherwise take the lower level.
-        int maxInputRarity = (int)MaxRarity(a.Rarity, b.Rarity);
-        int level = (int)rarity > maxInputRarity ? 0 : Math.Min(a.Level, b.Level);
+        // Blends take the lower input level. (Game Idea.md's "rarity increase resets level"
+        // rule can never fire on this path: AverageRarity is mathematically bounded by the
+        // higher input rarity, so a blend never exceeds it — only Intensify raises rarity, and
+        // it already builds its result at level 0.)
+        int level = Math.Min(a.Level, b.Level);
 
         string name = $"{a.Name}-{b.Name} Fusion";
         return MakeResult(kind, a, b, attrs, rarity, level, name, Slug(name));

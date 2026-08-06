@@ -57,6 +57,7 @@ public sealed class MazeGenerator
 
         PlaceRooms(maze, layout, random);
         ConnectRooms(maze, layout, random);
+        SealRoomBreaches(maze, layout);
         AssignRoomRoles(maze, layout, random);
         AssignRoomArchetypes(layout, random);
         // After roles: which thresholds deserve a door depends on what the room is for.
@@ -174,8 +175,13 @@ public sealed class MazeGenerator
             if (from == null || to == null)
                 throw new InvalidOperationException("Could not connect all generated rooms.");
 
-            CarveBestCorridor(maze, layout, from, to, random, preferNewGround: false);
-            AddConnection(layout, edges, from.Id, to.Id, isLoop: false);
+            // Mark the room visited either way so the loop always terminates — but only record
+            // the edge when a corridor was actually carved. Recording a failed carve used to
+            // satisfy the validator's connection count with a phantom edge; now an unlinked
+            // room shows up as an incomplete graph (and disconnected tiles), failing the
+            // attempt so the floor regenerates instead of shipping.
+            bool carved = CarveBestCorridor(maze, layout, from, to, random, preferNewGround: false);
+            if (carved) AddConnection(layout, edges, from.Id, to.Id, isLoop: false);
             connected.Add(to.Id);
         }
 
@@ -285,6 +291,49 @@ public sealed class MazeGenerator
     {
         maze.Tiles[cell.x, cell.y] = TileType.Floor;
         layout.Tiles[cell.x, cell.y] = DungeonTileType.Doorway;
+    }
+
+    /// <summary>
+    /// Corridor carving may run flush along a room's wall ring, and any carved ring cell that
+    /// touches room floor is an unmarked, doorless breach — the vault's guaranteed door means
+    /// nothing when an open gap sits beside it. Seal each breach back to wall when the map stays
+    /// connected without it (traffic then flows through the room's real doorways); where sealing
+    /// would sever the graph, keep the opening but mark it a Doorway so it's a legitimate,
+    /// doorable entrance instead of a hole.
+    /// </summary>
+    private static void SealRoomBreaches(Maze maze, DungeonLayout layout)
+    {
+        if (layout.Rooms.Count == 0) return;
+        var anchor = (x: layout.Rooms[0].CenterX, y: layout.Rooms[0].CenterY);
+
+        int width = layout.Tiles.GetLength(0);
+        int height = layout.Tiles.GetLength(1);
+        for (int x = 1; x < width - 1; x++)
+        {
+            for (int y = 1; y < height - 1; y++)
+            {
+                if (layout.Tiles[x, y] != DungeonTileType.CorridorFloor) continue;
+                int roomNeighbours = CountRoomFloorNeighbours(layout, x, y);
+                if (roomNeighbours == 0) continue;
+
+                maze.Tiles[x, y] = TileType.Wall;
+                layout.Tiles[x, y] = DungeonTileType.Wall;
+                int traversable = maze.GetTraversableCells().Count;
+                var reachable = maze.BfsDistancesFrom(anchor.x, anchor.y);
+                if (reachable.Count != traversable)
+                {
+                    // The cell was the only link between two areas. Bordering exactly one room
+                    // tile, it's a legitimate one-tile threshold — promote it. Bordering more
+                    // (wedged between two rooms), a Doorway would break the one-tile-threshold
+                    // invariant, so leave it as the open corridor it was — no worse than before
+                    // this pass existed, and rare.
+                    maze.Tiles[x, y] = TileType.Floor;
+                    layout.Tiles[x, y] = roomNeighbours == 1
+                        ? DungeonTileType.Doorway
+                        : DungeonTileType.CorridorFloor;
+                }
+            }
+        }
     }
 
     private static int CountRoomFloorNeighbours(DungeonLayout layout, int x, int y)
@@ -673,7 +722,13 @@ public sealed class MazeGenerator
         };
         var room = preferredArchetypes
             .Select(archetype => layout.Rooms.FirstOrDefault(candidate => candidate.Archetype == archetype))
-            .FirstOrDefault(candidate => candidate != null);
+            .FirstOrDefault(candidate => candidate != null)
+            // Fall back to any Standard room: with only 1-2 Standard rooms, some themes'
+            // preferred archetypes don't exist yet (assignment order fills GuardPost/Barracks
+            // first), and the validator requires exactly one theme feature whenever a Standard
+            // room exists — returning empty-handed guaranteed a per-attempt validation failure
+            // on such floors.
+            ?? layout.Rooms.FirstOrDefault(candidate => candidate.Role == DungeonRoomRole.Standard);
         if (room == null) return;
 
         layout.ThemeFeatures.Add(new DungeonThemeFeature

@@ -74,11 +74,10 @@ public class CombatSystem
                 {
                     GameLog.Debug($"  → Hero attacks with {attack.Name}! (Distance: {distanceToEnemy:F2}, Range: {attack.Range})");
                     PerformHeroAttack(hero, enemy, projectiles);
-
-                    // Set cooldown based on attack, Dexterity, and minimum threshold
-                    int minCooldown = 8; // Lower minimum for snappier combat
-                    int statCooldown = attack.Cooldown - (int)(hero.EffectiveDexterity * 0.7f);
-                    hero.AttackCooldown = Math.Max(minCooldown, statCooldown);
+                    // Cooldown is set inside SpawnHeroProjectile (attack + Dex/Agi/Cha
+                    // reductions) — one formula for every fire path. A Dex-only copy here used
+                    // to overwrite it, making Auto combat slower for agile/charismatic heroes
+                    // than the identical manual attack.
 
                     // Damage is applied on projectile contact in GameState.ProcessProjectileCollisions,
                     // which also awards XP and ends combat on a kill. No synchronous kill check here.
@@ -132,9 +131,12 @@ public class CombatSystem
                 GameLog.Debug($"  → Enemy attacks! (Distance: {distanceToHero:F2}, Range: {enemy.AttackRange})");
                 PerformEnemyAttack(hero, enemy, projectiles);
             }
-            else if (distanceToHero <= enemy.AttackRange)
+            else if (enemyEffectiveDistance <= enemy.AttackRange + 0.01f)
             {
-                // In range but no LOS (ranged attack blocked by wall) - retry soon
+                // In range but no LOS (ranged attack blocked by wall) - retry soon. Same
+                // hitbox-aware distance as the attack branch above (they had drifted apart,
+                // leaving a band where a blocked enemy re-evaluated every tick with no delay
+                // and fired the instant LOS opened).
                 enemy.AttackCooldown = 10;
             }
         }
@@ -329,7 +331,12 @@ public class CombatSystem
                 Damage = isStatDamage ? 0 : d,
                 StatDamage = isStatDamage ? d : 0,
                 Radius = radius,
-                CanHitMultiple = multi
+                CanHitMultiple = multi,
+                // The same "counts as magic" rule the target-locked path applies at spawn time
+                // (animation OR a mana/faith cost), carried on the projectile so directional
+                // shots resolve magic resist identically on contact.
+                IsMagic = attack.Animation == AttackAnimation.Magic ||
+                          attack.ManaCost > 0 || attack.FaithCost > 0
             });
         }
 
@@ -535,60 +542,7 @@ public class CombatSystem
         return effectiveDistance <= enemy.AttackRange + 0.01f && hasLineOfSight;
     }
     
-    /// <summary>
-    /// Check if there's a clear line of sight between two points (no walls blocking)
-    /// </summary>
-    private bool HasLineOfSight(float x1, float y1, float x2, float y2, Maze maze)
-    {
-        // Use Bresenham's line algorithm. Round maps a position to its containing cell
-        // (integer coords = cell centers), consistent with entity GridX/movement.
-        int startX = (int)MathF.Round(x1);
-        int startY = (int)MathF.Round(y1);
-        int endX = (int)MathF.Round(x2);
-        int endY = (int)MathF.Round(y2);
-        
-        int dx = Math.Abs(endX - startX);
-        int dy = Math.Abs(endY - startY);
-        int sx = startX < endX ? 1 : -1;
-        int sy = startY < endY ? 1 : -1;
-        int err = dx - dy;
-        
-        int currentX = startX;
-        int currentY = startY;
-        
-        while (true)
-        {
-            // Check if current position is a wall
-            if (currentX >= 0 && currentX < maze.Width && 
-                currentY >= 0 && currentY < maze.Height)
-            {
-                if (maze.Walls[currentX, currentY])
-                {
-                    return false; // Wall blocks line of sight
-                }
-            }
-            
-            // Reached the end point
-            if (currentX == endX && currentY == endY)
-            {
-                break;
-            }
-            
-            int err2 = 2 * err;
-            
-            if (err2 > -dy)
-            {
-                err -= dy;
-                currentX += sx;
-            }
-            
-            if (err2 < dx)
-            {
-                err += dx;
-                currentY += sy;
-            }
-        }
-        
-        return true; // No walls in the way
-    }
+    /// <summary>Clear line between two points — delegates to the one shared walk (SightLine).</summary>
+    private bool HasLineOfSight(float x1, float y1, float x2, float y2, Maze maze) =>
+        SightLine.Clear(maze, x1, y1, x2, y2);
 }

@@ -28,9 +28,12 @@ public class MazeRenderer
     private float _lastOffsetY;
 
     /// <summary>Map a screen-space point (pixels, relative to the canvas) to world tile
-    /// coordinates, using the last rendered camera position.</summary>
+    /// coordinates, using the last rendered camera position. Entities at world (X, Y) draw at
+    /// pixel X*CellSize + CellSize/2 (cell centers), so the inverse subtracts the half-cell —
+    /// without it every click aims half a tile down-right of what was clicked.</summary>
     public (float x, float y) ScreenToWorld(double screenX, double screenY) =>
-        (((float)screenX - _lastOffsetX) / CellSize, ((float)screenY - _lastOffsetY) / CellSize);
+        (((float)screenX - _lastOffsetX) / CellSize - 0.5f,
+         ((float)screenY - _lastOffsetY) / CellSize - 0.5f);
 
     // Color palette — SimpleRPG's dark terminal-roguelike look: pure black void, near-black
     // floors, gray walls; entities/features pop in color against the dark.

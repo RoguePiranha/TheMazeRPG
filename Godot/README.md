@@ -7,7 +7,7 @@ application remains runnable while behavior is moved incrementally.
 
 1. Start the Godot 4.7.1 .NET editor.
 2. Choose **Import** in the Project Manager.
-3. Select `C:\TheMazeRPG\Godot\project.godot`.
+3. Select `Godot\project.godot` inside this repository (wherever the repo is checked out).
 4. Open the project, allow the initial C# build to finish, then press **F6** or **F5**.
 
 The project now starts at a Godot title screen with character creation and save selection. The

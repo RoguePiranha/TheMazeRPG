@@ -2,7 +2,9 @@
   "_comment": [
     "Curated runtime actor catalog grouped by original Pixel Crawler source set.",
     "All actors are authored facing screen-south and remain unrotated in the orthographic view.",
-    "Frame size is the sheet height; frames are arranged horizontally; frame zero is currently used."
+    "Frame size is the sheet height; frames are arranged horizontally; frame zero is currently used.",
+    "Advanced classes (Healer, Alchemist, Mage, Spellsword) reuse base-class art as STAND-INS",
+    "until dedicated sheets are curated - swap the asset here, no code change needed."
   ],
   "sets": {
     "Free Heroes": {
@@ -11,7 +13,10 @@
       "sprites": {
         "hero:Warrior": { "asset": "characters/warrior.png" },
         "hero:Rogue": { "asset": "characters/rogue.png" },
-        "hero:Mage Apprentice": { "asset": "characters/mage.png" }
+        "hero:Mage Apprentice": { "asset": "characters/mage.png" },
+        "hero:Mage": { "asset": "characters/mage.png" },
+        "hero:Alchemist": { "asset": "characters/mage.png" },
+        "hero:Spellsword": { "asset": "characters/warrior.png" }
       }
     },
     "Castle Royal Crew": {
@@ -20,6 +25,7 @@
       "sprites": {
         "hero:Archer": { "asset": "characters/archer.png" },
         "hero:Priest": { "asset": "characters/priest.png" },
+        "hero:Healer": { "asset": "characters/priest.png" },
         "enemy:Human:Warrior": { "asset": "enemies/human-warrior.png" },
         "enemy:Human:Archer": { "asset": "enemies/human-archer.png" },
         "enemy:Human:Priest": { "asset": "enemies/human-priest.png" },
@@ -80,7 +86,11 @@
         "enemy:Archer": { "asset": "enemies/skeleton-rogue.png" },
         "enemy:Priest": { "asset": "enemies/skeleton-mage.png" },
         "enemy:Bard": { "asset": "enemies/skeleton-base.png" },
-        "enemy:Wanderer": { "asset": "enemies/skeleton-base.png" }
+        "enemy:Wanderer": { "asset": "enemies/skeleton-base.png" },
+        "enemy:Healer": { "asset": "enemies/skeleton-mage.png" },
+        "enemy:Mage": { "asset": "enemies/skeleton-mage.png" },
+        "enemy:Alchemist": { "asset": "enemies/skeleton-mage.png" },
+        "enemy:Spellsword": { "asset": "enemies/skeleton-warrior.png" }
       }
     }
   }

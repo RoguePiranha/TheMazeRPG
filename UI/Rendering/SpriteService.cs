@@ -14,8 +14,22 @@ namespace TheMazeRPG.UI.Rendering;
 /// </summary>
 public static class SpriteService
 {
-    private const string ManifestPath = "Data/Sprites/sprites.json";
     private const string AssetRoot = "avares://TheMazeRPG/Assets/Sprites/";
+
+    /// <summary>The manifest path: the configured content root first (historical CWD behavior),
+    /// then the executable's own directory. Launching from a shortcut or another working
+    /// directory used to silently drop every sprite mapping — art "vanished" with only a
+    /// debug-log line to say why.</summary>
+    private static string ManifestPath
+    {
+        get
+        {
+            string configured = GamePaths.Content("Data", "Sprites", "sprites.json");
+            return File.Exists(configured)
+                ? configured
+                : Path.Combine(AppContext.BaseDirectory, "Data", "Sprites", "sprites.json");
+        }
+    }
 
     private static readonly Dictionary<string, string> Paths = LoadManifest();
     private static readonly Dictionary<string, SKBitmap?> Cache = new();

@@ -2869,11 +2869,12 @@ sealed class Program
         for (int i = 0; i < 160; i++) movement.MoveHeroTowardTarget(walker, 5, 1, goalMaze);
         Console.WriteLine($"Goal-walk: door={goalMaze.Tiles[3, 1]} (expect DoorOpen), hero X={walker.X:F2} (expect > 3, through the door)");
 
-        // 4) Enemy chase: the pursuer opens the door instead of gliding through a shut one.
+        // 4) Enemy chase: enemies never open doors (note 02 v1 ruling) — the shut door breaks
+        // pursuit; the chaser neither opens it nor ghosts through it.
         var chaseMaze = CorridorMaze(TileType.DoorClosed);
         var chaser = new Enemy { X = 1, Y = 1, Agility = 4, AttackRange = 1.0f };
         for (int i = 0; i < 160; i++) movement.MoveEnemyTowardTarget(chaser, 5, 1, chaseMaze);
-        Console.WriteLine($"Enemy chase: door={chaseMaze.Tiles[3, 1]} (expect DoorOpen), enemy X={chaser.X:F2} (expect > 3)");
+        Console.WriteLine($"Enemy chase: door={chaseMaze.Tiles[3, 1]} (expect DoorClosed), enemy X={chaser.X:F2} (expect < 3, pursuit broken)");
 
         // 5) Tactical single-step: bumping the door spends the movement point opening it,
         // then the next step walks through.

@@ -36,6 +36,11 @@ public class GameSettings
     /// <summary>Lazily-loaded, cached settings instance.</summary>
     public static GameSettings Current => _current ??= Load();
 
+    /// <summary>Drop the cached instance so the next read reloads from the (possibly
+    /// reconfigured) content root — called by GamePaths.Configure, because a settings object
+    /// cached before Configure was silently pinned to the wrong directory forever.</summary>
+    public static void Invalidate() => _current = null;
+
     public static GameSettings Load()
     {
         try

@@ -37,6 +37,25 @@ public static class RegionGenerator
     public static Maze Generate(WorldGenOptions options, out int effectiveSeed)
     {
         var profile = WorldService.ResolveProfile(options);
+
+        // Geometry floor, derived from the layout constants above: each axis must hold the
+        // cleared band and forest fringe on both open sides plus a real town — and the mountain
+        // edge is seed-random, so BOTH axes must satisfy the stricter constraint. An undersized
+        // profile used to surface as a cryptic ArgumentException inside AddGate's clamp (min >
+        // max); fail up front naming the actual cause instead. MazeGenerator guards its minimum
+        // dimensions the same way.
+        const int MinTownSpan = 30;
+        const int RiverJitter = 6; // CarveRiver's course wanders up to ±6 tiles
+        int forest = profile.Size.ForestDepth;
+        int minAxis = Math.Max(
+            MountainDepth + MinTownSpan + ClearedBand + forest + RiverInset + RiverWidth + RiverJitter,
+            2 * (ClearedBand + forest) + MinTownSpan);
+        if (profile.Size.RegionWidth < minAxis || profile.Size.RegionHeight < minAxis)
+            throw new InvalidOperationException(
+                $"Region size profile {profile.Size.RegionWidth}x{profile.Size.RegionHeight} (forest depth {forest}) " +
+                $"is below the {minAxis}-per-axis minimum the layout constants require — " +
+                "check Data/Config/worldgen.json.");
+
         IReadOnlyList<string> lastErrors = Array.Empty<string>();
 
         for (int attempt = 0; attempt < MaxAttempts; attempt++)
@@ -78,7 +97,7 @@ public static class RegionGenerator
         var river = CarveRiver(frame, region, localWidth, localHeight, random, profile.ForestDepth);
         var town = LayOutTown(region, frame, localWidth, localHeight, profile, river, random);
         var gates = CarveWallsAndGates(frame, region, town, random);
-        CarveRoads(frame, region, town, random);
+        CarveRoads(frame, region, town, gates, random);
         PlaceBuildings(frame, region, town, profile, random);
         PlacePointsOfInterest(maze, frame, region, town, gates, localHeight, random);
         PlantForest(frame, region, localWidth, localHeight, profile.ForestDepth, town, random);
@@ -362,7 +381,8 @@ public static class RegionGenerator
         return (gateLx, gateLy, side);
     }
 
-    private static void CarveRoads(Frame frame, RegionLayout region, TownRect town, Random random)
+    private static void CarveRoads(Frame frame, RegionLayout region, TownRect town,
+        List<(int lx, int ly, char side)> gates, Random random)
     {
         int squareSize = 9;
         int squareX = town.CenterX + random.Next(-town.Width / 8, town.Width / 8 + 1);
@@ -384,6 +404,26 @@ public static class RegionGenerator
         // reads as quarters rather than one undivided field.
         StripeHorizontal(frame, town.Left + 1, town.Right - 1, squareY);
         StripeVertical(frame, town.Top + 1, town.Bottom - 1, squareX);
+
+        // Gate access roads: gates are seed-placed along the walls independently of the spines,
+        // so each gets its own connecting road to the spine network — the comment above promises
+        // "each gate is on the network", and until now nothing actually delivered that (a gate
+        // usually opened onto bare field inside the wall).
+        foreach (var gate in gates)
+        {
+            switch (gate.side)
+            {
+                case 'E':
+                    StripeHorizontal(frame, squareX, town.Right - 1, gate.ly);
+                    break;
+                case 'N':
+                    StripeVertical(frame, town.Top + 1, squareY, gate.lx);
+                    break;
+                default: // 'S'
+                    StripeVertical(frame, squareY, town.Bottom - 1, gate.lx);
+                    break;
+            }
+        }
 
         // Side streets on a rough grid off the spines. Without these every building in town would
         // have to front one of the two main roads, and the whole population ends up in a single
@@ -434,7 +474,6 @@ public static class RegionGenerator
         for (int i = 0; i < homes; i++) wanted.Add(BuildingKind.Home);
 
         int id = 0;
-        int attempts = wanted.Count * 60;
         var placed = new List<Building>();
 
         foreach (var kind in wanted)
@@ -442,6 +481,10 @@ public static class RegionGenerator
             var (bw, bh) = FootprintFor(kind, random);
             Building? building = null;
 
+            // Per-building budget: a shared pool drained by early failures silently skipped the
+            // later homes, so congested layouts shipped towns housing a fraction of the profile
+            // population.
+            int attempts = 60;
             while (attempts-- > 0)
             {
                 int lx = random.Next(town.Left + 2, Math.Max(town.Left + 3, town.Right - bw - 1));
@@ -617,9 +660,9 @@ public static class RegionGenerator
         // to work, not a symbol standing on grass.
         int aditLength = 8;
 
-        // Guard station stands beside the dungeon approach (Starting Region.md).
-        var guard = region.Buildings.FirstOrDefault(b => b.Kind == BuildingKind.GuardStation);
-        _ = guard;
+        // Starting Region.md wants the guard station beside the dungeon approach; today buildings
+        // land on whatever road frontage fits, and repositioning a carved building isn't worth
+        // building here — note 08's prefab-on-lots rework places it properly, with a validator.
 
         // The mine sits outside the walls, further down the same mountainside (Starting Region.md) —
         // so it has to clear the town's vertical span, not merely sit against the mountain.
@@ -645,7 +688,9 @@ public static class RegionGenerator
         StripeHorizontal(frame, MountainDepth + 1, target.lx, laneY);
         StripeVertical(frame, Math.Min(laneY, target.ly), Math.Max(laneY, target.ly), target.lx);
 
-        // Trade premises get their interactable feature on the interior side of their door.
+        // Trade premises get their interactable feature on the interior side of their door —
+        // one step inward, never ON the door tile, where the bump-to-open door and the Press-E
+        // interaction would fight over the same cell.
         foreach (var building in region.Buildings)
         {
             var type = building.Kind switch
@@ -654,10 +699,12 @@ public static class RegionGenerator
                 _ => (MazeFeatureType?)null
             };
             if (type == null) continue;
+            int inwardX = building.DoorX == building.X ? 1 : building.DoorX == building.Right ? -1 : 0;
+            int inwardY = building.DoorY == building.Y ? 1 : building.DoorY == building.Bottom ? -1 : 0;
             maze.Features.Add(new MazeFeature
             {
-                X = Clamp(building.DoorX, maze.Width),
-                Y = Clamp(building.DoorY, maze.Height),
+                X = Clamp(building.DoorX + inwardX, maze.Width),
+                Y = Clamp(building.DoorY + inwardY, maze.Height),
                 Type = type.Value
             });
         }
@@ -676,13 +723,26 @@ public static class RegionGenerator
                 maze.Features.Add(new MazeFeature { X = stallX, Y = stallY, Type = MazeFeatureType.Stall });
         }
 
-        // Street lamps along the spine roads, so the night layer has something to light.
+        // Street lamps along the east-west spine road. The spine sits at the plaza's jittered
+        // row, not the town's centre row — find the road by scanning outward from centre, and
+        // only ever plant a lamp on road (never inside a home, whose floor is also passable).
         for (int lx = town.Left + 6; lx < town.Right; lx += 14)
         {
-            int ly = town.CenterY;
-            var (wx, wy) = frame.ToWorld(lx, ly + 2);
-            if (maze.InBounds(wx, wy) && maze.Tiles[wx, wy].IsPassable())
-                maze.Features.Add(new MazeFeature { X = wx, Y = wy, Type = MazeFeatureType.Lamp });
+            for (int r = 0; r <= town.Height / 2; r++)
+            {
+                bool placed = false;
+                foreach (int ly in r == 0 ? new[] { town.CenterY } : new[] { town.CenterY - r, town.CenterY + r })
+                {
+                    if (ly <= town.Top || ly >= town.Bottom) continue;
+                    if (frame.Get(lx, ly) != TileType.Road) continue;
+                    var (wx, wy) = frame.ToWorld(lx, ly);
+                    if (maze.InBounds(wx, wy))
+                        maze.Features.Add(new MazeFeature { X = wx, Y = wy, Type = MazeFeatureType.Lamp });
+                    placed = true;
+                    break;
+                }
+                if (placed) break;
+            }
         }
     }
 

@@ -9,7 +9,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Folder Include="Models\" />
     <!-- Bundle only game-ready assets: the font/icon plus the curated flat sprite folders
          (Assets\Sprites\characters|enemies|items|structures|tiles). The raw "Pixel Crawler - *"
          pack directories stay in the repo as an art library but are deliberately NOT shipped —
