@@ -295,9 +295,9 @@ The DF/CDDA layer, all confirmed in-milestone. Per-system notes 15–18.
 | 4 | 3.1 status effects + per-entity TimeScale substrate | M | — (parallel-capable) |
 | 4b | 3.6 Agility time dilation + TEST_TEMPO | S | PR 4 |
 | 4c | 3.10 turn-based world-waits mode + TEST_TURNBASED | S | PR 4 |
-| 5 | 3.2–3.3 behavior payloads + kit identity | M | PR 4 |
+| 5 | 3.2–3.3 behavior payloads + kit identity + miss/dodge visualization (deflected projectiles + dodge juke — note 07) | M | PR 4 |
 | 5b | 3.7 stealth: sneak mode, noise events, awareness AI, sneak overlay + TEST_STEALTH | M | PR 5 (stealth strike) |
-| 5c | 3.8 armor & equipment slots + TEST_ARMOR | M | PR 5 |
+| 5c | 3.8 armor & equipment slots + **blocking** (shield block, weapon parry, active guard — note 13) + TEST_ARMOR | M | PR 5 |
 | 5d | 3.9 creatures & bestiary (variants, spawn rework, cursed-race dungeons) + TEST_CREATURES | M | PR 5 (payloads); before PR 8 |
 | 6a | 2.0 world foundation: WorldGenOptions, world↔character save split, creation flow, legacy records | M | — (must precede PR 6) |
 | 6 | 2.1–2.2 RegionGenerator (grammar + prefabs) → per-world freeze → load | L | PR 2, PR 6a |

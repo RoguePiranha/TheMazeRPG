@@ -70,6 +70,24 @@ Entry paths: `LootService` pool gains Tier-0 charms (low floors) and Tier-1 (flo
 
 `CombinableCatalog`'s hardcoded fireball/ice-shard migrate into the JSON (ids preserved so visuals/element maps hold).
 
+## Miss/dodge visualization (owner request 2026-08-05 — ride along with PR 5's collision work)
+
+Today a dodged shot is invisible as a miss: `RollDodge` fires at **collision time**, the
+projectile has already reached the target, and it despawns right on them — reads exactly like a
+hit; only the log line (and the floating "Dodge" text) says otherwise. Fix, all Core-side so both
+clients get it for free:
+
+1. **Deflection continuation**: on a successful dodge, don't consume the projectile — kick its
+   heading by a small random angle (±12–20°) and let it fly on for its remaining lifetime (walls
+   still stop it), so the arrow visibly sails past. No hit-flash on dodge (already true).
+2. **The dodge juke**: give the dodger a brief perpendicular `AnimationOffset` lurch (the same
+   plumbing combat lunges use) so it reads as *they dodged*, not *it missed*. Applies to enemies
+   dodging hero shots, the hero dodging enemy shots, and dash i-frames (the arrow passes through
+   where you *were*).
+3. Later, with the stealth/accuracy work: consider rolling accuracy at **fire time** and aiming
+   genuine misses at an offset point, so the whole flight telegraphs the outcome — v2; the
+   deferred-damage architecture stays as-is for v1.
+
 ## Verification
 
 - `TEST_BEHAVIOR`: per-payload asserts — pierce hits exactly N+1 targets in a line; chain jumps ≤ ChainRange with falloff; explode damages by radius with falloff; knockback displaces and wall-clamps; homing curves within turn-rate; multishot spreads N projectiles; backstab multiplier fires only from behind cone; lifesteal heals owner; every §3 JSON entry loads, projects to `Attack`, and fires without fallback warnings.

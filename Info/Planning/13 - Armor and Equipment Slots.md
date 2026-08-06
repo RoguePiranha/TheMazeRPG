@@ -31,6 +31,32 @@ Rings/amulet v1 are inert stat/affinity carriers (small bonuses, rarity-scaled, 
 - Guards visibly armored (render: outline/trim tint by weight class v1).
 - Kill → pieces drop into corpse inventory through the existing loot path (this also closes the old "enemies' actual equipped gear as loot" deferral for armor).
 
+## Blocking (owner request 2026-08-05 — ships with this PR; shields are equipment)
+
+Three layers, finally consuming the long-dead `Attack.ParryChance` field and the never-produced
+`VisualStyle.Parry`:
+
+1. **Shield block (passive, OffHand gear).** A `Shield` weapon type (hand-occupancy rules already
+   exist — a shield takes the off hand, blocking two-handers): carries `BlockChance` +
+   `BlockReduction`. On an incoming hit, roll after dodge and before damage: blocked → damage
+   reduced by the shield's value (rarity-scaled like everything else), a **clang spark** at the
+   contact point (new `HitEffectType.Block`), and the projectile **ricochets** via the note-07
+   deflection continuation instead of despawning — blocks look like blocks. Small stamina cost
+   per block; at 0 stamina the block fails through (guard fatigue without a full guard-break
+   system yet).
+2. **Weapon parry (passive, melee vs melee).** `ParryChance` wires in at the same collision
+   point, melee-vs-melee only: a parry negates the hit and opens a short **riposte window**
+   (~1s: your next melee hit +50%). Sharp/Light weapons carry the meaningful parry values —
+   the dagger-fencer identity.
+3. **Active guard (player verb, v1.5 of this PR).** Hold a key to raise guard: frontal-arc
+   (~120°, facing = last move/aim direction) damage −70%, movement slowed, stamina drain per
+   blocked hit — pairs with the facing work stealth introduces (PR 5b). Warriors/guards get an
+   AI version (chance to guard when hurt) so the mechanic reads in both directions.
+- ⚠ owner tunables: block/parry magnitudes, stamina costs, riposte bonus; and whether Heavy
+  attacks get an `Unblockable`/guard-crushing tag (note 07's payload system can carry it).
+- TEST_ARMOR gains: block roll reduces by exactly the shield's scaled value; parry negates and
+  buffs the riposte once; guard arc blocks frontal only; stamina drain + fail-through at 0.
+
 ## TEST_ARMOR
 
 Equip/unequip round-trips save/load per slot; defense math exact (piece sum × rarity); typed resist reduces matching element only; Heavy slows movement and raises step-noise radius (compose with note 11 assert); enemy with armor takes measurably less damage than bare control at equal stats; corpse drops equipped pieces; forge-combine of two armor pieces respects location gating. Full regression + re-baselined TEST_BALANCE.

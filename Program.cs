@@ -845,7 +845,12 @@ sealed class Program
         Enemy[] areaTargets = aimGs.Enemies.Take(2).ToArray();
         aimGs.Enemies.Clear();
         aimGs.SetControlMode(ControlMode.Manual);
-        aimGs.SelectAttack(1);
+        // Select Arcane Blast by id, not by slot index — the basic-attack insertion shifted the
+        // hotbar order and silently pointed the old SelectAttack(1) at Mana Dart (no AoE), which
+        // is exactly what this demo's area asserts then tripped over.
+        int arcaneSlot = Enumerable.Range(0, aimGs.Hero.HotbarCapacity)
+            .First(i => aimGs.HotbarAttackAt(i)?.Id == "arcane-blast");
+        aimGs.SelectAttack(arcaneSlot);
         aimGs.SetSimulationMode(SimulationMode.TurnBased);
         var aimLane = aimGs.CurrentMaze.GetEmptyCells()
             .SelectMany(cell => directions.Select(direction => (cell, direction)))
@@ -1635,7 +1640,9 @@ sealed class Program
         // Directly verify the safe-room/Guardian path by teleporting to each floor's stairs
         // (skipping the maze-solving itself) so real game logic drives the interesting part.
         Console.WriteLine("\n=== Fast-forward to floor 4's safe room (teleport to stairs each floor) ===");
-        var gsGuardian = new GameState(22, "Fast", "Warrior", "Human");
+        // Debug race: durable enough that a Mage guardian can't one-shot the pacing demo's hero
+        // (shared-XP banking keeps demo heroes at level 1 — this demo tests floor pacing, not combat).
+        var gsGuardian = new GameState(22, "Fast", "Warrior", "Debug");
         gsGuardian.IsRunning = true;
         for (int floor = 1; floor <= 4; floor++)
         {
@@ -1658,6 +1665,9 @@ sealed class Program
         {
             Console.WriteLine($"Guardian fight is floor {gsGuardian.CurrentFloor} (expect 5 — the Guardian floor itself)");
             gsGuardian.Boss.Hp = 1; // force a quick, deterministic kill to verify the defeat hook
+            // Safe rooms force Manual control; hand the chamber fight back to auto-play so the
+            // hero actually swings (this demo verifies the defeat hook, not player input).
+            gsGuardian.SetControlMode(ControlMode.Auto);
             for (int t = 0; t < 500 && gsGuardian.Boss != null; t++) gsGuardian.Tick();
             Console.WriteLine($"Guardian defeated -> Floor={gsGuardian.CurrentFloor} (expect 6), InSafeRoom={gsGuardian.IsInSafeRoom}, Boss={(gsGuardian.Boss == null ? "null (resolved correctly)" : "STILL SET (bug)")}");
         }
@@ -1691,7 +1701,7 @@ sealed class Program
 
         // Separately verify the shrine-exit path (fresh instance so it isn't affected by the fight above).
         Console.WriteLine("\n=== Verify shrine exit preserves hero progress ===");
-        var gsShrine = new GameState(33, "Fast2", "Warrior", "Human");
+        var gsShrine = new GameState(33, "Fast2", "Warrior", "Debug");
         gsShrine.IsRunning = true;
         for (int floor = 1; floor <= 4; floor++)
         {
