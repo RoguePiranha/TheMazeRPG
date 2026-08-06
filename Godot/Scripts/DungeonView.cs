@@ -239,20 +239,22 @@ public partial class DungeonView : Node2D
             return;
         }
 
+        // Terrain before the wall branch. Rock, trees and water are all impassable, so Walls[x,y]
+        // is true for them and would swallow every one into the generic wall look — hiding the ore
+        // seams that are the entire point of being able to see a rock face.
+        TileType terrain = maze.TileAt(x, y);
+        if (terrain is TileType.Road or TileType.Water or TileType.Tree
+            or TileType.Stone or TileType.OreVein or TileType.Bedrock)
+        {
+            DrawTerrainCell(terrain, x, y, cell, palette, dimmed);
+            return;
+        }
+
         if (maze.Walls[x, y])
         {
             DrawRect(cell, FogColor(palette.Wall, dimmed));
             DrawRect(cell.Grow(-1), FogColor(palette.WallInset, dimmed), false, 1f);
             DrawExposedWallEdges(maze, x, y, cell, FogColor(palette.WallEdge, dimmed));
-            return;
-        }
-
-        // Outdoor terrain first: generated regions speak in roads, water and trees, which the
-        // dungeon's room/corridor vocabulary has no entry for.
-        TileType terrain = maze.TileAt(x, y);
-        if (terrain is TileType.Road or TileType.Water or TileType.Tree)
-        {
-            DrawTerrainCell(terrain, x, y, cell, palette, dimmed);
             return;
         }
 
@@ -315,6 +317,43 @@ public partial class DungeonView : Node2D
                 DrawLine(cell.Position + new Vector2(4, 14 + jitter * 8f),
                     cell.Position + new Vector2(CellSize - 6, 12 + jitter * 8f),
                     FogColor(new Color(0.45f, 0.66f, 0.85f, 0.55f), dimmed), 1.5f);
+                break;
+            }
+
+            case TileType.Stone:
+            {
+                var rock = new Color(0.34f, 0.32f, 0.30f).Lightened(jitter * 0.10f);
+                DrawRect(cell, FogColor(rock, dimmed));
+                DrawRect(cell.Grow(-1), FogColor(rock.Darkened(0.28f), dimmed), false, 1f);
+                // A couple of fracture lines so a rock face doesn't read as flat masonry.
+                DrawLine(cell.Position + new Vector2(6 + jitter * 10f, 4),
+                    cell.Position + new Vector2(14 + jitter * 12f, CellSize - 6),
+                    FogColor(rock.Darkened(0.22f), dimmed), 1f);
+                break;
+            }
+
+            case TileType.OreVein:
+            {
+                // Rock with the seam showing — this is what prospecting looks like.
+                var rock = new Color(0.34f, 0.32f, 0.30f).Lightened(jitter * 0.08f);
+                DrawRect(cell, FogColor(rock, dimmed));
+                DrawRect(cell.Grow(-1), FogColor(rock.Darkened(0.28f), dimmed), false, 1f);
+                var ore = new Color(0.72f, 0.56f, 0.28f);
+                for (int i = 0; i < 3; i++)
+                {
+                    float t = (i + 1) / 4f;
+                    DrawCircle(cell.Position + new Vector2(CellSize * t, CellSize * (0.3f + jitter * 0.4f)),
+                        3.2f, FogColor(ore, dimmed));
+                }
+                break;
+            }
+
+            case TileType.Bedrock:
+            {
+                // Visibly not workable: darker, denser, no seams to read.
+                var bedrock = new Color(0.16f, 0.15f, 0.17f);
+                DrawRect(cell, FogColor(bedrock, dimmed));
+                DrawRect(cell.Grow(-2), FogColor(bedrock.Lightened(0.10f), dimmed), false, 1f);
                 break;
             }
 

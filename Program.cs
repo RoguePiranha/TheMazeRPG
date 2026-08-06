@@ -199,6 +199,14 @@ sealed class Program
             return;
         }
 
+        // If TEST_MINING is set, verify destructible rock — digging, yields, protected tiles,
+        // dungeon noise, and that tunnels persist in the world
+        if (Environment.GetEnvironmentVariable("TEST_MINING") == "1")
+        {
+            RunMiningDemo();
+            return;
+        }
+
         // If TEST_TOWNGEN is set, generate regions, validate the grammar, and print an ASCII preview
         if (Environment.GetEnvironmentVariable("TEST_TOWNGEN") == "1")
         {
@@ -215,6 +223,166 @@ sealed class Program
         }
 
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+
+    // Debug/test entrypoint: if TEST_MINING=1 is set, verify that rock is terrain you destroy —
+    // digging it out, what it yields, what refuses to be dug, the noise it makes in the dungeon,
+    // and that a tunnel outlives the character who cut it.
+    public static void RunMiningDemo()
+    {
+        Console.WriteLine("=== Mining: rock is terrain, not a button ===");
+        WorldService.ResetCachesForTesting();
+        var scratch = new List<string>();
+
+        var world = WorldService.Create(new WorldGenOptions { Seed = 8080, Size = WorldSize.Small }, "Quarry");
+        scratch.Add(world.WorldId);
+        WorldService.ActiveWorldId = world.WorldId;
+
+        var game = new GameState(4, "Digger", "Warrior", "Human") { IsRunning = true };
+        game.ExecuteDebugCommand("moveplayer overworld");
+        game.ExecuteDebugCommand("gotomine");
+        var maze = game.CurrentMaze;
+
+        // --- The mine is a place with a working face, not a symbol on grass ---
+        Console.WriteLine("\n-- The adit --");
+        var rock = game.MinableRockNearby();
+        Expect(rock != null, "there is workable rock within reach of the adit");
+        Expect(maze.Tiles[rock!.Value.x, rock.Value.y].IsNaturalRock(),
+            $"and it is natural rock ({maze.Tiles[rock.Value.x, rock.Value.y]})");
+
+        // --- Digging a tile out ---
+        Console.WriteLine("\n-- Digging --");
+        int oreBefore = game.Hero.Resources.GetValueOrDefault("iron-ore");
+        int stoneBefore = game.Hero.Resources.GetValueOrDefault("stone");
+        var target = rock.Value;
+        var targetTile = maze.Tiles[target.x, target.y];
+
+        Expect(game.StartMining(target.x, target.y), "mining starts on adjacent rock");
+        Expect(!maze.IsWalkable(target.x, target.y), "the rock still blocks while being worked");
+        for (int tick = 0; tick < 2000 && game.CurrentActivity != null; tick++) game.Tick();
+
+        Expect(maze.Tiles[target.x, target.y] == TileType.Floor,
+            $"the rock is gone, leaving open ground ({maze.Tiles[target.x, target.y]})");
+        Expect(maze.IsWalkable(target.x, target.y), "and you can walk into the space it left");
+        int gained = game.Hero.Resources.GetValueOrDefault("stone") - stoneBefore
+                     + game.Hero.Resources.GetValueOrDefault("iron-ore") - oreBefore;
+        Expect(gained > 0, $"breaking it yielded materials ({gained})");
+        Console.WriteLine($"     dug a {targetTile}; stone {stoneBefore}->{game.Hero.Resources.GetValueOrDefault("stone")}, " +
+                          $"iron-ore {oreBefore}->{game.Hero.Resources.GetValueOrDefault("iron-ore")}");
+
+        // --- There is enough ore in the mountain to be worth prospecting, and not so much that
+        // every swing hits a seam ---
+        Console.WriteLine("\n-- Seams in the rock --");
+        int stoneTiles = 0, veinTiles = 0;
+        for (int x = 0; x < maze.Width; x++)
+        {
+            for (int y = 0; y < maze.Height; y++)
+            {
+                if (maze.Tiles[x, y] == TileType.Stone) stoneTiles++;
+                else if (maze.Tiles[x, y] == TileType.OreVein) veinTiles++;
+            }
+        }
+        double veinShare = veinTiles / (double)Math.Max(1, stoneTiles + veinTiles);
+        Console.WriteLine($"     mountain holds {stoneTiles + veinTiles:N0} tiles of rock, {veinTiles:N0} of them ore ({veinShare:P1})");
+        Expect(veinTiles > 200, $"the mountain carries real seams to find ({veinTiles})");
+        Expect(veinShare is > 0.02 and < 0.45,
+            $"ore is worth prospecting for but not everywhere ({veinShare:P1})");
+
+        // --- Ore veins pay, and gems turn up in them ---
+        Console.WriteLine("\n-- Veins and gems --");
+        var rng = new Random(99);
+        int veinOre = 0, plainOre = 0, gems = 0;
+        for (int i = 0; i < 400; i++)
+        {
+            var veinYield = MiningService.Roll(TileType.OreVein, rng, 20);
+            veinOre += veinYield.Materials.GetValueOrDefault("iron-ore");
+            if (veinYield.StruckGem) gems++;
+            plainOre += MiningService.Roll(TileType.Stone, rng, 20).Materials.GetValueOrDefault("iron-ore");
+        }
+        Console.WriteLine($"     400 tiles each: veins gave {veinOre} ore and {gems} gems; plain stone gave {plainOre} ore");
+        Expect(veinOre > plainOre * 4, "veins are worth seeking out over plain rock");
+        Expect(gems > 0, "gems turn up in veins");
+        Expect(MiningService.Roll(TileType.Wall, rng, 5).Materials.GetValueOrDefault("iron-ore") == 0,
+            "masonry never yields ore — someone already took it out");
+
+        // --- Deeper rock is richer ---
+        int shallow = 0, deep = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            shallow += MiningService.Roll(TileType.OreVein, rng, 1).Materials.GetValueOrDefault("iron-ore");
+            deep += MiningService.Roll(TileType.OreVein, rng, 90).Materials.GetValueOrDefault("iron-ore");
+        }
+        Expect(deep > shallow, $"deeper seams are richer ({shallow} shallow vs {deep} deep)");
+
+        // --- What refuses to be dug ---
+        Console.WriteLine("\n-- Bedrock --");
+        Expect(!MiningService.CanMine(TileType.Bedrock), "bedrock is not minable");
+        Expect(!MiningService.CanMine(TileType.Floor) && !MiningService.CanMine(TileType.Water),
+            "ground and water are not rock");
+        bool rimProtected = true;
+        for (int x = 0; x < maze.Width && rimProtected; x++)
+            if (MiningService.CanMine(maze, x, 0) || MiningService.CanMine(maze, x, maze.Height - 1))
+                rimProtected = false;
+        Expect(rimProtected, "the map's rim cannot be dug — no tunnelling out of the world");
+
+        // The ruling protects the threshold itself, not everything near it — the town wall happens
+        // to abut the entrance and is ordinary masonry, which is legitimately breakable.
+        var entrance = maze.Features.First(f => f.Type == MazeFeatureType.DungeonEntrance);
+        Expect(!MiningService.CanMine(maze, entrance.X, entrance.Y), "the threshold itself cannot be mined");
+
+        int liveRockAtThreshold = 0;
+        for (int dx = -1; dx <= 1; dx++)
+            for (int dy = -1; dy <= 1; dy++)
+                if (maze.TileAt(entrance.X + dx, entrance.Y + dy).IsNaturalRock())
+                    liveRockAtThreshold++;
+        Expect(liveRockAtThreshold == 0,
+            "the rock framing it is bedrock too — a doorway to another space, not a seam to chase");
+
+        // --- Masonry is minable but slower ---
+        Console.WriteLine("\n-- Masonry --");
+        int stoneWork = MiningService.WorkTicks(TileType.Stone, 10f, 0);
+        int wallWork = MiningService.WorkTicks(TileType.Wall, 10f, 0);
+        Expect(MiningService.CanMine(TileType.Wall), "town and dungeon walls can be broken");
+        Expect(wallWork > stoneWork, $"but masonry is slower than rock ({wallWork} vs {stoneWork} ticks)");
+        Expect(MiningService.WorkTicks(TileType.Stone, 40f, 8) < stoneWork,
+            "Strength and the mining skill both speed the work");
+
+        // --- Noise: hammering the dungeon carries ---
+        Console.WriteLine("\n-- Noise --");
+        float townNoise = MiningService.NoiseRadius(TileType.Wall, inDungeon: false);
+        float dungeonNoise = MiningService.NoiseRadius(TileType.Wall, inDungeon: true);
+        Expect(dungeonNoise > townNoise,
+            $"mining in the dungeon is far louder ({dungeonNoise} vs {townNoise} tiles)");
+
+        var delver = new GameState(9, "Delver", "Warrior", "Human") { IsRunning = true };
+        var sleeper = delver.Enemies.FirstOrDefault();
+        if (sleeper != null)
+        {
+            // Put the hero out of sight but within earshot, then make a racket.
+            sleeper.X = delver.Hero.X + 6;
+            sleeper.Y = delver.Hero.Y;
+            delver.RaiseMiningNoise((int)delver.Hero.X, (int)delver.Hero.Y, TileType.Wall);
+            bool warned = delver.Messages.Messages.Any(m =>
+                m.Text.Contains("listening", StringComparison.OrdinalIgnoreCase));
+            Expect(warned, "the dungeon notices you breaking its walls");
+        }
+
+        // --- The tunnel outlives the character who cut it ---
+        Console.WriteLine("\n-- Persistence --");
+        var delta = WorldService.LoadDelta(world.WorldId);
+        Expect(delta.TileChanges.Count > 0, $"the dig was recorded on the world ({delta.TileChanges.Count} tile(s))");
+
+        var heir = new GameState(77, "Heir", "Warrior", "Human") { IsRunning = true };
+        heir.ExecuteDebugCommand("moveplayer overworld");
+        Expect(heir.CurrentMaze.Tiles[target.x, target.y] == TileType.Floor,
+            "a later character walks into the shaft their predecessor left behind");
+
+        Console.WriteLine("\n-- Cleanup --");
+        foreach (var id in scratch) WorldService.Delete(id);
+        Console.WriteLine($"  ok   removed {scratch.Count} scratch world(s)");
+
+        Console.WriteLine("\nPASS: rock is destructible terrain — veins pay, gems appear, bedrock and the " +
+                          "dungeon threshold hold, masonry breaks slowly and loudly, and tunnels persist.");
     }
 
     // Debug/test entrypoint: if TEST_TOWNGEN=1 is set, sweep the region generator across sizes,

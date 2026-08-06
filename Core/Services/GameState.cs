@@ -3639,7 +3639,13 @@ public class GameState
         {
             var world = WorldService.Load(WorldId);
             if (world != null)
-                return RegionGenerator.Generate(world.Options, out _);
+            {
+                var region = RegionGenerator.Generate(world.Options, out _);
+                // Re-apply what's been dug or broken here since the world was made, so a tunnel
+                // outlives the character who cut it.
+                ApplyTerrainChanges(region);
+                return region;
+            }
         }
         catch (Exception ex)
         {
@@ -3659,6 +3665,172 @@ public class GameState
         var entrance = CurrentMaze.Features.First(f => f.Type == MazeFeatureType.DungeonEntrance);
         Hero.X = entrance.X + 1;
         Hero.Y = entrance.Y;
+    }
+
+    // --- Mining: rock is terrain you destroy, not a button you press ---
+
+    /// <summary>The rock tile the hero could start working on: the nearest minable neighbour, so
+    /// mining is "face the rock and dig" rather than a menu of the whole map.</summary>
+    public (int x, int y)? MinableRockNearby()
+    {
+        int hx = Hero.GridX;
+        int hy = Hero.GridY;
+        (int x, int y)? best = null;
+        float bestDistance = float.MaxValue;
+
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                if (dx == 0 && dy == 0) continue;
+                int x = hx + dx;
+                int y = hy + dy;
+                if (!MiningService.CanMine(CurrentMaze, x, y)) continue;
+
+                float distance = MathF.Abs(dx) + MathF.Abs(dy);
+                if (distance >= bestDistance) continue;
+                bestDistance = distance;
+                best = (x, y);
+            }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// Begin digging out an adjacent tile of rock. Fails quietly if the hero is already busy or
+    /// there's nothing workable there — bedrock included, which never yields (the map's rim and the
+    /// dungeon's threshold).
+    /// </summary>
+    public bool StartMining(int x, int y)
+    {
+        if (CurrentActivity != null || IsHeroDead) return false;
+        if (!MiningService.CanMine(CurrentMaze, x, y)) return false;
+
+        int distance = Math.Max(Math.Abs(x - Hero.GridX), Math.Abs(y - Hero.GridY));
+        if (distance > 1) return false;
+
+        var tile = CurrentMaze.Tiles[x, y];
+        int miningLevel = Hero.Progression.Skills.TryGetValue("mining", out var skill) ? skill.Level : 0;
+        int ticks = MiningService.WorkTicks(tile, Hero.EffectiveStrength, miningLevel);
+        StartActivity(new MineRockActivity(x, y, tile, ticks));
+        return true;
+    }
+
+    /// <summary>The rock gives: the tile becomes open ground and its contents go to the pack.</summary>
+    public void CompleteRockMining(int x, int y, TileType expected)
+    {
+        if (!CurrentMaze.InBounds(x, y)) return;
+        var tile = CurrentMaze.Tiles[x, y];
+        if (tile != expected || !MiningService.CanMine(tile)) return;
+
+        CurrentMaze.Tiles[x, y] = TileType.Floor;
+        CurrentMaze.Explored[x, y] = true;
+        RecordTerrainChange(x, y, TileType.Floor);
+
+        var yield = MiningService.Roll(tile, _random, MiningDepthAt(x, y));
+        foreach (var (materialId, amount) in yield.Materials)
+        {
+            AddHeroResource(materialId, SkillAdjustedYield("mining", amount));
+            var name = MaterialDataService.Instance.Materials.TryGetValue(materialId, out var def)
+                ? def.Name : materialId;
+            LogMessage($"Mined {SkillAdjustedYield("mining", amount)}x {name}", MessageKind.Loot);
+        }
+        if (yield.StruckGem)
+        {
+            LogMessage("A gem glints in the broken rock!", MessageKind.LevelUp);
+            AddFloatingText("Gem!", x, y - 0.4f, FloatingTextKind.LevelUp);
+        }
+
+        RecordProgressionFact("practice.mining-actions");
+        var progress = RecordProfessionAction("miner");
+        if (progress.Success && progress.SkillXpApplied > 0)
+            LogMessage($"Miner +{progress.XpApplied} XP; Mining +{progress.SkillXpApplied} XP", MessageKind.System);
+
+        RaiseMiningNoise(x, y, tile);
+    }
+
+    /// <summary>
+    /// Mining is loud. In the dungeon it's far louder — you are hammering on the walls of the thing
+    /// you are trespassing inside, and it notices (owner ruling 2026-08-06). Anything within earshot
+    /// comes to look, whether or not it can see you.
+    /// </summary>
+    public void RaiseMiningNoise(int x, int y, TileType tile)
+    {
+        bool inDungeon = !IsInOverworld && !IsInSafeRoom;
+        float radius = MiningService.NoiseRadius(tile, inDungeon);
+        float radiusSquared = radius * radius;
+        int roused = 0;
+
+        foreach (var enemy in Enemies)
+        {
+            if (!enemy.IsAlive) continue;
+            float dx = enemy.X - x;
+            float dy = enemy.Y - y;
+            if (dx * dx + dy * dy > radiusSquared) continue;
+
+            // The same pursuit machinery LOS uses, but triggered by sound: they head for the noise
+            // rather than for you, which is what makes digging a decision rather than a free action.
+            enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+            _enemyLastKnownHeroPos[enemy] = (x, y);
+            roused++;
+        }
+
+        if (inDungeon && _miningNoiseWarnings < 1)
+        {
+            _miningNoiseWarnings++;
+            LogMessage("The sound of your pick rings through the stone. Something is listening.",
+                MessageKind.Warning);
+        }
+        if (roused > 0)
+            LogMessage($"The noise draws attention — {roused} nearby.", MessageKind.Warning);
+    }
+
+    /// <summary>How deep into the rock this tile is, for richer seams further in. Measured as the
+    /// distance to the nearest open ground, which is exactly "how far from daylight".</summary>
+    private int MiningDepthAt(int x, int y)
+    {
+        for (int radius = 1; radius <= 40; radius++)
+        {
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                for (int dy = -radius; dy <= radius; dy++)
+                {
+                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != radius) continue;
+                    if (CurrentMaze.IsWalkable(x + dx, y + dy)) return radius;
+                }
+            }
+        }
+        return 40;
+    }
+
+    private int _miningNoiseWarnings;
+
+    /// <summary>
+    /// Remember that the world changed shape here. The dungeon is transient per dive, so only the
+    /// region's terrain is worth persisting — a tunnel you dug should still be there tomorrow.
+    /// </summary>
+    private void RecordTerrainChange(int x, int y, TileType tile)
+    {
+        if (!IsInOverworld || string.IsNullOrEmpty(WorldId)) return;
+        var delta = WorldService.LoadDelta(WorldId);
+        delta.TileChanges[$"{x},{y}"] = tile.ToString();
+        WorldService.SaveDelta(WorldId, delta);
+    }
+
+    /// <summary>Re-apply everything previous characters dug, built or broke in this world.</summary>
+    private void ApplyTerrainChanges(Maze maze)
+    {
+        if (string.IsNullOrEmpty(WorldId)) return;
+        var delta = WorldService.LoadDelta(WorldId);
+        foreach (var (key, value) in delta.TileChanges)
+        {
+            var parts = key.Split(',');
+            if (parts.Length != 2 || !int.TryParse(parts[0], out int x) || !int.TryParse(parts[1], out int y))
+                continue;
+            if (!maze.InBounds(x, y) || !Enum.TryParse(value, out TileType tile)) continue;
+            maze.Tiles[x, y] = tile;
+            if (tile.IsPassable()) maze.Explored[x, y] = true;
+        }
     }
 
     /// <summary>The town structures the hero can interact with via Press-E (proximity-detected in
@@ -4051,7 +4223,8 @@ public class GameState
             case "help": case "?":
                 result = "addxp N | addlevel N | addpoints N | addgold N | addprofession <id> | additem <id> [n] | " +
                          "addspell <id> [n] | moveplayer dungeon N|overworld|safe N | settime <hour> | " +
-                         "towngen <w> <h> | reveal | reset health|mana|stamina|faith|all | listitems";
+                         "towngen <w> <h> | reveal | mine | gotomine | gotobuilding [n] | " +
+                         "reset health|mana|stamina|faith|all | listitems";
                 break;
 
             case "addxp": case "xp":
@@ -4111,6 +4284,38 @@ public class GameState
                 int hour = Math.Clamp(IntArg(1, 12), 0, 23);
                 Clock.TotalGameMinutes = (Clock.Day - 1) * 1440 + hour * 60;
                 result = $"World clock -> {Clock.TimeDisplay} (darkness {Clock.Darkness:0.00})";
+                break;
+            }
+
+            case "mine":
+            {
+                // mine — dig out the adjacent rock, wherever you're standing. The player-facing
+                // action is Press-E on a rock face; this is the same call for testing.
+                var rock = MinableRockNearby();
+                if (rock == null)
+                {
+                    result = "No rock within reach";
+                    break;
+                }
+                var kind = CurrentMaze.Tiles[rock.Value.x, rock.Value.y];
+                result = StartMining(rock.Value.x, rock.Value.y)
+                    ? $"Working the {kind} at ({rock.Value.x},{rock.Value.y})"
+                    : "Can't mine right now";
+                break;
+            }
+
+            case "gotomine":
+            {
+                // gotomine — stand at the mine's working face, for testing the dig loop.
+                var adit = CurrentMaze.Features.FirstOrDefault(f => f.Type == MazeFeatureType.MineEntrance);
+                if (adit == null)
+                {
+                    result = "This map has no mine";
+                    break;
+                }
+                Hero.X = adit.X;
+                Hero.Y = adit.Y;
+                result = $"Moved to the mine adit at ({adit.X},{adit.Y})";
                 break;
             }
 

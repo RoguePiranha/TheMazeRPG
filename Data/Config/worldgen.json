@@ -1,17 +1,18 @@
 {
   "_comment": [
     "Region dimensions are in TILES, and one tile is roughly one metre — dungeon corridors are a",
-    "tile wide and the hero's radius is 0.35. Sizes are therefore derived from Starting Region.md's",
-    "own geography rather than picked: a walled town core, plus the spec's ~100m cleared band on",
-    "every side (200 tiles per axis before a single wall), plus the forest fringe beyond it.",
-    "Owner ruling 2026-08-06: keep 1m tiles and let regions be genuinely large.",
-    "regionWidth/regionHeight/population/forestDepth are consumed by the region generator (PR 6);",
-    "the hostility profile below is live now."
+    "tile wide and the hero's radius is 0.35. Sizes are derived from Starting Region.md's geography",
+    "rather than picked: a 60-tile mountain mass you can actually tunnel into, a walled town core,",
+    "the spec's ~100m cleared band on every open side (200 tiles per axis), and the forest fringe.",
+    "Owner rulings 2026-08-06: keep 1m tiles and let regions be genuinely large (#35); the mine is",
+    "dug out of the mountain rather than pressed as a button, so the mountain needs real depth.",
+    "regionWidth/regionHeight/population/forestDepth feed the region generator; the hostility",
+    "profile below drives dungeon spawns."
   ],
   "sizes": {
-    "Small":  { "regionWidth": 320, "regionHeight": 288, "population": 60,  "forestDepth": 32 },
-    "Medium": { "regionWidth": 416, "regionHeight": 352, "population": 100, "forestDepth": 40 },
-    "Large":  { "regionWidth": 512, "regionHeight": 448, "population": 150, "forestDepth": 56 }
+    "Small":  { "regionWidth": 400, "regionHeight": 384, "population": 60,  "forestDepth": 32 },
+    "Medium": { "regionWidth": 480, "regionHeight": 448, "population": 100, "forestDepth": 40 },
+    "Large":  { "regionWidth": 576, "regionHeight": 512, "population": 150, "forestDepth": 56 }
   },
   "hostility": {
     "Peaceful": { "enemyDensity": 0.7, "levelOffset": -1, "eliteChance": 0.10, "trapChanceDelta": -0.1 },

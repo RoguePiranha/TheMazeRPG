@@ -22,7 +22,8 @@ namespace TheMazeRPG.Core.Systems;
 /// </summary>
 public static class RegionGenerator
 {
-    private const int MountainDepth = 5;
+    // A mountain you can tunnel into needs mass behind its face, not a scenic crust.
+    private const int MountainDepth = 60;
     private const int RiverWidth = 3;
     private const int RiverInset = 6;      // gap between river and the forest fringe
     private const int ClearedBand = 100;   // Starting Region.md: ~100m of cleared ground outside the walls
@@ -73,7 +74,7 @@ public static class RegionGenerator
         var frame = new Frame(maze, region.MountainEdge, width, height);
 
         FillGround(maze);
-        CarveMountain(frame, localWidth, localHeight);
+        CarveMountain(frame, seed, localHeight);
         var river = CarveRiver(frame, region, localWidth, localHeight, random, profile.ForestDepth);
         var town = LayOutTown(region, frame, localWidth, localHeight, profile, river, random);
         var gates = CarveWallsAndGates(frame, region, town, random);
@@ -81,6 +82,11 @@ public static class RegionGenerator
         PlaceBuildings(frame, region, town, profile, random);
         PlacePointsOfInterest(maze, frame, region, town, gates, localHeight, random);
         PlantForest(frame, region, localWidth, localHeight, profile.ForestDepth, town, random);
+
+        // Re-lay the bedrock rim last. The mountain carve runs over the edge it sits on, and any
+        // later stage could too — the rim has to be the last word or a tunnel eventually reaches
+        // the edge of the world and keeps going.
+        SealBoundary(maze);
 
         // Everything is lit and known: a town isn't a fog-of-war space.
         for (int x = 0; x < width; x++)
@@ -157,25 +163,53 @@ public static class RegionGenerator
             for (int y = 0; y < maze.Height; y++)
                 maze.Tiles[x, y] = TileType.Floor;
 
-        // The map's own rim stays solid so nothing can walk off the world.
+        SealBoundary(maze);
+    }
+
+    /// <summary>
+    /// Bedrock, not ordinary wall: the rim has to survive a pick as well as a footstep, or a
+    /// determined tunnel eventually digs its way off the edge of the world. Applied again after
+    /// every other stage, since the mountain is carved straight over the edge it rests on.
+    /// </summary>
+    private static void SealBoundary(Maze maze)
+    {
         for (int x = 0; x < maze.Width; x++)
         {
-            maze.Tiles[x, 0] = TileType.Wall;
-            maze.Tiles[x, maze.Height - 1] = TileType.Wall;
+            maze.Tiles[x, 0] = TileType.Bedrock;
+            maze.Tiles[x, maze.Height - 1] = TileType.Bedrock;
         }
         for (int y = 0; y < maze.Height; y++)
         {
-            maze.Tiles[0, y] = TileType.Wall;
-            maze.Tiles[maze.Width - 1, y] = TileType.Wall;
+            maze.Tiles[0, y] = TileType.Bedrock;
+            maze.Tiles[maze.Width - 1, y] = TileType.Bedrock;
         }
     }
 
-    private static void CarveMountain(Frame frame, int localWidth, int localHeight)
+    /// <summary>
+    /// The mountainside is natural rock, not masonry — it can be dug into, which is what the mine
+    /// actually is (owner ruling 2026-08-06). It is deliberately a thick mass rather than a scenic
+    /// crust: a tunnel has to have somewhere to go, or the first few swings hit the edge of the
+    /// world. Ore is seeded in seams rather than spread evenly, so prospecting means reading a rock
+    /// face rather than swinging at anything, and seams thicken the deeper you push.
+    ///
+    /// Nothing behind the rock is the dungeon. The dungeon is a separate dimensional space reached
+    /// through its threshold, not a cavity inside this mountain, so no tunnel can ever break into it.
+    /// </summary>
+    private static void CarveMountain(Frame frame, int seed, int localHeight)
     {
-        _ = localWidth;
+        var oreNoise = new PerlinNoise(seed + 4409);
+
         for (int lx = 0; lx < MountainDepth; lx++)
+        {
             for (int ly = 0; ly < localHeight; ly++)
-                frame.Set(lx, ly, TileType.Wall);
+            {
+                // Depth is measured from the face (which looks toward the town) inward.
+                int depth = MountainDepth - 1 - lx;
+                float sample = (float)oreNoise.Noise(lx * 0.09, ly * 0.09);
+                float threshold = 0.30f - Math.Min(0.16f, depth * 0.004f);
+                frame.Set(lx, ly, sample > threshold ? TileType.OreVein : TileType.Stone);
+            }
+        }
     }
 
     /// <summary>The river's column range in the canonical frame, so later stages can keep clear of it.</summary>
@@ -565,11 +599,23 @@ public static class RegionGenerator
         int localHeight,
         Random random)
     {
-        // Dungeon mouth: set into the mountain face, reached by the western spur road.
+        // Dungeon mouth: a short passage cut into the mountain face, reached by the spur road.
         int mouthY = town.CenterY;
-        for (int lx = MountainDepth - 2; lx <= town.Left; lx++)
+        for (int lx = MountainDepth - 3; lx <= town.Left; lx++)
             frame.Set(lx, mouthY, TileType.Road);
         frame.AddFeature(MountainDepth - 1, mouthY, MazeFeatureType.DungeonEntrance);
+
+        // The threshold and its frame are bedrock. The dungeon is a separate dimensional space
+        // reached through this doorway, not a cavity in the rock, so the doorway itself is not
+        // ordinary stone and no pick will take it down (owner ruling 2026-08-06).
+        for (int lx = MountainDepth - 4; lx <= MountainDepth; lx++)
+            for (int dy = -2; dy <= 2; dy++)
+                if (frame.Get(lx, mouthY + dy).IsNaturalRock())
+                    frame.Set(lx, mouthY + dy, TileType.Bedrock);
+
+        // The mine is a real adit: an opening driven into the mountainside with rock all around it
+        // to work, not a symbol standing on grass.
+        int aditLength = 8;
 
         // Guard station stands beside the dungeon approach (Starting Region.md).
         var guard = region.Buildings.FirstOrDefault(b => b.Kind == BuildingKind.GuardStation);
@@ -581,7 +627,11 @@ public static class RegionGenerator
         int mineY = below
             ? Math.Min(town.Bottom + 12 + random.Next(20), localHeight - 3)
             : Math.Max(town.Top - 12 - random.Next(20), 2);
-        frame.AddFeature(MountainDepth, mineY, MazeFeatureType.MineEntrance);
+
+        // Drive the adit in from the face, leaving a working face of live rock at its end.
+        for (int lx = MountainDepth - aditLength; lx <= MountainDepth; lx++)
+            frame.Set(lx, mineY, TileType.Floor);
+        frame.AddFeature(MountainDepth - aditLength + 1, mineY, MazeFeatureType.MineEntrance);
 
         // A track from the mine along the mountain's foot and round to the nearest gate, staying
         // outside the walls the whole way.

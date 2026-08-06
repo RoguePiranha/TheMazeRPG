@@ -66,8 +66,15 @@ public class WorldDelta
     /// mark, not a shared simulation time.</summary>
     public double HighWaterGameMinutes { get; set; }
 
+    /// <summary>
+    /// Terrain the world's inhabitants have changed: "x,y" → TileType name. Mining a tunnel through
+    /// the mountainside is a permanent alteration to the world, not to the character who dug it, so
+    /// it belongs here — a later character walks into the shaft their predecessor left behind.
+    /// Only the region is recorded; dungeon floors are transient per dive.
+    /// </summary>
+    public Dictionary<string, string> TileChanges { get; set; } = new();
+
     // Reserved, documented now and populated by later PRs so the file format doesn't churn:
-    //   TileDeltas   — construction/destruction of world tiles (PR 6b onward)
     //   PlacedItems  — the world-item/container layer (note 16, PR 6b)
     //   Reputation   — per-NPC and per-faction standing (note 09, PR 9)
     //   EventLog     — offscreen event history (note 17, PR 9c)

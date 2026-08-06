@@ -64,6 +64,20 @@ public sealed class MazeGenerator
         PlaceDecorations(layout, random);
         PlaceThemeFeature(layout);
 
+        // The dungeon's walls are masonry and can be broken (loudly — see GameState's mining
+        // noise), but its outer shell is bedrock. The dungeon is a dimensional space, not a cavity
+        // in the mountain, so there is nothing on the far side of that shell to dig into.
+        for (int x = 0; x < width; x++)
+        {
+            maze.Tiles[x, 0] = TileType.Bedrock;
+            maze.Tiles[x, height - 1] = TileType.Bedrock;
+        }
+        for (int y = 0; y < height; y++)
+        {
+            maze.Tiles[0, y] = TileType.Bedrock;
+            maze.Tiles[width - 1, y] = TileType.Bedrock;
+        }
+
         return maze;
     }
 

@@ -10,5 +10,9 @@
   "rough-gem": {
     "name": "Rough Gem",
     "description": "An uncut gem uncovered while mining."
+  },
+  "stone": {
+    "name": "Stone",
+    "description": "Broken rock. Heavy, plentiful, and good for building."
   }
 }
