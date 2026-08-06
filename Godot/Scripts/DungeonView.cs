@@ -38,9 +38,14 @@ public partial class DungeonView : Node2D
         Palette palette = State.IsInOverworld ? Palette.Town : Palette.For(maze.Dungeon?.Theme);
         UpdateVisibility(State);
 
-        for (int y = 0; y < maze.Height; y++)
+        // Only the cells on screen. Regions are person-scaled (one tile ~= one metre), so a real
+        // town runs into the hundreds of tiles per axis — walking the whole grid would cost a
+        // quarter of a million iterations and as many draw calls per frame, and the town is fully
+        // lit so every one of them would actually draw.
+        var (minX, minY, maxX, maxY) = VisibleCellBounds(maze);
+        for (int y = minY; y <= maxY; y++)
         {
-            for (int x = 0; x < maze.Width; x++)
+            for (int x = minX; x <= maxX; x++)
             {
                 if (maze.Walls[x, y])
                 {
@@ -137,14 +142,64 @@ public partial class DungeonView : Node2D
             }
         }
 
-        for (int x = 0; x < maze.Width; x++)
-            for (int y = 0; y < maze.Height; y++)
-                if (maze.Explored[x, y] && !maze.Walls[x, y])
-                    _seenFloors.Add((x, y));
+        // Walked tiles (Maze.Explored) used to be swept into _seenFloors here — a full-grid pass on
+        // every hero step. IsCellSeenCached reads Explored directly instead, which is the same
+        // answer without the scan.
+    }
+
+    /// <summary>
+    /// The inclusive cell range currently on screen, in this node's own cell coordinates. Derived
+    /// from the live camera rather than the hero, so it stays correct while the camera lerps toward
+    /// them, during screen shake, and at any zoom.
+    /// </summary>
+    /// <summary>Diagnostic accessor for the scale probe — how much of the grid culling keeps.</summary>
+    public (int minX, int minY, int maxX, int maxY) DebugVisibleCellBounds() =>
+        State == null ? (0, 0, 0, 0) : VisibleCellBounds(State.CurrentMaze);
+
+    private (int minX, int minY, int maxX, int maxY) VisibleCellBounds(Maze maze)
+    {
+        // Node-local -> viewport, inverted. GetCanvasTransform (not GetViewportTransform) is the
+        // right one: the project stretches a 1280x720 base viewport to the window, and
+        // GetViewportRect reports the *base* size, whereas GetViewportTransform maps all the way
+        // out to window space. Mixing those two spaces undercounts the visible area by exactly the
+        // stretch factor, which culls away the right and bottom of the screen.
+        Transform2D localToViewport = GetCanvasTransform() * GetGlobalTransform();
+        // A zero-scale (non-invertible) transform can't be inverted; fall back to the whole grid
+        // rather than silently drawing nothing.
+        if (MathF.Abs(localToViewport.Determinant()) < 0.000001f)
+            return (0, 0, maze.Width - 1, maze.Height - 1);
+        Transform2D screenToLocal = localToViewport.AffineInverse();
+
+        Rect2 screen = GetViewportRect();
+        Vector2 a = screenToLocal * screen.Position;
+        Vector2 b = screenToLocal * new Vector2(screen.End.X, screen.Position.Y);
+        Vector2 c = screenToLocal * new Vector2(screen.Position.X, screen.End.Y);
+        Vector2 d = screenToLocal * screen.End;
+
+        float left = MathF.Min(MathF.Min(a.X, b.X), MathF.Min(c.X, d.X));
+        float right = MathF.Max(MathF.Max(a.X, b.X), MathF.Max(c.X, d.X));
+        float top = MathF.Min(MathF.Min(a.Y, b.Y), MathF.Min(c.Y, d.Y));
+        float bottom = MathF.Max(MathF.Max(a.Y, b.Y), MathF.Max(c.Y, d.Y));
+
+        // One cell of margin so a partially-scrolled cell at the edge still draws.
+        int minX = Math.Clamp((int)MathF.Floor(left / CellSize) - 1, 0, maze.Width - 1);
+        int maxX = Math.Clamp((int)MathF.Ceiling(right / CellSize) + 1, 0, maze.Width - 1);
+        int minY = Math.Clamp((int)MathF.Floor(top / CellSize) - 1, 0, maze.Height - 1);
+        int maxY = Math.Clamp((int)MathF.Ceiling(bottom / CellSize) + 1, 0, maze.Height - 1);
+        return (minX, minY, maxX, maxY);
     }
 
     private bool IsCellVisibleCached(int x, int y) => !_fogEnabled || _visibleFloors.Contains((x, y));
-    private bool IsCellSeenCached(int x, int y) => !_fogEnabled || _seenFloors.Contains((x, y));
+
+    /// <summary>Seen = remembered by this renderer's own LOS memory, or walked (Maze.Explored).
+    /// Reading Explored on demand avoids a full-grid scan every time the hero moves.</summary>
+    private bool IsCellSeenCached(int x, int y) =>
+        !_fogEnabled || _seenFloors.Contains((x, y)) || IsExplored(x, y);
+
+    private bool IsExplored(int x, int y) =>
+        _visibilityMaze != null &&
+        x >= 0 && y >= 0 && x < _visibilityMaze.Width && y < _visibilityMaze.Height &&
+        _visibilityMaze.Explored[x, y] && !_visibilityMaze.Walls[x, y];
     private bool IsTileVisibleCached(Maze maze, int x, int y) =>
         maze.Walls[x, y] ? WallVisibility(maze, x, y).visible : IsCellVisibleCached(x, y);
     private bool IsTileSeenCached(Maze maze, int x, int y) =>
@@ -160,7 +215,9 @@ public partial class DungeonView : Node2D
             {
                 if (!IsWalkable(maze, nx, ny)) continue;
                 if (_visibleFloors.Contains((nx, ny))) return (true, true);
-                if (_seenFloors.Contains((nx, ny))) seen = true;
+                // Explored included, matching IsCellSeenCached — walls light up from any adjacent
+                // floor the hero has either seen or walked.
+                if (_seenFloors.Contains((nx, ny)) || IsExplored(nx, ny)) seen = true;
             }
         }
         return (false, seen);

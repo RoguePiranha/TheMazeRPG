@@ -34,6 +34,11 @@ public partial class GameHost : Node
     private bool _startSaves;
     private bool _startWorlds;
     private bool _startWorldCreation;
+    private string? _scaleProbe;
+    private int _probeFramesRemaining;
+    private double _probeWorstFrameMs;
+    private double _probeTotalMs;
+    private int _probeFrameCount;
     /// <summary>Whether the worlds screen is on the way to creating a character or picking one.</summary>
     private bool _pendingNewCharacter;
     private bool _startCharacterSheet;
@@ -81,6 +86,10 @@ public partial class GameHost : Node
             ShowTitle();
             if (_startCodex) _ui.ShowCodex();
             if (_startSettings) _ui.ShowSettings(_clientSettings);
+        }
+        else if (_scaleProbe != null)
+        {
+            StartScaleProbe();
         }
         else if (_startWorlds)
         {
@@ -184,6 +193,26 @@ public partial class GameHost : Node
 
     public override void _Process(double delta)
     {
+        if (_probeFramesRemaining > 0)
+        {
+            // The first few frames include shader/pipeline warm-up, so they'd libel the steady state.
+            if (_probeFramesRemaining < 110)
+            {
+                double ms = delta * 1000.0;
+                _probeTotalMs += ms;
+                _probeFrameCount++;
+                if (ms > _probeWorstFrameMs) _probeWorstFrameMs = ms;
+            }
+            _dungeonView.QueueRedraw();
+            if (--_probeFramesRemaining == 0)
+            {
+                GD.Print($"SCALE_PROBE frames={_probeFrameCount} " +
+                         $"avg={_probeTotalMs / Math.Max(1, _probeFrameCount):0.00}ms " +
+                         $"worst={_probeWorstFrameMs:0.00}ms");
+                if (_capturePath == null) GetTree().Quit();
+            }
+        }
+
         if (_capturePath == null || --_captureCountdown > 0)
             return;
 
@@ -534,6 +563,35 @@ public partial class GameHost : Node
         _ui.ShowTitle(WorldService.HasAnyWorlds());
     }
 
+    /// <summary>
+    /// `--scale-probe=WxH` — stand in a town of the given size and report how much of it the
+    /// renderer actually touches per frame, plus frame cost. Exists because region scale is a real
+    /// engineering question (person-scaled tiles put a proper region in the hundreds per axis), and
+    /// "culling works" should be a measurement rather than an assumption.
+    /// </summary>
+    private void StartScaleProbe()
+    {
+        string spec = _scaleProbe!["--scale-probe=".Length..];
+        string[] parts = spec.Split('x', 'X');
+        int width = parts.Length > 0 && int.TryParse(parts[0], out int w) ? w : 512;
+        int height = parts.Length > 1 && int.TryParse(parts[1], out int h) ? h : width;
+
+        StartNewGame("Surveyor", "Wanderer", "Human", persist: false);
+        _gameState.StartInTown();
+        GD.Print($"SCALE_PROBE command: {_gameState.ExecuteDebugCommand($"towngen {width} {height}")}");
+        SnapCameraToHero();
+
+        Maze maze = _gameState.CurrentMaze;
+        int total = maze.Width * maze.Height;
+        var (minX, minY, maxX, maxY) = _dungeonView.DebugVisibleCellBounds();
+        int drawn = (maxX - minX + 1) * (maxY - minY + 1);
+        GD.Print($"SCALE_PROBE grid={maze.Width}x{maze.Height} tiles={total:N0} " +
+                 $"culled_to={maxX - minX + 1}x{maxY - minY + 1} cells={drawn:N0} " +
+                 $"({100.0 * drawn / total:0.00}% of grid)");
+
+        _probeFramesRemaining = 120;
+    }
+
     private void ShowWorlds() => _ui.ShowWorlds(WorldService.ListWorlds());
 
     /// <summary>
@@ -835,6 +893,8 @@ public partial class GameHost : Node
         _startSaves = arguments.Any(value => value.Equals("--start-saves", StringComparison.OrdinalIgnoreCase));
         _startWorlds = arguments.Any(value => value.Equals("--start-worlds", StringComparison.OrdinalIgnoreCase));
         _startWorldCreation = arguments.Any(value => value.Equals("--start-world-creation", StringComparison.OrdinalIgnoreCase));
+        _scaleProbe = arguments.FirstOrDefault(value =>
+            value.StartsWith("--scale-probe=", StringComparison.OrdinalIgnoreCase));
         _startCharacterSheet = arguments.Any(value => value.Equals("--start-character-sheet", StringComparison.OrdinalIgnoreCase));
         _startProgression = arguments.Any(value => value.Equals("--start-progression", StringComparison.OrdinalIgnoreCase));
         _startOffers = arguments.Any(value => value.Equals("--start-offers", StringComparison.OrdinalIgnoreCase));

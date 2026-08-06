@@ -1354,6 +1354,12 @@ public class GameState
         : _worldId;
     public CharacterCreationSelection? CreationSelection => _creationSelection?.Clone();
 
+    // Town dimensions. Fields rather than constants so the `towngen` debug command can build the
+    // town at the scale a real region needs (one tile ~= one metre), which is how the renderer's
+    // camera culling gets exercised before the region generator lands. Session-only, never saved.
+    private int _townWidth = OverworldGenerator.Width;
+    private int _townHeight = OverworldGenerator.Height;
+
     // What last hurt the hero, as a display string, so their legacy record can say how they died.
     // Recorded at each damage site because the killing blow itself carries no attribution: an
     // enemy projectile outlives its shooter, and hazards have no actor at all.
@@ -3499,7 +3505,7 @@ public class GameState
         IsInOverworld = true;
         NearbyInteractable = null;
         ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
-        CurrentMaze = OverworldGenerator.Generate();
+        CurrentMaze = OverworldGenerator.Generate(_townWidth, _townHeight);
         PlaceHeroAtOverworldArrival();
     }
 
@@ -4011,8 +4017,8 @@ public class GameState
         {
             case "help": case "?":
                 result = "addxp N | addlevel N | addpoints N | addgold N | addprofession <id> | additem <id> [n] | " +
-                         "addspell <id> [n] | moveplayer dungeon N|overworld|safe N | " +
-                         "reset health|mana|stamina|faith|all | listitems";
+                         "addspell <id> [n] | moveplayer dungeon N|overworld|safe N | settime <hour> | " +
+                         "towngen <w> <h> | reset health|mana|stamina|faith|all | listitems";
                 break;
 
             case "addxp": case "xp":
@@ -4072,6 +4078,23 @@ public class GameState
                 int hour = Math.Clamp(IntArg(1, 12), 0, 23);
                 Clock.TotalGameMinutes = (Clock.Day - 1) * 1440 + hour * 60;
                 result = $"World clock -> {Clock.TimeDisplay} (darkness {Clock.Darkness:0.00})";
+                break;
+            }
+
+            case "towngen":
+            {
+                // towngen <width> <height> — rebuild the town at an arbitrary size. Tiles are
+                // person-scaled, so this is how a region's real footprint (hundreds of tiles per
+                // axis) gets walked and measured before the region generator exists.
+                _townWidth = Math.Clamp(IntArg(1, OverworldGenerator.Width), 9, 4096);
+                _townHeight = Math.Clamp(IntArg(2, OverworldGenerator.Height), 9, 4096);
+                if (IsInOverworld)
+                {
+                    EnterTown();
+                    result = $"Town rebuilt at {_townWidth}x{_townHeight} ({_townWidth * _townHeight:N0} tiles)";
+                }
+                else
+                    result = $"Town size set to {_townWidth}x{_townHeight}; takes effect on arrival";
                 break;
             }
 
