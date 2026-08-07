@@ -14,7 +14,7 @@ public sealed class MazeGenerator
     // Tight maps (15x11, 21x15) reject most attempts — packing three walled rooms plus clean
     // corridors into so few cells often needs several rolls. Attempts are sub-millisecond, so a
     // deep retry budget is cheaper than shipping either a crash or a malformed floor.
-    private const int MaxGenerationAttempts = 60;
+    private const int MaxGenerationAttempts = 120;
     private readonly int _seed;
 
     public MazeGenerator(int seed)
@@ -112,8 +112,11 @@ public sealed class MazeGenerator
         {
             int roomWidth = random.Next(minimumRoomSize, maxRoomWidth + 1);
             int roomHeight = random.Next(minimumRoomSize, maxRoomHeight + 1);
-            int x = random.Next(1, maze.Width - roomWidth);
-            int y = random.Next(1, maze.Height - roomHeight);
+            // Two tiles clear of the rim (the entrance room alone sits flush at 1,1): a room
+            // whose ring touches the boundary leaves no clean lane around it, and routes get
+            // forced against its wall or corner — the geometry behind most corner-clip rejects.
+            int x = random.Next(2, Math.Max(3, maze.Width - roomWidth - 1));
+            int y = random.Next(2, Math.Max(3, maze.Height - roomHeight - 1));
 
             var candidate = new DungeonRoom
             {
@@ -308,7 +311,10 @@ public sealed class MazeGenerator
     // Route costs. Base movement is 10 so the modifiers below can stay integers.
     private const int StepCost = 10;
     private const int RingCost = 200;      // cell flush against a room's floor: a wall breach if carved
-    private const int PinchCost = 30;      // cell touching a room only diagonally: rounds its corner tight
+    // A cell touching a room only diagonally clips its corner — and a carved corner-clip is a
+    // hole: sight and shots squeeze through the corner-to-corner gap (owner report 2026-08-07).
+    // Priced like a breach; the validator rejects any that a desperate route still buys.
+    private const int PinchCost = 200;
     private const int DoorGrazeCost = 80;  // cell in front of someone else's doorway: corridors shouldn't crowd doors
     private const int ReuseDiscount = 6;   // existing corridor: joining the network beats parallel trenches
     private const int TurnCost = 3;        // straight halls with clean elbows over staircase wiggles
@@ -474,7 +480,8 @@ public sealed class MazeGenerator
             {
                 if (layout.Tiles[x, y] != DungeonTileType.CorridorFloor) continue;
                 int roomNeighbours = CountRoomFloorNeighbours(layout, x, y);
-                if (roomNeighbours == 0) continue;
+                bool cornerClip = roomNeighbours == 0 && HasSealedCornerPinch(layout, x, y);
+                if (roomNeighbours == 0 && !cornerClip) continue;
 
                 maze.Tiles[x, y] = TileType.Wall;
                 layout.Tiles[x, y] = DungeonTileType.Wall;
@@ -483,10 +490,10 @@ public sealed class MazeGenerator
                 if (reachable.Count != traversable)
                 {
                     // The cell was the only link between two areas. Bordering exactly one room
-                    // tile, it's a legitimate one-tile threshold — promote it. Bordering more
-                    // (wedged between two rooms), a Doorway would break the one-tile-threshold
-                    // invariant, so leave it as the open corridor it was — no worse than before
-                    // this pass existed, and rare.
+                    // tile, it's a legitimate one-tile threshold — promote it. A corner-clip or
+                    // a cell wedged between two rooms can't be a doorway, so it reverts to the
+                    // open corridor it was — and the validator then rejects the floor, which is
+                    // the right outcome for geometry that can't be sealed.
                     maze.Tiles[x, y] = TileType.Floor;
                     layout.Tiles[x, y] = roomNeighbours == 1
                         ? DungeonTileType.Doorway
@@ -494,6 +501,21 @@ public sealed class MazeGenerator
                 }
             }
         }
+    }
+
+    /// <summary>Does this cell touch room floor corner-to-corner through two solid blocks? That
+    /// sealed diagonal is a pinhole — sight and shots squeeze through it — so it's treated as a
+    /// breach: avoided by routing, sealed where possible, rejected by the validator otherwise.</summary>
+    private static bool HasSealedCornerPinch(DungeonLayout layout, int x, int y)
+    {
+        foreach (var (dx, dy) in new[] { (1, 1), (1, -1), (-1, 1), (-1, -1) })
+        {
+            if (layout.Tiles[x + dx, y + dy] != DungeonTileType.RoomFloor) continue;
+            if (layout.Tiles[x + dx, y] == DungeonTileType.Wall &&
+                layout.Tiles[x, y + dy] == DungeonTileType.Wall)
+                return true;
+        }
+        return false;
     }
 
     private static int CountRoomFloorNeighbours(DungeonLayout layout, int x, int y)

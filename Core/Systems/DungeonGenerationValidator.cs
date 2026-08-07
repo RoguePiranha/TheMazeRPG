@@ -129,6 +129,17 @@ public static class DungeonGenerationValidator
                 {
                     if (CountRoomNeighbours(layout, x, y) > 0)
                         errors.Add($"Corridor breaches a room wall at ({x},{y})");
+
+                    // Diagonal contact through a sealed corner is a pinhole, not a wall: sight
+                    // and shots squeeze corner-to-corner (owner report 2026-08-07). A room is
+                    // surrounded by solid blocks except at its doorways — corners included.
+                    foreach (var (dx, dy) in new[] { (1, 1), (1, -1), (-1, 1), (-1, -1) })
+                    {
+                        if (layout.Tiles[x + dx, y + dy] != DungeonTileType.RoomFloor) continue;
+                        if (layout.Tiles[x + dx, y] == DungeonTileType.Wall &&
+                            layout.Tiles[x, y + dy] == DungeonTileType.Wall)
+                            errors.Add($"Corridor clips a room corner at ({x},{y})");
+                    }
                     continue;
                 }
 

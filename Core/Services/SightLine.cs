@@ -18,7 +18,12 @@ namespace TheMazeRPG.Core.Services;
 public static class SightLine
 {
     /// <summary>True when no blocking tile lies on the straight cell-line between the two
-    /// positions. Integer coordinates are cell centers, consistent with entity GridX/GridY.</summary>
+    /// positions. Integer coordinates are cell centers, consistent with entity GridX/GridY.
+    ///
+    /// Diagonal steps respect corners: when the walk moves on both axes at once it is squeezing
+    /// between two cells, and if both are solid the line is pinched off. Without this, sight (and
+    /// with it attacks and perception) leaked through the zero-width gap where two wall blocks
+    /// meet corner-to-corner — most visibly at room corners a corridor passed close to.</summary>
     public static bool Clear(Maze maze, float x1, float y1, float x2, float y2)
     {
         int startX = (int)MathF.Round(x1);
@@ -35,24 +40,29 @@ public static class SightLine
         int currentX = startX;
         int currentY = startY;
 
+        bool Blocked(int x, int y) =>
+            x >= 0 && x < maze.Width && y >= 0 && y < maze.Height && maze.Walls[x, y];
+
         while (true)
         {
-            if (currentX >= 0 && currentX < maze.Width &&
-                currentY >= 0 && currentY < maze.Height &&
-                maze.Walls[currentX, currentY])
-            {
-                return false;
-            }
+            if (Blocked(currentX, currentY)) return false;
 
             if (currentX == endX && currentY == endY) break;
 
             int err2 = 2 * err;
-            if (err2 > -dy)
+            bool stepX = err2 > -dy;
+            bool stepY = err2 < dx;
+            if (stepX && stepY &&
+                Blocked(currentX + sx, currentY) && Blocked(currentX, currentY + sy))
+            {
+                return false;
+            }
+            if (stepX)
             {
                 err -= dy;
                 currentX += sx;
             }
-            if (err2 < dx)
+            if (stepY)
             {
                 err += dx;
                 currentY += sy;

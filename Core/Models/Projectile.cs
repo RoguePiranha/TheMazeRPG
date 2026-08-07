@@ -76,13 +76,13 @@ public class Projectile
         {
             float newX = CurrentX + (dx / distance) * Speed;
             float newY = CurrentY + (dy / distance) * Speed;
-            
+
             // Check for wall collision
             if (maze != null)
             {
                 int gridX = (int)MathF.Round(newX);
                 int gridY = (int)MathF.Round(newY);
-                
+
                 // Check bounds
                 if (gridX >= 0 && gridX < maze.Width && gridY >= 0 && gridY < maze.Height)
                 {
@@ -92,6 +92,24 @@ public class Projectile
                         HitWall = true;
                         return;
                     }
+
+                    // A step that changes BOTH grid coordinates crossed a cell corner between
+                    // samples. If the two cells flanking that corner are solid, the shot is
+                    // squeezing through a zero-width gap — it stops on the corner exactly as it
+                    // would on a wall face (mirrors SightLine's diagonal rule: what can't be
+                    // seen through can't be shot through).
+                    int fromGridX = (int)MathF.Round(CurrentX);
+                    int fromGridY = (int)MathF.Round(CurrentY);
+                    if (gridX != fromGridX && gridY != fromGridY)
+                    {
+                        bool ShoulderBlocked(int x, int y) =>
+                            x < 0 || x >= maze.Width || y < 0 || y >= maze.Height || maze.Walls[x, y];
+                        if (ShoulderBlocked(gridX, fromGridY) && ShoulderBlocked(fromGridX, gridY))
+                        {
+                            HitWall = true;
+                            return;
+                        }
+                    }
                 }
                 else
                 {
@@ -100,7 +118,7 @@ public class Projectile
                     return;
                 }
             }
-            
+
             CurrentX = newX;
             CurrentY = newY;
         }

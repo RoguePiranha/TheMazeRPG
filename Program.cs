@@ -838,7 +838,10 @@ sealed class Program
             int stealthDamage = StrikeFor(false, out var gsStrike, out var struck);
             int openDamage = StrikeFor(true, out _, out _);
             Expect(stealthDamage > 0 && openDamage > 0, $"both shots land ({stealthDamage} vs {openDamage})");
-            Expect(stealthDamage > openDamage * 1.4f,
+            // ×2.4 against ±25% variance: worst stealth roll = 1.8×base, best open roll =
+            // 1.25×base → the ratio floor is 1.44, but integer rounding can land exactly ON
+            // 1.4× of a small base — hence >=, not >.
+            Expect(stealthDamage >= openDamage * 1.4f,
                 $"the unseen bolt hits like a hammer ({stealthDamage} vs {openDamage} — backstab x1.6 and the auto-crit)");
             Expect(struck.AwarenessState == AwarenessState.Alert,
                 "and the victim is wide awake after");
