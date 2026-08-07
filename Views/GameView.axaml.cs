@@ -82,18 +82,21 @@ public partial class GameView : UserControl
         var text = this.FindControl<TextBlock>("InteractPromptText");
         if (overlay == null || text == null || _viewModel == null) return;
 
-        // Show only while a structure or workable rock face is in range and no blocking
-        // overlay/menu is up.
+        // Show only while a structure, townsperson, or workable rock face is in range and no
+        // blocking overlay/menu is up.
         var near = _viewModel.GameState.NearbyInteractable;
+        var npc = _viewModel.GameState.NearbyNpc;
         var rock = _viewModel.GameState.NearbyMinableRock;
-        bool show = (near != null || rock != null) && !AnyOverlayOpen;
+        bool show = (near != null || npc != null || rock != null) && !AnyOverlayOpen;
         overlay.IsVisible = show;
         if (show)
         {
             // The rock line is a hint, not a button: mining is swinging the held pickaxe.
             text.Text = near != null
                 ? $"Press [E] — {StructureName(near.Type)}"
-                : "Swing your pickaxe at the rock face to mine";
+                : npc != null
+                    ? $"Press [E] — {npc.Name} ({npc.Occupation})"
+                    : "Swing your pickaxe at the rock face to mine";
         }
     }
 
@@ -170,6 +173,12 @@ public partial class GameView : UserControl
             e.Handled = true;
             // Same rule as Tab: toggle from gameplay or from the inventory itself only.
             if (IsInventoryOpen || !AnyOverlayOpen) ToggleInventory();
+        }
+        else if (e.Key == Key.E && !AnyOverlayOpen && _viewModel?.GameState.NearbyNpc is { } villager)
+        {
+            // A townsperson in reach: talk, trade, train, or be healed (note 09 PR 9).
+            e.Handled = true;
+            OpenNpcMenu(villager);
         }
         else if (e.Key == Key.E && !AnyOverlayOpen && _viewModel?.GameState.NearbyInteractable is { } structure)
         {
@@ -501,6 +510,73 @@ public partial class GameView : UserControl
         AddMenuItem(panel, "Cancel", CloseContextMenu);
 
         // Centered (opened via the E key, not at a click point).
+        box.HorizontalAlignment = HorizontalAlignment.Center;
+        box.VerticalAlignment = VerticalAlignment.Center;
+        box.Margin = new Avalonia.Thickness(0);
+        overlay.IsVisible = true;
+    }
+
+    /// <summary>
+    /// The Press-E menu for a townsperson (note 09 PR 9): Talk for everyone; the trades add
+    /// their services — the merchant's wares, the trainer's spell list (affinity-gated entries
+    /// shown with their reason), the priest's healing rite.
+    /// </summary>
+    private void OpenNpcMenu(Npc npc)
+    {
+        var overlay = this.FindControl<Border>("ContextMenuOverlay");
+        var box = this.FindControl<Border>("ContextMenuBox");
+        var panel = this.FindControl<StackPanel>("ContextMenuPanel");
+        if (overlay == null || box == null || panel == null || _viewModel == null) return;
+        var gs = _viewModel.GameState;
+        panel.Children.Clear();
+        _heldMoveKeys.Clear();
+        gs.SetManualMoveIntent(0, 0);
+
+        int opinion = NpcInteractionService.GetOpinion(gs.Hero, npc);
+        AddMenuItem(panel,
+            $"{npc.Name} — {npc.Occupation} ({NpcInteractionService.OpinionTier(opinion)})", () => { });
+
+        AddMenuItem(panel, "Talk", () => { NpcInteractionService.Talk(gs, npc); CloseContextMenu(); });
+
+        switch (npc.Occupation)
+        {
+            case NpcOccupation.Merchant:
+                foreach (var (item, price) in NpcInteractionService.MerchantStock(gs, npc))
+                {
+                    var id = item.Id;
+                    bool affordable = gs.Hero.Gold >= price;
+                    var entry = AddMenuItem(panel, $"Buy {item.Name} — {price}g",
+                        () => { NpcInteractionService.Buy(gs, npc, id); CloseContextMenu(); });
+                    entry.IsEnabled = affordable;
+                }
+                AddMenuItem(panel, "Sell items…", () => { CloseContextMenu(); OpenSell(); });
+                break;
+
+            case NpcOccupation.Trainer:
+                foreach (var offer in NpcInteractionService.TrainingOffers(gs))
+                {
+                    var id = offer.Id;
+                    string label = offer.Known
+                        ? $"{offer.Name} — already known"
+                        : offer.Gated
+                            ? $"{offer.Name} — {offer.Requirement}"
+                            : $"Learn {offer.Name} ({offer.Element}) — {offer.Price}g";
+                    var entry = AddMenuItem(panel, label,
+                        () => { NpcInteractionService.Train(gs, npc, id); CloseContextMenu(); });
+                    entry.IsEnabled = !offer.Known && !offer.Gated && gs.Hero.Gold >= offer.Price;
+                }
+                break;
+
+            case NpcOccupation.Priest:
+                int cost = NpcInteractionService.HealCost(gs.Hero);
+                var heal = AddMenuItem(panel,
+                    $"Healing rite — {cost}g ({gs.Hero.CurrentHp}/{gs.Hero.MaxHp} HP)",
+                    () => { NpcInteractionService.PriestHeal(gs, npc); CloseContextMenu(); });
+                heal.IsEnabled = gs.Hero.CurrentHp < gs.Hero.MaxHp && gs.Hero.Gold >= cost;
+                break;
+        }
+
+        AddMenuItem(panel, "Cancel", CloseContextMenu);
         box.HorizontalAlignment = HorizontalAlignment.Center;
         box.VerticalAlignment = VerticalAlignment.Center;
         box.Margin = new Avalonia.Thickness(0);

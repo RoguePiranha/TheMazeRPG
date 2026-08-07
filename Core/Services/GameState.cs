@@ -3049,11 +3049,16 @@ public class GameState
     private const float InteractRadius = 1.3f;
 
     /// <summary>Refresh the nearest in-range chest or town structure for the contextual prompt.</summary>
+    /// <summary>The townsperson in Press-E range, when they're the closest thing to talk to —
+    /// see UpdateNearbyInteractable. Null outside the overworld.</summary>
+    public Npc? NearbyNpc { get; private set; }
+
     public void UpdateNearbyInteractable()
     {
         if (CurrentActivity != null || Hero.InCombat)
         {
             NearbyInteractable = null;
+            NearbyNpc = null;
             NearbyMinableRock = null;
             return;
         }
@@ -3072,6 +3077,26 @@ public class GameState
             float d2 = dx * dx + dy * dy;
             if (d2 <= nearestSq) { nearestSq = d2; nearest = f; }
         }
+
+        // A townsperson beats a structure when they're strictly closer — the merchant standing
+        // beside their stall answers before the stall does. The settled asleep are left to sleep.
+        Npc? nearestNpc = null;
+        if (IsInOverworld)
+        {
+            foreach (var npc in Npcs)
+            {
+                if (npc.Goal == NpcGoalType.Sleep && npc.Path.Count == 0) continue;
+                float dx = npc.X - Hero.X, dy = npc.Y - Hero.Y;
+                float d2 = dx * dx + dy * dy;
+                if (d2 < nearestSq)
+                {
+                    nearestSq = d2;
+                    nearestNpc = npc;
+                    nearest = null;
+                }
+            }
+        }
+        NearbyNpc = nearestNpc;
         NearbyInteractable = nearest;
         // A workable rock face is surfaced as a HINT only while a pickaxe is actually in hand
         // (swinging is the action — there is no Press-E mining). Features take precedence so
@@ -3176,9 +3201,12 @@ public class GameState
         return price;
     }
 
-    /// <summary>The gold a Combinable would sell for (rarity-based). Used by the Stall sell UI to
-    /// preview prices before committing a sale.</summary>
-    public int SellPrice(Combinable item) => CombinationEngine.RarityPoints(item.Rarity) * GoldPerRarityPoint;
+    /// <summary>The gold a Combinable would sell for (rarity-based), with the Charisma haggling
+    /// bonus (owner ruling 2026-08-05: sell × (1 + 0.01·effCha), capped ×1.25 — Charisma finally
+    /// reaches merchant prices). Used by the sell UIs to preview prices before committing.</summary>
+    public int SellPrice(Combinable item) =>
+        Math.Max(1, (int)MathF.Round(CombinationEngine.RarityPoints(item.Rarity) * GoldPerRarityPoint *
+            MathF.Min(1.25f, 1f + 0.01f * Hero.EffectiveCharisma)));
 
     private void CheckFeatures()
     {
@@ -3900,6 +3928,8 @@ public class GameState
         Hero.HotbarKnownIds = data.HotbarKnownIds != null
             ? new HashSet<string>(data.HotbarKnownIds, StringComparer.OrdinalIgnoreCase)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Hero.NpcOpinions = new Dictionary<string, int>(data.NpcOpinions ?? new());
+        Hero.NpcLastTalkDay = new Dictionary<string, int>(data.NpcLastTalkDay ?? new());
         // Grow-with-use elemental progress survives the restart (remote's typed Affinities model
         // supersedes the local string-dict version — one restore path, not two).
         if (data.Affinities != null) Hero.Affinities = data.Affinities.Clone();

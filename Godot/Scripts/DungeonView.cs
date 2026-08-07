@@ -931,13 +931,18 @@ public partial class DungeonView : Node2D
     }
 
     // Townsfolk living their day (note 09 v1: schedules-first NPCs, Core-simulated in the
-    // overworld). A small round-headed figure in occupation color — colors match the Avalonia
-    // renderer, which is the behavioral spec — with a name label when the hero is close enough
-    // to be face to face. Sleepers indoors aren't drawn; their house holds them.
+    // overworld). Simple circles in occupation color, matching the player's own presentation
+    // (owner ruling 2026-08-07: circles like the player, nothing fancy yet); colors match the
+    // Avalonia renderer, which is the behavioral spec. One name label at a time — the closest
+    // person within talking distance — so a knot of people never smears its names together.
+    // Sleepers indoors aren't drawn; their house holds them.
     private void DrawNpcs(GameState state)
     {
         var region = state.CurrentMaze?.Region;
         if (region == null || state.Npcs.Count == 0) return;
+
+        Npc? labeled = null;
+        float labeledDistance = 4f; // squared talking distance (2 tiles)
 
         foreach (Npc npc in state.Npcs)
         {
@@ -960,22 +965,29 @@ public partial class DungeonView : Node2D
                 NpcOccupation.Elder => new Color(0.60f, 0.58f, 0.53f),
                 _ => new Color(0.50f, 0.55f, 0.42f)
             };
-            float scale = npc.Occupation == NpcOccupation.Child ? 0.72f : 1f;
+            float radius = 8f * (npc.Occupation == NpcOccupation.Child ? 0.72f : 1f);
 
-            DrawRect(new Rect2(center + new Vector2(-6f * scale, -4f * scale),
-                new Vector2(12f * scale, 14f * scale)), color);
-            DrawCircle(center + new Vector2(0f, -8.5f * scale), 5f * scale, color);
+            DrawCircle(center, radius, color);
+            DrawArc(center, radius, 0f, Mathf.Tau, 24, new Color(0.13f, 0.13f, 0.13f, 0.63f), 1.4f);
 
             float dx = npc.X - state.Hero.X;
             float dy = npc.Y - state.Hero.Y;
-            if (dx * dx + dy * dy <= 4f)
+            float distanceSq = dx * dx + dy * dy;
+            if (distanceSq < labeledDistance)
             {
-                string label = $"{npc.Name} · {npc.Occupation}";
-                DrawString(ThemeDB.FallbackFont, center + new Vector2(-59f, -19f), label,
-                    HorizontalAlignment.Center, 120, 12, new Color(0f, 0f, 0f, 0.7f));
-                DrawString(ThemeDB.FallbackFont, center + new Vector2(-60f, -20f), label,
-                    HorizontalAlignment.Center, 120, 12, new Color(0.91f, 0.91f, 0.88f));
+                labeledDistance = distanceSq;
+                labeled = npc;
             }
+        }
+
+        if (labeled != null)
+        {
+            Vector2 center = WorldToPixel(labeled.X, labeled.Y);
+            string label = $"{labeled.Name} · {labeled.Occupation}";
+            DrawString(ThemeDB.FallbackFont, center + new Vector2(-59f, -15f), label,
+                HorizontalAlignment.Center, 120, 12, new Color(0f, 0f, 0f, 0.7f));
+            DrawString(ThemeDB.FallbackFont, center + new Vector2(-60f, -16f), label,
+                HorizontalAlignment.Center, 120, 12, new Color(0.91f, 0.91f, 0.88f));
         }
     }
 

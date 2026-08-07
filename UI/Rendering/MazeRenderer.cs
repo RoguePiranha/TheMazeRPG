@@ -592,13 +592,18 @@ public class MazeRenderer
     };
 
     /// <summary>
-    /// Townsfolk: a small round-headed figure in occupation color, with a name label when the
-    /// hero is close enough to be face to face. Sleepers indoors at night simply aren't drawn —
+    /// Townsfolk: simple circles in occupation color, matching the player's own presentation
+    /// (owner ruling 2026-08-07: circles like the player character, nothing fancy yet). One name
+    /// label at a time — the closest person within talking distance — so a knot of people never
+    /// piles its names into an unreadable smear. Sleepers indoors at night simply aren't drawn —
     /// their house holds them. Only regions have townsfolk, so this is a no-op elsewhere.
     /// </summary>
     private static void DrawNpcs(SKCanvas canvas, List<Npc> npcs, Maze maze, Hero hero)
     {
         if (npcs.Count == 0 || maze.Region == null) return;
+
+        Npc? labeled = null;
+        float labeledDistance = 4f; // squared talking distance (2 tiles)
 
         foreach (var npc in npcs)
         {
@@ -609,24 +614,36 @@ public class MazeRenderer
             float px = npc.X * CellSize + CellSize / 2f;
             float py = npc.Y * CellSize + CellSize / 2f;
             var color = NpcColor(npc.Occupation);
-            float scale = npc.Occupation == NpcOccupation.Child ? 0.72f : 1f;
+            float radius = CellSize / 6f * (npc.Occupation == NpcOccupation.Child ? 0.72f : 1f);
 
             using var body = new SKPaint { Color = color, IsAntialias = true };
-            canvas.DrawRoundRect(px - 4.5f * scale, py - 3f * scale, 9f * scale, 10f * scale,
-                3f * scale, 3f * scale, body);
-            using var head = new SKPaint { Color = color.WithAlpha(0xF0), IsAntialias = true };
-            canvas.DrawCircle(px, py - 6f * scale, 3.6f * scale, head);
+            canvas.DrawCircle(px, py, radius, body);
+            using var ring = new SKPaint
+            {
+                Color = new SKColor(0x20, 0x20, 0x20, 0xA0), IsAntialias = true,
+                Style = SKPaintStyle.Stroke, StrokeWidth = 1.4f
+            };
+            canvas.DrawCircle(px, py, radius, ring);
 
             float dx = npc.X - hero.X;
             float dy = npc.Y - hero.Y;
-            if (dx * dx + dy * dy <= 4f)
+            float distanceSq = dx * dx + dy * dy;
+            if (distanceSq < labeledDistance)
             {
-                using var labelShadow = new SKPaint { Color = SKColors.Black.WithAlpha(0xB0), TextSize = 11, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
-                using var label = new SKPaint { Color = new SKColor(0xE8, 0xE8, 0xE0), TextSize = 11, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
-                string text = $"{npc.Name} · {npc.Occupation}";
-                canvas.DrawText(text, px + 1f, py - 14f + 1f, labelShadow);
-                canvas.DrawText(text, px, py - 14f, label);
+                labeledDistance = distanceSq;
+                labeled = npc;
             }
+        }
+
+        if (labeled != null)
+        {
+            float px = labeled.X * CellSize + CellSize / 2f;
+            float py = labeled.Y * CellSize + CellSize / 2f;
+            using var labelShadow = new SKPaint { Color = SKColors.Black.WithAlpha(0xB0), TextSize = 11, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+            using var label = new SKPaint { Color = new SKColor(0xE8, 0xE8, 0xE0), TextSize = 11, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+            string text = $"{labeled.Name} · {labeled.Occupation}";
+            canvas.DrawText(text, px + 1f, py - 13f + 1f, labelShadow);
+            canvas.DrawText(text, px, py - 13f, label);
         }
     }
 

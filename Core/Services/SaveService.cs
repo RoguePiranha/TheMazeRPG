@@ -125,7 +125,9 @@ public static class SaveService
             Kills = hero.Kills,
             WorldGameMinutes = gameState.Clock.TotalGameMinutes,
             HotbarAssignments = new List<string?>(hero.HotbarAssignments),
-            HotbarKnownIds = new List<string>(hero.HotbarKnownIds)
+            HotbarKnownIds = new List<string>(hero.HotbarKnownIds),
+            NpcOpinions = new Dictionary<string, int>(hero.NpcOpinions),
+            NpcLastTalkDay = new Dictionary<string, int>(hero.NpcLastTalkDay)
         };
 
         try

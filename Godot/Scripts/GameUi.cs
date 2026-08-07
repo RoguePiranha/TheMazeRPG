@@ -1913,6 +1913,69 @@ public partial class GameUi : Control
         ShowModal(body, new Vector2(500, 460));
     }
 
+    /// <summary>
+    /// A townsperson's Press-E menu (note 09 PR 9): Talk for everyone; the merchant lists today's
+    /// wares and the sell flow, the trainer lists spells with affinity-gated reasons, the priest
+    /// offers the healing rite. Self-refreshes after a purchase, like the stall menu.
+    /// </summary>
+    public void ShowNpcActions(GameState state, Npc npc)
+    {
+        int opinion = NpcInteractionService.GetOpinion(state.Hero, npc);
+        var body = ModalBody(npc.Name.ToUpperInvariant(), Gold, new Vector2(440, 0));
+        body.AddChild(LabelOf($"{npc.Occupation.ToString().ToUpperInvariant()}  ·  {NpcInteractionService.OpinionTier(opinion).ToUpperInvariant()}  ·  GOLD: {state.Hero.Gold}",
+            13, Muted, HorizontalAlignment.Center));
+
+        var talk = CommandButton("TALK", Blue, 360);
+        talk.Pressed += () => { CloseModal(); NpcInteractionService.Talk(state, npc); };
+        body.AddChild(talk);
+
+        switch (npc.Occupation)
+        {
+            case NpcOccupation.Merchant:
+                foreach (var (item, price) in NpcInteractionService.MerchantStock(state, npc))
+                {
+                    string id = item.Id;
+                    var buy = CommandButton($"BUY {item.Name.ToUpperInvariant()}   {price}g", Gold, 360);
+                    buy.Disabled = state.Hero.Gold < price;
+                    buy.Pressed += () => { NpcInteractionService.Buy(state, npc, id); ShowNpcActions(state, npc); };
+                    body.AddChild(buy);
+                }
+                var sell = CommandButton("SELL ITEMS…", Blue, 360);
+                sell.Pressed += () => ShowStallActions(state);
+                body.AddChild(sell);
+                break;
+
+            case NpcOccupation.Trainer:
+                foreach (var offer in NpcInteractionService.TrainingOffers(state))
+                {
+                    string id = offer.Id;
+                    string label = offer.Known
+                        ? $"{offer.Name.ToUpperInvariant()} — KNOWN"
+                        : offer.Gated
+                            ? $"{offer.Name.ToUpperInvariant()} — {offer.Requirement.ToUpperInvariant()}"
+                            : $"LEARN {offer.Name.ToUpperInvariant()} ({offer.Element})   {offer.Price}g";
+                    var train = CommandButton(label, Gold, 360);
+                    train.Disabled = offer.Known || offer.Gated || state.Hero.Gold < offer.Price;
+                    train.Pressed += () => { NpcInteractionService.Train(state, npc, id); ShowNpcActions(state, npc); };
+                    body.AddChild(train);
+                }
+                break;
+
+            case NpcOccupation.Priest:
+                int cost = NpcInteractionService.HealCost(state.Hero);
+                var heal = CommandButton($"HEALING RITE   {cost}g   ({state.Hero.CurrentHp}/{state.Hero.MaxHp} HP)", Gold, 360);
+                heal.Disabled = state.Hero.CurrentHp >= state.Hero.MaxHp || state.Hero.Gold < cost;
+                heal.Pressed += () => { CloseModal(); NpcInteractionService.PriestHeal(state, npc); };
+                body.AddChild(heal);
+                break;
+        }
+
+        var leave = CommandButton("LEAVE", Muted, 360);
+        leave.Pressed += () => CloseModal();
+        body.AddChild(leave);
+        ShowModal(body, new Vector2(500, 480));
+    }
+
     /// <summary>Dungeon entrance: confirm a fresh dive (progress checkpoints at the entrance).</summary>
     public void ShowDungeonEntranceActions(GameState state)
     {

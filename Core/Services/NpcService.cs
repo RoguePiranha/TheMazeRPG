@@ -110,7 +110,9 @@ public static class NpcService
                     Race = random.Next(100) < 75 ? "Human" : random.Next(2) == 0 ? "Elf" : "Orc",
                     HomeBuildingId = home.Id,
                     JitterMinutes = random.Next(-20, 21),
-                    Salt = npcIndex
+                    Salt = npcIndex,
+                    WalkSpeedScale = 0.85f + npcIndex % 8 * 0.04f,
+                    NoiseState = (uint)(npcIndex * 2654435761 + seed) | 1
                 };
 
                 // The first two members of a household are adults; extras skew young, some old.
@@ -121,7 +123,12 @@ public static class NpcService
                     npc.Occupation = occupation;
                     npc.WorkBuildingId = workplace?.Id ?? -1;
                     if (occupation == NpcOccupation.Guard)
+                    {
                         npc.NightShift = guardsMade++ % 2 == 1;
+                        // Staggered legs: two guards on the same shift walk different stretches
+                        // of the ring, instead of stacking on one tile and marching in lockstep.
+                        npc.PatrolLeg = npcIndex;
+                    }
                 }
                 else if (adult)
                 {
@@ -347,17 +354,71 @@ public static class NpcService
 
             WalkAlongPath(npc, maze);
 
-            // A guard standing on their waypoint moves to the next leg of the round.
-            if (npc.Goal == NpcGoalType.Patrol && npc.Path.Count == 0 &&
+            // A guard reaching their waypoint lingers — a look around the post — then walks the
+            // next leg of the round. The linger varies per person, so two guards sharing a shift
+            // drift apart instead of shadowing each other.
+            if (npc.Goal == NpcGoalType.Patrol && npc.Path.Count == 0 && !npc.NeedsPath &&
                 MathF.Abs(npc.X - npc.TargetX) < 0.2f && MathF.Abs(npc.Y - npc.TargetY) < 0.2f)
             {
-                npc.PatrolLeg++;
-                npc.NeedsPath = true;
-                var next = PatrolWaypoint(npc, maze, region);
-                npc.TargetX = next.x;
-                npc.TargetY = next.y;
+                if (npc.IdleTicks == 0)
+                {
+                    npc.IdleTicks = 40 + (int)(NextNoise(npc) % 80);
+                }
+                else if (--npc.IdleTicks == 0)
+                {
+                    npc.PatrolLeg++;
+                    npc.NeedsPath = true;
+                    var next = PatrolWaypoint(npc, maze, region);
+                    npc.TargetX = next.x;
+                    npc.TargetY = next.y;
+                }
+            }
+            // Everyone else at their destination putters: a small wander near the anchor every
+            // so often, so a workshop, a square, or a tavern is a place people shift around in
+            // rather than a museum of statues (note 09's "stationary loop", finally embodied).
+            // Sleepers lie still.
+            else if (npc.Path.Count == 0 && !npc.NeedsPath &&
+                     npc.Goal is not NpcGoalType.Sleep and not NpcGoalType.Patrol)
+            {
+                if (npc.IdleTicks > 0)
+                {
+                    npc.IdleTicks--;
+                }
+                else
+                {
+                    uint roll = NextNoise(npc);
+                    int wanderX = npc.TargetX + (int)(roll % 5) - 2;
+                    int wanderY = npc.TargetY + (int)((roll >> 8) % 5) - 2;
+                    bool hopped = false;
+                    if (maze.IsWalkable(wanderX, wanderY))
+                    {
+                        var hop = FindPath(maze, ((int)MathF.Round(npc.X), (int)MathF.Round(npc.Y)),
+                            (wanderX, wanderY));
+                        if (hop != null && hop.Count > 0 && hop.Count <= 6)
+                        {
+                            npc.Path = hop;
+                            hopped = true;
+                        }
+                    }
+                    // A dud roll (own tile, a wall, out of reach) retries shortly; an actual
+                    // stroll earns a proper pause before the next one.
+                    npc.IdleTicks = hopped
+                        ? 50 + (int)(NextNoise(npc) % 140)
+                        : 8 + (int)(NextNoise(npc) % 16);
+                }
             }
         }
+    }
+
+    /// <summary>Per-person xorshift: personal randomness with no shared RNG stream touched.</summary>
+    private static uint NextNoise(Npc npc)
+    {
+        uint x = npc.NoiseState;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        npc.NoiseState = x;
+        return x;
     }
 
     private static void WalkAlongPath(Npc npc, Maze maze)
@@ -389,7 +450,8 @@ public static class NpcService
         float dx = nx - npc.X;
         float dy = ny - npc.Y;
         float distance = MathF.Sqrt(dx * dx + dy * dy);
-        if (distance <= WalkPerUpdate)
+        float step = WalkPerUpdate * npc.WalkSpeedScale;
+        if (distance <= step)
         {
             npc.X = nx;
             npc.Y = ny;
@@ -397,8 +459,8 @@ public static class NpcService
         }
         else
         {
-            npc.X += dx / distance * WalkPerUpdate;
-            npc.Y += dy / distance * WalkPerUpdate;
+            npc.X += dx / distance * step;
+            npc.Y += dy / distance * step;
         }
         npc.StuckTicks = 0;
     }

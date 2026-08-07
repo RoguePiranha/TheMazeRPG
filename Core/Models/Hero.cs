@@ -166,6 +166,19 @@ public class Hero
     // GameState.DrainPendingUnlocks — Hero can't build Combinables or log messages itself).
     public List<string> PendingUnlocks { get; } = new();
 
+    // ---- Relationships v1 (Planning note 09 §4.4 — owner ruling 2026-08-05: "interactions go
+    // more smoothly, people remember you more and grow to care about you quicker") ----
+
+    /// <summary>Per-NPC Opinion 0–100 (strangers effectively start at 10 — see
+    /// NpcInteractionService). Raised by talking, trading, training, being healed; growth scales
+    /// with Charisma — Cha is the *rate* of becoming known and liked, not a popularity score.
+    /// Keyed by stable npc id; persisted with the character (it's who knows *you*).</summary>
+    public Dictionary<string, int> NpcOpinions { get; set; } = new();
+
+    /// <summary>Day number of the last chat per NPC — the first talk of a day warms opinion,
+    /// repeats don't (no farming a friendship by holding down E).</summary>
+    public Dictionary<string, int> NpcLastTalkDay { get; set; } = new();
+
     // ---- Stealth (Planning note 11 §3) ----
 
     /// <summary>Sneak mode: toggled by the player (C), Manual control only. Slower, quieter

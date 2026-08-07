@@ -261,6 +261,14 @@ sealed class Program
             return;
         }
 
+        // If TEST_SERVICES is set, verify the town's services — barks, opinion, merchant
+        // buy/sell with Charisma pricing, the affinity-gated trainer, the priest — and exit
+        if (Environment.GetEnvironmentVariable("TEST_SERVICES") == "1")
+        {
+            RunServicesDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 
@@ -648,6 +656,162 @@ sealed class Program
     {
         Console.WriteLine($"  {(condition ? "ok  " : "FAIL")} {what}");
         if (!condition) throw new InvalidOperationException($"TEST_WORLD assertion failed: {what}");
+    }
+
+    // Debug/test entrypoint: if TEST_SERVICES=1 is set, verify the town services layer (Planning
+    // note 09 PR 9): Talk barks keyed to occupation and hour, per-NPC Opinion with Charisma-scaled
+    // growth, merchants that buy and sell with Charisma/Opinion pricing, the trainer behind the
+    // affinity tier gate, and the priest's healing rite.
+    public static void RunServicesDemo()
+    {
+        Console.WriteLine("=== Town services: talk, trade, train, heal ===");
+        WorldService.ResetCachesForTesting();
+        NpcInteractionService.ResetCachesForTesting();
+        var scratch = new List<string>();
+
+        var world = WorldService.Create(new WorldGenOptions { Seed = 7070, Size = WorldSize.Small }, "Marketon");
+        scratch.Add(world.WorldId);
+        WorldService.ActiveWorldId = world.WorldId;
+
+        var game = new GameState(5, "Talker", "Warrior", "Human") { IsRunning = true };
+        game.ExecuteDebugCommand("moveplayer overworld");
+        var npcs = game.Npcs;
+        var hero = game.Hero;
+
+        // --- Talk: a person says something of their hour, and remembers you for asking ---
+        Console.WriteLine("\n-- Talk --");
+        var smith = npcs.First(n => n.Occupation == NpcOccupation.Smith);
+        int before = NpcInteractionService.GetOpinion(hero, smith);
+        string line = NpcInteractionService.Talk(game, smith);
+        Console.WriteLine($"     {smith.Name}: \"{line}\"");
+        Expect(!string.IsNullOrWhiteSpace(line) && line != "...", "the smith has something to say");
+        int after = NpcInteractionService.GetOpinion(hero, smith);
+        Expect(after > before, $"the first chat of the day warms them ({before} -> {after})");
+        NpcInteractionService.Talk(game, smith);
+        Expect(NpcInteractionService.GetOpinion(hero, smith) == after,
+            "chatting again the same day earns nothing more — no farming friendship on E");
+        game.Clock.TotalGameMinutes += 1440; // tomorrow
+        NpcInteractionService.Talk(game, smith);
+        Expect(NpcInteractionService.GetOpinion(hero, smith) > after, "a new day, a new hello, a little warmer");
+        Expect(NpcInteractionService.OpinionTier(10) == "Stranger" &&
+               NpcInteractionService.OpinionTier(45) == "Acquaintance" &&
+               NpcInteractionService.OpinionTier(60) == "Friend" &&
+               NpcInteractionService.OpinionTier(90) == "Close", "the tiers ladder correctly");
+
+        // Charisma is the RATE of becoming liked.
+        var charming = new Npc { Id = "test-charm", Salt = 1 };
+        var gruff = new Npc { Id = "test-gruff", Salt = 2 };
+        int lowCha = hero.Charisma;
+        NpcInteractionService.AddOpinion(hero, gruff, 4);
+        hero.Charisma = lowCha + 20;
+        NpcInteractionService.AddOpinion(hero, charming, 4);
+        int gainGruff = NpcInteractionService.GetOpinion(hero, gruff) - NpcInteractionService.StrangerOpinion;
+        int gainCharming = NpcInteractionService.GetOpinion(hero, charming) - NpcInteractionService.StrangerOpinion;
+        Expect(gainCharming > gainGruff, $"Charisma speeds the warming ({gainGruff} vs {gainCharming})");
+        hero.Charisma = lowCha;
+
+        // --- Merchant: wares priced by rarity, shaved by Charisma and friendship ---
+        Console.WriteLine("\n-- The merchant --");
+        var merchant = npcs.First(n => n.Occupation == NpcOccupation.Merchant);
+        var stock = NpcInteractionService.MerchantStock(game, merchant);
+        Expect(stock.Count == 4 && stock.All(s => s.Price > 0), $"today's stall carries {stock.Count} priced wares");
+        Console.WriteLine("     stock: " + string.Join(", ", stock.Select(s => $"{s.Item.Name} {s.Price}g")));
+
+        var ids = new HashSet<string>(stock.Select(s => s.Item.Id));
+        for (int day = 1; day <= 3; day++)
+        {
+            game.Clock.TotalGameMinutes += 1440;
+            foreach (var (item, _) in NpcInteractionService.MerchantStock(game, merchant)) ids.Add(item.Id);
+        }
+        Expect(ids.Count > 4, $"the stall restocks with the calendar ({ids.Count} distinct wares over four days)");
+
+        var offer = NpcInteractionService.MerchantStock(game, merchant)[0];
+        hero.Gold = offer.Price - 1;
+        Expect(!NpcInteractionService.Buy(game, merchant, offer.Item.Id), "short a coin, no sale");
+        hero.Gold = offer.Price + 50;
+        int goldBefore = hero.Gold;
+        int opinionBefore = NpcInteractionService.GetOpinion(hero, merchant);
+        Expect(NpcInteractionService.Buy(game, merchant, offer.Item.Id), $"buying {offer.Item.Name} succeeds");
+        Expect(hero.Gold == goldBefore - offer.Price, $"gold paid exactly ({goldBefore} -> {hero.Gold})");
+        Expect(hero.Inventory.Concat(hero.Loadout).Any(c => c.Id == offer.Item.Id) ||
+               hero.Equipment.Values.Any(c => c.Id == offer.Item.Id),
+            "the purchase arrives through the normal loot pipeline");
+        Expect(NpcInteractionService.GetOpinion(hero, merchant) > opinionBefore, "trade builds regard");
+
+        int priceAtLowCha = NpcInteractionService.BuyPrice(hero, merchant, offer.Item);
+        hero.Charisma += 15;
+        Expect(NpcInteractionService.BuyPrice(hero, merchant, offer.Item) < priceAtLowCha,
+            "a silver tongue shaves the price");
+        var sword = CombinableCatalog.Sword();
+        int chaSave = hero.Charisma;
+        hero.Charisma = 0;
+        int listSell = game.SellPrice(sword); // the un-haggled list price
+        hero.Charisma = 15;
+        int sellSweetened = game.SellPrice(sword);
+        hero.Charisma = 200; // absurd, to prove the cap
+        int sellCapped = game.SellPrice(sword);
+        hero.Charisma = chaSave;
+        Expect(sellSweetened > listSell, "Charisma sweetens sell prices too");
+        Expect(sellCapped <= (int)MathF.Ceiling(listSell * 1.25f), "but haggling caps at 25% over list");
+        Expect(NpcInteractionService.BuyPrice(hero, merchant, sword) > game.SellPrice(sword),
+            "the margin between buy and sell is the gold sink");
+
+        // --- Trainer: the affinity tier gate's first real consumer ---
+        Console.WriteLine("\n-- The trainer --");
+        var trainer = npcs.First(n => n.Occupation == NpcOccupation.Trainer);
+        hero.Affinities.Set(MagicElement.Fire, 5f); // well under Tier 1's 20
+        var offers = NpcInteractionService.TrainingOffers(game);
+        Expect(offers.Count >= 3, $"the school teaches {offers.Count} spells");
+        var fireball = offers.First(o => o.Id == "fireball");
+        Expect(fireball.Gated && fireball.Requirement.Contains("Fire"),
+            $"a cold Fire affinity is refused, with the reason spoken ({fireball.Requirement})");
+        hero.Gold = 1000;
+        Expect(!NpcInteractionService.Train(game, trainer, "fireball"), "the gate holds even with gold in hand");
+
+        hero.Affinities.Set(MagicElement.Fire, 30f); // over the Tier 1 bar
+        Expect(!NpcInteractionService.TrainingOffers(game).First(o => o.Id == "fireball").Gated,
+            "warming the affinity opens the gate");
+        int tuition = NpcInteractionService.TrainingOffers(game).First(o => o.Id == "fireball").Price;
+        goldBefore = hero.Gold;
+        Expect(NpcInteractionService.Train(game, trainer, "fireball"), "training succeeds");
+        Expect(hero.Gold == goldBefore - tuition, $"tuition paid ({tuition}g)");
+        Expect(hero.Loadout.Concat(hero.Inventory).Any(c => c.Id == "fireball"), "the spell is learned");
+        Expect(!NpcInteractionService.Train(game, trainer, "fireball"), "and can't be bought twice");
+
+        // --- Priest: whole again, for a fee ---
+        Console.WriteLine("\n-- The priest --");
+        var priest = npcs.First(n => n.Occupation == NpcOccupation.Priest);
+        hero.CurrentHp = hero.MaxHp;
+        Expect(!NpcInteractionService.PriestHeal(game, priest), "the unhurt are sent away whole");
+        hero.CurrentHp = hero.MaxHp / 3;
+        int rite = NpcInteractionService.HealCost(hero);
+        hero.Gold = rite - 1;
+        Expect(!NpcInteractionService.PriestHeal(game, priest), "the divine doesn't haggle");
+        hero.Gold = rite + 10;
+        Expect(NpcInteractionService.PriestHeal(game, priest), $"the rite heals in full for {rite}g");
+        Expect(hero.CurrentHp == hero.MaxHp && hero.Gold == 10, "whole again, purse lighter");
+
+        // --- The prompt finds people, and opinions survive the save ---
+        Console.WriteLine("\n-- Reaching people, remembering them --");
+        hero.X = smith.X + 1f;
+        hero.Y = smith.Y;
+        game.UpdateNearbyInteractable();
+        Expect(game.NearbyNpc != null, "standing beside a townsperson offers the Press-E prompt");
+
+        SaveService.Save(game);
+        var reloaded = new GameState(5, "Talker", "Warrior", "Human") { IsRunning = true };
+        var data = SaveService.Load(game.SaveId);
+        Expect(data != null && data.NpcOpinions.GetValueOrDefault(smith.Id) ==
+               NpcInteractionService.GetOpinion(hero, smith),
+            "who knows you — and how warmly — survives the save");
+        _ = reloaded;
+
+        Console.WriteLine("\n-- Cleanup --");
+        foreach (var id in scratch) WorldService.Delete(id);
+        Console.WriteLine($"  ok   removed {scratch.Count} scratch world(s)");
+
+        Console.WriteLine("\nPASS: the town talks back — barks by trade and hour, opinion that grows with " +
+                          "Charisma, a merchant with a real margin, a gated trainer, and a priest with fixed rates.");
     }
 
     // Debug/test entrypoint: if TEST_STEALTH=1 is set, verify the player half of stealth
@@ -1163,6 +1327,26 @@ sealed class Program
             $"mid-morning finds the trades at their premises ({atWork}/{tradesfolk.Count})");
         var dayGuards = guards.Where(g => !g.NightShift).ToList();
         Expect(dayGuards.All(g => g.Goal == NpcGoalType.Patrol), "the day watch is on patrol");
+
+        // Alive, not statuary (owner report 2026-08-07: "completely lifeless... all walked
+        // together"): a working tradesman putters around the shop rather than standing frozen,
+        // guards walk separate stretches of the round instead of stacking on one tile, and no
+        // two neighbours share exactly the same gait.
+        var putterer = tradesfolk[0];
+        var seen = new HashSet<(int x, int y)>();
+        for (int t = 0; t < 800; t++)
+        {
+            game.Tick();
+            seen.Add(((int)MathF.Round(putterer.X), (int)MathF.Round(putterer.Y)));
+        }
+        Expect(seen.Count >= 2, $"the {putterer.Occupation} putters about the shop ({seen.Count} tiles in ~27s)");
+        Expect(seen.All(p => Math.Abs(p.x - putterer.WorkX) <= 3 && Math.Abs(p.y - putterer.WorkY) <= 3),
+            "but never drifts far from the workbench");
+        Expect(dayGuards.Count < 2 || dayGuards
+                .Select(g => ((int)MathF.Round(g.X), (int)MathF.Round(g.Y))).Distinct().Count() > 1,
+            "the day watch holds separate posts, not a stacked lockstep");
+        Expect(npcs.Select(n => n.WalkSpeedScale).Distinct().Count() > 1, "gaits vary person to person");
+
         int crowdMorning = Near(_ => (region.SquareX, region.SquareY),
             npcs.Where(n => n.Occupation != NpcOccupation.Guard), region.SquareSize);
 

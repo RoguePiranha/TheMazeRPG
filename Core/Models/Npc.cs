@@ -92,6 +92,18 @@ public class Npc
     /// TEST_TOWNLIFE stuck assertion reads this.</summary>
     public int StuckTicks;
 
+    /// <summary>Personal gait (±~15%), set at roster time. A street where everyone covers ground
+    /// at exactly the same rate reads as a parade, not a town.</summary>
+    public float WalkSpeedScale = 1f;
+
+    /// <summary>Updates until the next idle wander (or, for a patrolling guard, until they move
+    /// to the next leg of the round) — people linger, they don't teleport between purposes.</summary>
+    public int IdleTicks;
+
+    /// <summary>Tiny per-person xorshift state: personal randomness (wander directions, linger
+    /// times) without touching any shared RNG stream — town determinism survives.</summary>
+    public uint NoiseState = 1;
+
     /// <summary>Set when the goal changed and a fresh path hasn't been computed yet. Repaths are
     /// rationed per tick, so this can stay pending for a few ticks after a phase change.</summary>
     public bool NeedsPath;

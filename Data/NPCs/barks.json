@@ -1,0 +1,239 @@
+{
+  "generic": {
+    "morning": [
+      "Morning. Bread's still warm if you're quick.",
+      "Up with the sun, same as ever.",
+      "Fine morning for it, whatever it is you do."
+    ],
+    "workam": [
+      "Work won't do itself.",
+      "Busy hands, quiet mind.",
+      "The day's half spent already, feels like."
+    ],
+    "midday": [
+      "Best hour of the day — the eating one.",
+      "The square's lively this time of day.",
+      "A body's got to eat."
+    ],
+    "workpm": [
+      "Long stretch till supper.",
+      "Back at it, then.",
+      "The afternoon drags, doesn't it?"
+    ],
+    "evening": [
+      "Day's done. Now for the good part.",
+      "You'll find half the town at the square tonight.",
+      "Evenings like this, you almost forget the mountain's full of monsters."
+    ],
+    "night": [
+      "Shouldn't you be abed?",
+      "Late to be wandering.",
+      "Quiet streets tonight. Keep them that way, eh?"
+    ],
+    "friendly": [
+      "Good to see you about!",
+      "There you are! The town's better with you in it.",
+      "If you ever need a roof, you know where mine is."
+    ]
+  },
+  "smith": {
+    "workam": [
+      "Ore's been good this week.",
+      "Hear that ring? That's honest work.",
+      "Mind the sparks, friend."
+    ],
+    "workpm": [
+      "A blade's only as good as the arm that works the bellows.",
+      "Bring me ingots and I'll show you what they can be.",
+      "This forge hasn't gone cold in twenty years."
+    ],
+    "evening": [
+      "Arms like lead. Good day's work.",
+      "The forge sleeps, and soon, so do I."
+    ],
+    "friendly": [
+      "For you? I'd fire the forge at midnight.",
+      "My best work's always waiting for you, friend."
+    ]
+  },
+  "guard": {
+    "workam": [
+      "Move along. Politely, mind.",
+      "All quiet at the mouth. The way we like it.",
+      "You heading down? Come back up, that's an order."
+    ],
+    "workpm": [
+      "Keep clear of the dungeon mouth unless you mean it.",
+      "Twenty years and the wall's never been breached. Not on my round."
+    ],
+    "evening": [
+      "Night shift takes over soon. Poor sods.",
+      "Streets clear out fast when the light goes."
+    ],
+    "night": [
+      "Late for a walk. Stay under the lamps.",
+      "The night round's quiet. Let's keep it so.",
+      "If you hear anything from the mountain, you come tell me."
+    ],
+    "friendly": [
+      "Sleep easy tonight — I've got the mouth watched.",
+      "You've done this town more good than my whole company. Don't repeat that."
+    ]
+  },
+  "merchant": {
+    "workam": [
+      "Fresh stock, fair prices. Mostly.",
+      "Everything's for sale, friend. Everything.",
+      "Buy something or stand somewhere else, eh?"
+    ],
+    "workpm": [
+      "Prices like these won't last. They never do.",
+      "The dungeon takes gold down, you bring it back up. I like the arrangement."
+    ],
+    "evening": [
+      "Counting the till. Don't stand so close.",
+      "Come back tomorrow, the good stock arrives at dawn."
+    ],
+    "friendly": [
+      "For my favourite customer? I might shave the price a little.",
+      "You bring the coin, I'll keep the best under the counter for you."
+    ]
+  },
+  "priest": {
+    "morning": [
+      "The light finds us all, even down in the dark.",
+      "Blessings on your morning."
+    ],
+    "workam": [
+      "The temple's open to anyone the dungeon has chewed on.",
+      "Faith mends what bandages can't."
+    ],
+    "workpm": [
+      "Come in bleeding, leave whole. That's the arrangement.",
+      "The divine doesn't haggle, but I'm told my rates are fair."
+    ],
+    "evening": [
+      "Evening prayers soon. You're welcome to stay.",
+      "Rest. Even the divine rested."
+    ],
+    "friendly": [
+      "The light keeps a special watch on you, I think.",
+      "You've been good to this town. It's noticed."
+    ]
+  },
+  "trainer": {
+    "workam": [
+      "Stance first. Everything else is decoration.",
+      "The dungeon doesn't grade on effort.",
+      "Every scar out there is a lesson someone skipped in here."
+    ],
+    "workpm": [
+      "Magic's just discipline wearing a fancy coat.",
+      "Show me your affinity and I'll show you what it's worth."
+    ],
+    "evening": [
+      "Training's done. The tavern isn't.",
+      "Rest is part of the regimen. The best part."
+    ],
+    "friendly": [
+      "You? You I'd put against anything on floor ten.",
+      "Best student I've had in years. Don't tell the others."
+    ]
+  },
+  "tavernkeep": {
+    "workam": [
+      "Bit early, but I don't judge.",
+      "The kegs don't tap themselves."
+    ],
+    "evening": [
+      "What'll it be? We've got ale, and we've got ale.",
+      "Busiest hour of the day, bless it.",
+      "Mind the dwarf in the corner, he's had four."
+    ],
+    "night": [
+      "Last call was an hour ago, friend.",
+      "Off home with you. The ale will keep."
+    ],
+    "friendly": [
+      "First one's on the house. Don't spread it around.",
+      "Your usual corner's free."
+    ]
+  },
+  "alchemist": {
+    "workam": [
+      "Don't breathe the green one.",
+      "Everything's a poison in the right dose. Cheerful thought."
+    ],
+    "workpm": [
+      "The mushrooms from the deep floors fetch a fine price, if you're diving.",
+      "Careful with that shelf. And that one. All of them, really."
+    ],
+    "friendly": [
+      "I've a tonic that might interest you. Friends' rates.",
+      "You're one of the few who knocks. I appreciate that."
+    ]
+  },
+  "carpenter": {
+    "workam": [
+      "Good wood's worth more than gold some winters.",
+      "Measure twice. The dungeon only lets you cut once."
+    ],
+    "workpm": [
+      "Half this town leans on my joinery and doesn't know it.",
+      "The forest gives, the saw shapes."
+    ],
+    "friendly": [
+      "That door of yours squeaking? I'll see to it, no charge."
+    ]
+  },
+  "child": {
+    "workam": [
+      "The trainer says I can't hold a sword till I'm taller.",
+      "Have you REALLY been in the dungeon?"
+    ],
+    "evening": [
+      "Bet you can't catch me!",
+      "Ma says the dungeon-divers are heroes. Are you one?"
+    ],
+    "night": [
+      "I'm not supposed to be out...",
+      "Don't tell Ma I'm out here."
+    ],
+    "friendly": [
+      "When I grow up I want to be exactly like you!",
+      "I told everyone I know you!"
+    ]
+  },
+  "elder": {
+    "morning": [
+      "These old bones knew the town when the walls were half-built.",
+      "Another sunrise. I count them now."
+    ],
+    "midday": [
+      "In my day the divers came back with better manners.",
+      "Sit, sit. The soup's better with company."
+    ],
+    "evening": [
+      "The mountain's moods change, you know. I've watched them for sixty years.",
+      "Mind the dungeon, child. It minds you."
+    ],
+    "friendly": [
+      "You remind me of someone I knew. That's a compliment.",
+      "Come by more often. The stories don't tell themselves."
+    ]
+  },
+  "laborer": {
+    "workam": [
+      "Water tower won't mind itself.",
+      "Honest work, decent pay, no monsters. I'll take it."
+    ],
+    "workpm": [
+      "Nearly done for the day. Nearly.",
+      "They say the divers earn more in an hour. They earn it, mind."
+    ],
+    "friendly": [
+      "You're all right, you know that?",
+      "Any time you want a quieter trade, I'll put a word in."
+    ]
+  }
+}

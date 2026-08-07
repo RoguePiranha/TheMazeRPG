@@ -365,7 +365,9 @@ public partial class GameHost : Node
         {
             CancelQueuedTacticalPath();
             _gameState.UpdateNearbyInteractable();
-            if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Chest } chest)
+            if (_gameState.NearbyNpc is { } villager)
+                _ui.ShowNpcActions(_gameState, villager);
+            else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Chest } chest)
                 _ui.ShowChestActions(_gameState, chest);
             else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.GuardianDoor })
                 _ui.ShowSafeRoomChoice(_gameState, challengeGuardian: true);

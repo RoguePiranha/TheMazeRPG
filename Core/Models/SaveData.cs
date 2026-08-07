@@ -79,6 +79,11 @@ public class SaveData
 
     public int Gold { get; set; }
     public Dictionary<string, int> Resources { get; set; } = new();
+
+    /// <summary>Relationships v1 (note 09): who in the town knows this character, and how warmly.
+    /// Missing on old saves — defaults keep everyone a stranger, which is correct.</summary>
+    public Dictionary<string, int> NpcOpinions { get; set; } = new();
+    public Dictionary<string, int> NpcLastTalkDay { get; set; } = new();
     public List<Combinable> Loadout { get; set; } = new();
     public List<Combinable> Inventory { get; set; } = new();
     public Dictionary<EquipmentSlot, Combinable> Equipment { get; set; } = new();
