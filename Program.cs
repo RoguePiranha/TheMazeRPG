@@ -237,6 +237,30 @@ sealed class Program
             return;
         }
 
+        // If TEST_TOWNLIFE is set, verify the town's daily life — deterministic roster, schedules
+        // moving people between home/work/square across the day, guards on shift — and exit
+        if (Environment.GetEnvironmentVariable("TEST_TOWNLIFE") == "1")
+        {
+            RunTownLifeDemo();
+            return;
+        }
+
+        // If TEST_AWARE is set, verify enemy perception — facing cones + LOS, gradual awareness,
+        // hearing with wall muffling, investigation, pack wake, decay — and exit
+        if (Environment.GetEnvironmentVariable("TEST_AWARE") == "1")
+        {
+            RunAwarenessDemo();
+            return;
+        }
+
+        // If TEST_STEALTH is set, verify the player half of stealth — sneak toggle and speed,
+        // quiet steps, gear weight, hidden sight gain, the stealth strike — and exit
+        if (Environment.GetEnvironmentVariable("TEST_STEALTH") == "1")
+        {
+            RunStealthDemo();
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 
@@ -539,7 +563,7 @@ sealed class Program
                           $"features {totals["features"] / generated}. Worst generation time {worstMs:0} ms.");
         Console.WriteLine("Determinism: same options rebuild the same region; a different seed does not.");
 
-        Console.WriteLine("\nPreview (Medium, seed 4242) — # mountain/wall  , road  ~ water  T tree  + door  . ground");
+        Console.WriteLine("\nPreview (Medium, seed 4242) — # mountain/wall  , road  ~ water  = bridge  T tree  + door  . ground");
         PrintRegion(first);
     }
 
@@ -602,14 +626,20 @@ sealed class Program
                 counts[maze.Tiles[x, y]] = counts.GetValueOrDefault(maze.Tiles[x, y]) + 1;
 
         // Structure beats ground: a block containing a door or road is more worth showing than the
-        // grass around it, even if grass is the majority.
+        // grass around it, even if grass is the majority. A road block containing water is the
+        // bridge — the crossing is the interesting fact, so it outranks the water.
+        int rock = counts.GetValueOrDefault(TileType.Stone) + counts.GetValueOrDefault(TileType.OreVein) +
+                   counts.GetValueOrDefault(TileType.Bedrock);
         if (counts.GetValueOrDefault(TileType.DoorClosed) > 0) return '+';
-        if (counts.GetValueOrDefault(TileType.Water) > 0) return '~';
+        if (counts.GetValueOrDefault(TileType.Water) > 0)
+            return counts.GetValueOrDefault(TileType.Road) > 0 ? '=' : '~';
         if (counts.GetValueOrDefault(TileType.Road) > step) return ',';
         if (counts.GetValueOrDefault(TileType.Wall) > step) return '#';
+        if (rock > step) return '#';
         if (counts.GetValueOrDefault(TileType.Tree) > step) return 'T';
         if (counts.GetValueOrDefault(TileType.Road) > 0) return ',';
         if (counts.GetValueOrDefault(TileType.Wall) > 0) return '#';
+        if (rock > 0) return '#';
         if (counts.GetValueOrDefault(TileType.Tree) > 0) return 'T';
         return '.';
     }
@@ -618,6 +648,563 @@ sealed class Program
     {
         Console.WriteLine($"  {(condition ? "ok  " : "FAIL")} {what}");
         if (!condition) throw new InvalidOperationException($"TEST_WORLD assertion failed: {what}");
+    }
+
+    // Debug/test entrypoint: if TEST_STEALTH=1 is set, verify the player half of stealth
+    // (Planning note 11 §3): the sneak toggle and its rules, sneak speed, the quiet-step noise
+    // model with gear weight and racial bulk, sneaking dimming sight gain (Agility widening the
+    // gap), the sneak HUD signals, and the stealth strike — one devastating opening from Unaware,
+    // never two.
+    public static void RunStealthDemo()
+    {
+        Console.WriteLine("=== Stealth: the player half ===");
+
+        static Maze Arena()
+        {
+            var maze = new Maze(21, 11);
+            for (int x = 0; x < 21; x++) { maze.Tiles[x, 0] = TileType.Wall; maze.Tiles[x, 10] = TileType.Wall; }
+            for (int y = 0; y < 11; y++) { maze.Tiles[0, y] = TileType.Wall; maze.Tiles[20, y] = TileType.Wall; }
+            return maze;
+        }
+
+        var cds = new CharacterDataService();
+        GameState Fresh(out Enemy watcher, string heroClass = "Warrior")
+        {
+            var gs = new GameState(1234, "Shade", heroClass, "Human") { IsRunning = true };
+            gs.SetControlMode(ControlMode.Manual);
+            gs.Enemies.Clear();
+            gs.Projectiles.Clear();
+            gs.CurrentMaze = Arena();
+            gs.Hero.X = 4;
+            gs.Hero.Y = 5;
+            watcher = EnemyFactory.Create("Warrior", "Human", 2, EnemyTier.Basic, cds, new Random(5));
+            watcher.X = 10; watcher.Y = 5;
+            watcher.TargetX = 10; watcher.TargetY = 5;
+            watcher.EncounterId = 7;
+            gs.Enemies.Add(watcher);
+            return gs;
+        }
+
+        static void Pin(Enemy e, float x, float y, float facing)
+        {
+            e.X = x; e.Y = y; e.PrevX = x; e.PrevY = y;
+            e.TargetX = x; e.TargetY = y;
+            e.FacingRad = facing;
+        }
+
+        // --- 1. The toggle and its rules ---
+        Console.WriteLine("\n-- The toggle --");
+        {
+            var gs = Fresh(out _);
+            gs.ToggleSneak();
+            Expect(gs.Hero.IsSneaking, "C toggles the crouch on in Manual mode");
+            gs.ToggleSneak();
+            Expect(!gs.Hero.IsSneaking, "and off again — a confirmed toggle, not a hold");
+            gs.ToggleSneak();
+            gs.TryDash();
+            Expect(!gs.Hero.IsSneaking, "dashing breaks the crouch — there is no stealthy lunge");
+            gs.ToggleSneak();
+            gs.SetControlMode(ControlMode.Auto);
+            Expect(!gs.Hero.IsSneaking, "switching to Auto stands the hero up (Auto ignores stealth v1)");
+            gs.ToggleSneak();
+            Expect(!gs.Hero.IsSneaking, "and the toggle refuses outside Manual control");
+        }
+
+        // --- 2. Sneaking is slow on purpose ---
+        Console.WriteLine("\n-- Speed --");
+        {
+            var movement = new MovementSystem(7);
+            var walker = new Hero { X = 2, Y = 5, Agility = 4 };
+            var sneaker = new Hero { X = 2, Y = 5, Agility = 4, IsSneaking = true };
+            var lane = Arena();
+            for (int i = 0; i < 40; i++)
+            {
+                movement.MoveHeroByDirection(walker, 1f, 0f, lane);
+                movement.MoveHeroByDirection(sneaker, 1f, 0f, lane);
+            }
+            float ratio = (sneaker.X - 2f) / (walker.X - 2f);
+            Expect(MathF.Abs(ratio - AwarenessService.SneakSpeedMultiplier) < 0.05f,
+                $"sneaking covers {ratio:P0} of walking ground (target {AwarenessService.SneakSpeedMultiplier:P0})");
+        }
+
+        // --- 3. The noise footprint: crouch, gear, and bulk ---
+        Console.WriteLine("\n-- Footfalls --");
+        {
+            var gs = Fresh(out _);
+            float walkRadius = gs.CurrentStepNoiseRadius;
+            gs.ToggleSneak();
+            float sneakRadius = gs.CurrentStepNoiseRadius;
+            Expect(MathF.Abs(sneakRadius / walkRadius -
+                             AwarenessService.SneakStepRadius / AwarenessService.StepRadius) < 0.01f,
+                $"a crouched step carries {sneakRadius:0.0} tiles to walking's {walkRadius:0.0}");
+
+            var anvil = new Item { Id = "test-anvil", Name = "Anvil" };
+            anvil.Attributes.Add(GameAttribute.Heavy);
+            gs.Hero.Loadout.Add(anvil);
+            float heavyRadius = gs.CurrentStepNoiseRadius;
+            Expect(heavyRadius > sneakRadius, $"heavy gear carries further ({sneakRadius:0.00} -> {heavyRadius:0.00})");
+
+            var slippers = new Item { Id = "test-slippers", Name = "Slippers" };
+            slippers.Attributes.Add(GameAttribute.Light);
+            gs.Hero.Loadout.Add(slippers);
+            Expect(gs.CurrentStepNoiseRadius < heavyRadius, "light gear buys some of it back");
+
+            for (int i = 0; i < 8; i++) gs.Hero.Loadout.Add(anvil);
+            Expect(MathF.Abs(gs.CurrentStepNoiseRadius -
+                             AwarenessService.SneakStepRadius * AwarenessService.MaxGearNoise) < 0.01f,
+                "a wagonload of anvils clamps at the ceiling — gear can't ring like a cathedral");
+            Expect(AwarenessService.GearNoiseMultiplier(new List<Combinable>()) == 1f,
+                "bare kit is the neutral baseline");
+        }
+
+        // --- 4. Quiet enough: steps that gave you away upright don't when crouched ---
+        Console.WriteLine("\n-- Quiet steps --");
+        {
+            var gs = Fresh(out var watcher);
+            gs.Hero.X = 7; gs.Hero.Y = 5; // 3 tiles behind the watcher's back
+            for (int t = 0; t < 60; t++)
+            {
+                gs.Hero.X = 7f + (t % 2 == 0 ? 0.05f : -0.05f);
+                Pin(watcher, 10, 5, 0f);
+                gs.Tick();
+            }
+            Expect(watcher.AwarenessState == AwarenessState.Suspicious,
+                "pacing upright at 3 tiles is heard (the TEST_AWARE contract holds)");
+
+            var quiet = Fresh(out var watcher2);
+            quiet.ToggleSneak();
+            quiet.Hero.X = 7; quiet.Hero.Y = 5;
+            for (int t = 0; t < 60; t++)
+            {
+                quiet.Hero.X = 7f + (t % 2 == 0 ? 0.05f : -0.05f);
+                Pin(watcher2, 10, 5, 0f);
+                quiet.Tick();
+            }
+            Expect(watcher2.AwarenessState == AwarenessState.Unaware,
+                $"the same pacing, crouched, goes unheard (awareness {watcher2.Awareness:0})");
+        }
+
+        // --- 5. Hidden from eyes: sneaking dims sight gain, Agility widens the gap ---
+        Console.WriteLine("\n-- Dim to the eye --");
+        {
+            float Climb(bool sneaking, int agility)
+            {
+                var gs = Fresh(out var watcher);
+                gs.Hero.X = 13; gs.Hero.Y = 5; // 3 tiles in front, full view
+                gs.Hero.Agility = agility;
+                gs.Hero.IsSneaking = sneaking;
+                for (int t = 0; t < 20; t++) { Pin(watcher, 10, 5, 0f); gs.Tick(); }
+                return watcher.Awareness;
+            }
+
+            float upright = Climb(false, 4);
+            float crouched = Climb(true, 4);
+            float ghostly = Climb(true, 20);
+            Expect(upright > crouched && crouched > ghostly,
+                $"20 ticks in full view: upright {upright:0}, crouched {crouched:0}, agile crouch {ghostly:0}");
+            Expect(AwarenessService.StealthFactor(false, 20, 1f) == 0f,
+                "not sneaking = fully visible, whatever your Agility");
+            Expect(AwarenessService.StealthFactor(true, 30, 1f) <= 0.9f,
+                "stealth caps below invisibility");
+            Expect(AwarenessService.StealthFactor(true, 10, 1.6f) <
+                   AwarenessService.StealthFactor(true, 10, 1f),
+                "clanking gear gives visibility back");
+        }
+
+        // --- 6. The stealth strike: one devastating opening, never two ---
+        Console.WriteLine("\n-- The opening blow --");
+        {
+            int StrikeFor(bool preAlerted, out GameState gs, out Enemy target)
+            {
+                gs = Fresh(out target, "Mage Apprentice");
+                gs.Hero.X = 5.5f; gs.Hero.Y = 5f; // well outside bump range; ranged shot
+                Pin(target, 10, 5, 0f);           // facing away
+                if (preAlerted) target.Awareness = 100f;
+                // The default CurrentAttack is the universal melee swing; this shot is taken
+                // from well outside arm's reach, so pick the class's magic bolt (directional
+                // magic flies far beyond its listed auto-combat range).
+                gs.Hero.CurrentAttack = gs.Hero.Attacks.FirstOrDefault(a => a.Animation == AttackAnimation.Magic)
+                    ?? gs.Hero.CurrentAttack;
+                int hpBefore = target.Hp;
+                gs.FireManualAttack(1f, 0f);
+                for (int t = 0; t < 80 && target.Hp == hpBefore; t++)
+                {
+                    Pin(target, 10, 5, 0f);
+                    gs.Tick();
+                }
+                return hpBefore - target.Hp;
+            }
+
+            int stealthDamage = StrikeFor(false, out var gsStrike, out var struck);
+            int openDamage = StrikeFor(true, out _, out _);
+            Expect(stealthDamage > 0 && openDamage > 0, $"both shots land ({stealthDamage} vs {openDamage})");
+            Expect(stealthDamage > openDamage * 1.4f,
+                $"the unseen bolt hits like a hammer ({stealthDamage} vs {openDamage} — backstab x1.6 and the auto-crit)");
+            Expect(struck.AwarenessState == AwarenessState.Alert,
+                "and the victim is wide awake after");
+
+            int hpAfterFirst = struck.Hp;
+            gsStrike.Hero.AttackCooldown = 0;
+            gsStrike.FireManualAttack(1f, 0f);
+            for (int t = 0; t < 80 && struck.Hp == hpAfterFirst; t++) { Pin(struck, 10, 5, 0f); gsStrike.Tick(); }
+            int secondDamage = hpAfterFirst - struck.Hp;
+            Expect(secondDamage > 0 && secondDamage * 1.4f < stealthDamage,
+                $"the second bolt is honest work ({secondDamage}) — the opening was the payoff, once");
+        }
+
+        // --- 7. The HUD knows what the world knows ---
+        Console.WriteLine("\n-- The eye --");
+        {
+            var gs = Fresh(out var watcher);
+            gs.ToggleSneak();
+            Expect(gs.HeroExposure == AwarenessState.Unaware, "unseen: the eye is closed");
+            watcher.Awareness = 50f;
+            Expect(gs.HeroExposure == AwarenessState.Suspicious, "someone suspicious: the eye half-opens");
+            watcher.Awareness = 100f;
+            Expect(gs.HeroExposure == AwarenessState.Alert, "made: the eye is open and red");
+
+            // A quiet sneaker's steps (1.5 tiles) never outreach bump range — being HEARD while
+            // crouched takes clanking gear pushing the radius past arm's length. So: an anvil.
+            var heard = Fresh(out var listener);
+            heard.ToggleSneak();
+            var clank = new Item { Id = "test-anvil", Name = "Anvil" };
+            clank.Attributes.Add(GameAttribute.Heavy);
+            heard.Hero.Loadout.Add(clank);
+            heard.Hero.X = 8f; heard.Hero.Y = 5f; // 2 tiles out: past touch, inside the clank
+            for (int t = 0; t < 90 && !heard.Messages.Messages.Any(m => m.Text.Contains("heard you")); t++)
+            {
+                heard.Hero.X = 8f + (t % 2 == 0 ? 0.05f : -0.05f);
+                Pin(listener, 10, 5, 0f);
+                heard.Tick();
+            }
+            Expect(heard.Messages.Messages.Any(m => m.Text.Contains("heard you")),
+                "the log whispers when the world first hears you (heavy gear, crouch or not)");
+        }
+
+        // --- 8. Bulk is a stealth stat: races carry their size ---
+        Console.WriteLine("\n-- Bulk --");
+        {
+            var kobold = new GameState(9, "Whisper", "Warrior", "Kobold") { IsRunning = true };
+            var dragonborn = new GameState(9, "Clatter", "Warrior", "Dragonborn") { IsRunning = true };
+            Expect(kobold.Hero.SizeScale < 1f && dragonborn.Hero.SizeScale > 1f,
+                $"a Kobold ({kobold.Hero.SizeScale:0.00}) is a natural burglar; a Dragonborn ({dragonborn.Hero.SizeScale:0.00}) announces themselves");
+            Expect(kobold.CurrentStepNoiseRadius < dragonborn.CurrentStepNoiseRadius,
+                "and their footfalls say so");
+        }
+
+        Console.WriteLine("\nPASS: the crouch is slow, quiet, and dim to watching eyes; gear weight and bulk " +
+                          "are audible; the first unseen blow is devastating and the second is ordinary.");
+    }
+
+    // Debug/test entrypoint: if TEST_AWARE=1 is set, verify the enemy perception core (Planning
+    // note 11 §2, landed ahead of the sneak mode): enemies see through a facing cone with line of
+    // sight and escalate Unaware → Suspicious → Alert instead of flipping to combat on a range
+    // check; they hear all around (walls muffling), investigate noises, wake their pack when one
+    // is struck, and settle back down when the stimulus is gone.
+    public static void RunAwarenessDemo()
+    {
+        Console.WriteLine("=== Enemy perception: cones, ears, and suspicion ===");
+
+        // A 21x11 field with a full-height wall at x=14 (one gap at the south end, so the map
+        // stays connected) — open ground for sight tests, a chamber behind the wall for muffling.
+        static Maze Arena()
+        {
+            var maze = new Maze(21, 11);
+            for (int x = 0; x < 21; x++) { maze.Tiles[x, 0] = TileType.Wall; maze.Tiles[x, 10] = TileType.Wall; }
+            for (int y = 0; y < 11; y++) { maze.Tiles[0, y] = TileType.Wall; maze.Tiles[20, y] = TileType.Wall; }
+            for (int y = 1; y < 9; y++) maze.Tiles[14, y] = TileType.Wall;
+            return maze;
+        }
+
+        var cds = new CharacterDataService();
+        GameState Fresh(out Enemy watcher, float ex = 8f, float ey = 5f)
+        {
+            var gs = new GameState(1234, "Scout", "Warrior", "Human") { IsRunning = true };
+            gs.SetControlMode(ControlMode.Manual);
+            gs.Enemies.Clear();
+            gs.Projectiles.Clear();
+            gs.CurrentMaze = Arena();
+            gs.Hero.X = 3;
+            gs.Hero.Y = 5;
+            watcher = EnemyFactory.Create("Warrior", "Human", 2, EnemyTier.Basic, cds, new Random(5));
+            watcher.X = ex; watcher.Y = ey;
+            watcher.TargetX = ex; watcher.TargetY = ey;
+            watcher.EncounterId = 7;
+            gs.Enemies.Add(watcher);
+            return gs;
+        }
+
+        // Hold an enemy's position and gaze against wander so a scenario stays a scenario.
+        static void Pin(Enemy e, float x, float y, float facing)
+        {
+            e.X = x; e.Y = y; e.PrevX = x; e.PrevY = y;
+            e.TargetX = x; e.TargetY = y;
+            e.FacingRad = facing;
+        }
+
+        // --- 1. The old bug: in range + LOS used to mean instant aggro, facing be damned ---
+        Console.WriteLine("\n-- Backs matter --");
+        {
+            var gs = Fresh(out var watcher);
+            for (int t = 0; t < 120; t++) { Pin(watcher, 8, 5, 0f); gs.Tick(); } // facing east; hero due west, still
+            Expect(watcher.AwarenessState == AwarenessState.Unaware && !watcher.InCombat,
+                $"5 tiles behind a watcher's back, standing still: unnoticed (awareness {watcher.Awareness:0})");
+        }
+
+        // --- 2. Frontal sight: noticed fast, but climbed, not flipped ---
+        Console.WriteLine("\n-- Eyes work, gradually --");
+        {
+            var gs = Fresh(out var watcher);
+            gs.Hero.X = 12; gs.Hero.Y = 5; // 4 tiles in front, clear LOS
+            Pin(watcher, 8, 5, 0f);
+            gs.Tick(); gs.Tick();
+            Expect(watcher.AwarenessState != AwarenessState.Alert,
+                $"two ticks of being seen is suspicion, not a combat flip (awareness {watcher.Awareness:0})");
+            int ticksToAlert = 2;
+            for (; ticksToAlert < 200 && !watcher.InCombat; ticksToAlert++) { Pin(watcher, 8, 5, 0f); gs.Tick(); }
+            Expect(watcher.InCombat && ticksToAlert < 150,
+                $"standing in front of a watcher gets you spotted within ~{ticksToAlert} ticks");
+        }
+
+        // --- 3. Walls block sight and muffle sound ---
+        Console.WriteLine("\n-- Walls --");
+        {
+            var gs = Fresh(out var watcher, 12f, 5f);
+            gs.Hero.X = 15.5f; gs.Hero.Y = 5f; // 3.5 tiles away, wall between; steps muffled to 2.4
+            for (int t = 0; t < 150; t++)
+            {
+                gs.Hero.X = 15.5f + (t % 2 == 0 ? 0.05f : -0.05f); // pacing: emits real footsteps
+                Pin(watcher, 12, 5, 0f); // facing straight at the hero — but through a wall
+                gs.Tick();
+            }
+            Expect(watcher.AwarenessState == AwarenessState.Unaware && !watcher.InCombat,
+                $"pacing behind a wall, in the watcher's facing line: unseen and unheard (awareness {watcher.Awareness:0})");
+        }
+
+        // --- 4. Ears work all around: heard, investigated, then discovered ---
+        Console.WriteLine("\n-- Ears --");
+        {
+            var gs = Fresh(out var watcher);
+            gs.Hero.X = 5; gs.Hero.Y = 5; // 3 tiles behind the watcher's back
+            int t = 0;
+            for (; t < 40 && watcher.AwarenessState == AwarenessState.Unaware; t++)
+            {
+                gs.Hero.X = 5f + (t % 2 == 0 ? 0.05f : -0.05f); // shifting weight, footfall noise
+                Pin(watcher, 8, 5, 0f);
+                gs.Tick();
+            }
+            Expect(watcher.AwarenessState == AwarenessState.Suspicious,
+                $"footsteps behind the back raise suspicion in {t} ticks — never instant combat");
+            Expect(watcher.Awareness <= 69f, $"sound alone never alerts (awareness {watcher.Awareness:0} caps below 70)");
+            Expect(watcher.InvestigateTarget != null &&
+                   Math.Abs(watcher.InvestigateTarget.Value.x - gs.Hero.X) < 1.5f,
+                "what leaked is the location of the noise, not the hero");
+
+            // Released from the pin, the watcher turns to look — and looking finds.
+            for (int free = 0; free < 300 && !watcher.InCombat; free++)
+            {
+                gs.Hero.X = 5f + (free % 2 == 0 ? 0.05f : -0.05f);
+                gs.Tick();
+            }
+            Expect(watcher.InCombat, "investigating the noise turns the watcher around, and eyes finish the job");
+        }
+
+        // --- 5. Violence is loud: a struck enemy is alert, and its cry wakes the pack ---
+        Console.WriteLine("\n-- One scream wakes the room --");
+        {
+            var gs = Fresh(out var watcher);
+            var packmate = EnemyFactory.Create("Warrior", "Human", 2, EnemyTier.Basic, cds, new Random(6));
+            Pin(packmate, 11, 5, 0f);
+            packmate.EncounterId = 7;
+            gs.Enemies.Add(packmate);
+            gs.Hero.X = 6.9f; gs.Hero.Y = 5f;
+            Pin(watcher, 8, 5, 0f); // both facing east, away from the hero
+
+            gs.FireManualAttack(1f, 0f);
+            int t = 0;
+            for (; t < 60 && watcher.Hp >= watcher.MaxHp; t++) gs.Tick();
+            Expect(watcher.Hp < watcher.MaxHp, "the blow from behind lands");
+            gs.Tick();
+            Expect(watcher.AwarenessState == AwarenessState.Alert, "being struck is alerting, whatever you were facing");
+            Expect(packmate.AwarenessState == AwarenessState.Alert,
+                $"the packmate three tiles away wakes to the scream (awareness {packmate.Awareness:0})");
+        }
+
+        // --- 6. No stimulus, no vendetta: awareness decays and the watch stands down ---
+        Console.WriteLine("\n-- Standing down --");
+        {
+            var gs = Fresh(out var watcher);
+            watcher.Awareness = 100f;
+            gs.Hero.X = 18f; gs.Hero.Y = 9f; // far away, behind the wall, silent
+            int t = 0;
+            for (; t < 600 && watcher.AwarenessState != AwarenessState.Unaware; t++) gs.Tick();
+            Expect(watcher.AwarenessState == AwarenessState.Unaware && !watcher.InCombat,
+                $"an alert with nothing feeding it decays back to a wander in {t} ticks");
+        }
+
+        // --- 7. Touch: nobody stays unaware of a shoulder brush ---
+        Console.WriteLine("\n-- Touch --");
+        {
+            var gs = Fresh(out var watcher);
+            gs.Hero.X = 8f; gs.Hero.Y = 6.2f; // adjacent, directly behind
+            Pin(watcher, 8, 5, 0f);
+            gs.Tick();
+            Expect(watcher.Awareness >= 100f, "brushing against someone is noticed, whatever they were facing");
+        }
+
+        // --- 8. The curves themselves ---
+        Console.WriteLine("\n-- Curves --");
+        Expect(AwarenessService.InVisionCone(0f, 0, 0, 5, 4), "≈39° off the gaze is inside a 120° cone");
+        Expect(!AwarenessService.InVisionCone(0f, 0, 0, 2, 5), "≈68° off the gaze is outside it");
+        Expect(!AwarenessService.InVisionCone(0f, 0, 0, -5, 0), "directly behind is outside it");
+        Expect(AwarenessService.SightGainPerTick(2f, 7.5f, 5, 1f, 0f, 30) >
+               AwarenessService.SightGainPerTick(7f, 7.5f, 5, 1f, 0f, 30),
+            "close targets register faster than distant ones");
+        Expect(AwarenessService.SightGainPerTick(5f, 7.5f, 15, 1f, 0f, 30) >
+               AwarenessService.SightGainPerTick(5f, 7.5f, 3, 1f, 0f, 30),
+            "wise watchers perceive faster (Wisdom perceives — PerceptionService symmetry)");
+
+        Console.WriteLine("\nPASS: enemies see with their eyes and hear with their ears — backs and walls hide, " +
+                          "noise draws investigation, violence alerts, and quiet stands the watch back down.");
+    }
+
+    // Debug/test entrypoint: if TEST_TOWNLIFE=1 is set, verify NPC daily life v1 (Planning note
+    // 09, PR 8 subset): the roster derives deterministically from the world seed, schedules move
+    // people between home, work, the square and bed as the clock crosses phase boundaries, guards
+    // hold their shifts, and nobody wedges in a doorway forever.
+    public static void RunTownLifeDemo()
+    {
+        Console.WriteLine("=== Town life: schedules-first NPCs ===");
+        WorldService.ResetCachesForTesting();
+        var scratch = new List<string>();
+
+        var world = WorldService.Create(new WorldGenOptions { Seed = 6060, Size = WorldSize.Small }, "Livingston");
+        scratch.Add(world.WorldId);
+        WorldService.ActiveWorldId = world.WorldId;
+
+        var game = new GameState(3, "Watcher", "Warrior", "Human") { IsRunning = true };
+        game.ExecuteDebugCommand("moveplayer overworld");
+        var maze = game.CurrentMaze;
+        var region = maze.Region ?? throw new InvalidOperationException("Town map has no region layout.");
+
+        // --- The roster: real households, every trade staffed, all deterministic ---
+        Console.WriteLine("\n-- Roster --");
+        var npcs = game.Npcs;
+        int homes = region.Buildings.Count(b => b.Kind == BuildingKind.Home);
+        Expect(npcs.Count >= homes, $"the town is populated ({npcs.Count} residents across {homes} homes)");
+        Expect(npcs.All(n => n.HomeBuildingId >= 0), "everyone lives somewhere");
+
+        foreach (var occupation in new[]
+                 {
+                     NpcOccupation.Smith, NpcOccupation.Priest, NpcOccupation.Trainer,
+                     NpcOccupation.Tavernkeep, NpcOccupation.Merchant
+                 })
+        {
+            Expect(npcs.Any(n => n.Occupation == occupation), $"the town has a {occupation}");
+        }
+        var guards = npcs.Where(n => n.Occupation == NpcOccupation.Guard).ToList();
+        Expect(guards.Count >= 2, $"the town keeps a watch ({guards.Count} guards)");
+        Expect(guards.Any(g => g.NightShift) && guards.Any(g => !g.NightShift),
+            "the watch splits day and night shifts");
+        Expect(npcs.All(n => maze.IsWalkable((int)MathF.Round(n.X), (int)MathF.Round(n.Y))),
+            "everyone stands on walkable ground");
+
+        // Same world, same people, forever: a second visit rebuilds the identical roster.
+        var second = new GameState(3, "Watcher", "Warrior", "Human") { IsRunning = true };
+        second.ExecuteDebugCommand("moveplayer overworld");
+        bool sameRoster = second.Npcs.Count == npcs.Count && npcs.Zip(second.Npcs)
+            .All(pair => pair.First.Id == pair.Second.Id && pair.First.Name == pair.Second.Name &&
+                         pair.First.Occupation == pair.Second.Occupation &&
+                         pair.First.HomeBuildingId == pair.Second.HomeBuildingId);
+        Expect(sameRoster, "a second visit meets exactly the same people");
+
+        var sample = npcs[npcs.Count / 2];
+        Console.WriteLine($"     e.g. {sample.Name}, {sample.Race} {sample.Occupation}, home #{sample.HomeBuildingId}");
+
+        // --- Schedules: jump the clock, let them walk, sample where the town stands ---
+        // The jump lands just before the hour of interest; the ticks that follow give jittered
+        // personal clocks time to cross the boundary and legs time to make the walk.
+        void LiveThrough(float toHour, int walkTicks)
+        {
+            double target = Math.Floor(game.Clock.TotalGameMinutes / 1440.0) * 1440 + toHour * 60;
+            if (target < game.Clock.TotalGameMinutes) target += 1440;
+            game.Clock.TotalGameMinutes = target;
+            for (int t = 0; t < walkTicks; t++) game.Tick();
+        }
+
+        int Near(Func<Npc, (int x, int y)> anchor, IEnumerable<Npc> group, int radius)
+        {
+            int count = 0;
+            foreach (var npc in group)
+            {
+                var (ax, ay) = anchor(npc);
+                if (Math.Abs(npc.X - ax) <= radius && Math.Abs(npc.Y - ay) <= radius) count++;
+            }
+            return count;
+        }
+
+        (int x, int y) HomeOf(Npc npc)
+        {
+            var home = region.Buildings.First(b => b.Id == npc.HomeBuildingId);
+            return (home.CenterX, home.CenterY);
+        }
+
+        // Deep in the working morning: tradesfolk at their premises.
+        Console.WriteLine("\n-- The working day --");
+        LiveThrough(9.5f, 3800);
+        var tradesfolk = npcs.Where(n => n.WorkBuildingId >= 0 &&
+            n.Occupation is NpcOccupation.Smith or NpcOccupation.Alchemist or NpcOccupation.Carpenter
+                or NpcOccupation.Priest or NpcOccupation.Trainer or NpcOccupation.Tavernkeep).ToList();
+        int atWork = Near(n => (n.WorkX, n.WorkY), tradesfolk, 3);
+        Expect(atWork >= tradesfolk.Count * 3 / 4,
+            $"mid-morning finds the trades at their premises ({atWork}/{tradesfolk.Count})");
+        var dayGuards = guards.Where(g => !g.NightShift).ToList();
+        Expect(dayGuards.All(g => g.Goal == NpcGoalType.Patrol), "the day watch is on patrol");
+        int crowdMorning = Near(_ => (region.SquareX, region.SquareY),
+            npcs.Where(n => n.Occupation != NpcOccupation.Guard), region.SquareSize);
+
+        // Midday: the square draws its lunch crowd — those in walking range of it (tiles are
+        // metres; the far side of town can't make the round trip in the hour, and doesn't try).
+        // Sampled at ~12:58, deep in the band but before WorkPM pulls people away.
+        Console.WriteLine("\n-- Midday --");
+        LiveThrough(12.0f, 2150);
+        var squareFolk = npcs.Where(n => n.Occupation != NpcOccupation.Guard).ToList();
+        int atSquare = Near(_ => (region.SquareX, region.SquareY), squareFolk, region.SquareSize);
+        Expect(atSquare >= crowdMorning + 4 && atSquare >= 6,
+            $"midday swells the square ({crowdMorning} mid-morning -> {atSquare} at the meal)");
+
+        // Night: the town sleeps at home; the night watch walks.
+        Console.WriteLine("\n-- Night --");
+        LiveThrough(23.5f, 3800);
+        var sleepers = npcs.Where(n => n.Occupation != NpcOccupation.Guard).ToList();
+        int abed = Near(HomeOf, sleepers, 4);
+        Expect(abed >= sleepers.Count * 4 / 5,
+            $"night finds the town abed ({abed}/{sleepers.Count} at their homes)");
+        var nightGuards = guards.Where(g => g.NightShift).ToList();
+        Expect(nightGuards.All(g => g.Goal == NpcGoalType.Patrol), "the night watch is on patrol");
+        Expect(dayGuards.All(g => g.Goal != NpcGoalType.Patrol), "the day watch has gone home");
+
+        // Nobody wedged: the stuck counter self-heals by repathing, so it should sit near zero.
+        Expect(npcs.All(n => n.StuckTicks <= 8), "nobody is wedged in a doorway");
+        Expect(npcs.All(n => maze.IsWalkable((int)MathF.Round(n.X), (int)MathF.Round(n.Y))),
+            "after a full day, everyone still stands on walkable ground");
+
+        // --- The clock's phase bands drive it all ---
+        Console.WriteLine("\n-- Phases --");
+        var clock = new WorldClock { TotalGameMinutes = 9 * 60 };
+        Expect(clock.Phase == DayPhase.WorkAM, $"09:00 is the working morning ({clock.Phase})");
+        clock.TotalGameMinutes = 23 * 60;
+        Expect(clock.Phase == DayPhase.Night, $"23:00 is night ({clock.Phase})");
+        clock.TotalGameMinutes = 12 * 60 + 30;
+        Expect(clock.Phase == DayPhase.Midday, $"12:30 is midday ({clock.Phase})");
+        Expect(clock.PhaseAt(-40) == DayPhase.WorkAM, "a late personal clock is still in the morning");
+
+        Console.WriteLine("\n-- Cleanup --");
+        foreach (var id in scratch) WorldService.Delete(id);
+        Console.WriteLine($"  ok   removed {scratch.Count} scratch world(s)");
+
+        Console.WriteLine("\nPASS: the town lives a day — deterministic roster, trades at work, " +
+                          "a midday square, guards on shift, and everyone home at night.");
     }
 
     // Debug/test entrypoint: if TEST_WORLD=1 is set, verify the world layer and exit.
@@ -1371,6 +1958,10 @@ sealed class Program
         tacticalActor.Y = movementLane.cell.y + movementLane.direction.dy * 2;
         tacticalActor.TargetX = tacticalActor.X;
         tacticalActor.TargetY = tacticalActor.Y;
+        // Staged placements include a gaze now (perception rework): this scenario tests movement
+        // mechanics, not detection, so the actor is posed looking at the hero — otherwise it
+        // honestly can't see the teleport and would advance on stale information instead.
+        tacticalActor.FacingRad = MathF.Atan2(gs.Hero.Y - tacticalActor.Y, gs.Hero.X - tacticalActor.X);
         tacticalActor.AttackRange = 0.25f;
         float actorStartX = tacticalActor.X;
         float actorStartY = tacticalActor.Y;

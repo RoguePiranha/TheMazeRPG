@@ -199,8 +199,15 @@ public class MazeRenderer
         // Draw features (chests, stairs)
         DrawFeatures(canvas, maze, snapshot.Features, fog);
 
+        // Sneak overlay (only while sneaking): enemy vision cones + the hero's noise ring —
+        // the geometry of stealth made honest (owner ruling 2026-08-05); rolls stay hidden.
+        DrawSneakOverlay(canvas, gameState, maze, snapshot.Enemies);
+
         // Ambient critters (dungeon rats/bats, the town dog and cat) — under real entities
         DrawCritters(canvas, snapshot.Critters, fog);
+
+        // Townsfolk living their day (overworld regions only)
+        DrawNpcs(canvas, snapshot.Npcs, maze, gameState.Hero);
 
         // Draw enemies (only the ones the hero can currently see, under fog)
         DrawEnemies(canvas, gameState, snapshot.Enemies, fog);
@@ -453,6 +460,172 @@ public class MazeRenderer
                     canvas.DrawLine(px - 6f, py + 2f, px - 10f, py - 3f, tail);
                     break;
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The sneak overlay (note 11 §3, owner ruling: "sneaking should show enemy vision and show
+    /// visually how much sound the player is making"): every currently-visible enemy's vision
+    /// cone as a translucent LOS-clipped arc tinted by its awareness (gray → yellow → red), and
+    /// a noise ring around the hero at the exact radius the next footstep will carry (gear and
+    /// bulk included), pulsing on each emitted step. Render-only; vanishes when sneak ends. The
+    /// hidden rolls stay hidden — this shows the geometry, never the numbers.
+    /// </summary>
+    private static void DrawSneakOverlay(SKCanvas canvas, GameState gameState, Maze maze, List<Enemy> enemies)
+    {
+        var hero = gameState.Hero;
+        if (!hero.IsSneaking) return;
+
+        const int rayCount = 26;
+        foreach (var enemy in enemies)
+        {
+            if (!enemy.IsAlive) continue;
+            // Same visibility rule as DrawEnemies: no cones for enemies the hero can't see.
+            float vdx = enemy.X - hero.X;
+            float vdy = enemy.Y - hero.Y;
+            float range = gameState.VisionRange;
+            if (vdx * vdx + vdy * vdy > range * range) continue;
+            if (!gameState.CheckLOS(hero.X, hero.Y, enemy.X, enemy.Y)) continue;
+
+            var tint = enemy.AwarenessState switch
+            {
+                AwarenessState.Alert => new SKColor(0xE0, 0x40, 0x38),
+                AwarenessState.Suspicious => new SKColor(0xE8, 0xC2, 0x30),
+                _ => new SKColor(0xA0, 0xA8, 0xB0)
+            };
+
+            float ex = enemy.X * CellSize + CellSize / 2f;
+            float ey = enemy.Y * CellSize + CellSize / 2f;
+            using var cone = new SKPath();
+            cone.MoveTo(ex, ey);
+            for (int i = 0; i < rayCount; i++)
+            {
+                float angle = enemy.FacingRad - AwarenessService.VisionConeRad / 2f +
+                              AwarenessService.VisionConeRad * i / (rayCount - 1);
+                float cos = MathF.Cos(angle);
+                float sin = MathF.Sin(angle);
+                // March the ray to the first sight-blocking cell so cones don't paint through walls.
+                float reach = gameState.VisionRange;
+                for (float t = 0.6f; t <= gameState.VisionRange; t += 0.25f)
+                {
+                    if (!maze.BlocksSight((int)MathF.Round(enemy.X + cos * t), (int)MathF.Round(enemy.Y + sin * t)))
+                        continue;
+                    reach = t;
+                    break;
+                }
+                cone.LineTo((enemy.X + cos * reach) * CellSize + CellSize / 2f,
+                            (enemy.Y + sin * reach) * CellSize + CellSize / 2f);
+            }
+            cone.Close();
+
+            using var fill = new SKPaint { Color = tint.WithAlpha(0x22), IsAntialias = true };
+            canvas.DrawPath(cone, fill);
+            using var edge = new SKPaint
+            {
+                Color = tint.WithAlpha(0x50), IsAntialias = true,
+                Style = SKPaintStyle.Stroke, StrokeWidth = 1.2f
+            };
+            canvas.DrawPath(cone, edge);
+        }
+
+        // The noise ring: how far the next footstep carries, pulsing brighter just after a step —
+        // heavy armor is *visibly* loud.
+        float ringRadius = gameState.CurrentStepNoiseRadius * CellSize;
+        float hx = hero.X * CellSize + CellSize / 2f;
+        float hy = hero.Y * CellSize + CellSize / 2f;
+        int stepAge = Math.Max(0, (int)(gameState.TickCount - gameState.LastStepSoundTick));
+        byte ringAlpha = stepAge < 10 ? (byte)(0x84 - stepAge * 8) : (byte)0x30;
+        using var ring = new SKPaint
+        {
+            Color = new SKColor(0x8E, 0xC5, 0xE8, ringAlpha), IsAntialias = true,
+            Style = SKPaintStyle.Stroke, StrokeWidth = stepAge < 10 ? 2.4f : 1.4f
+        };
+        canvas.DrawCircle(hx, hy, ringRadius, ring);
+
+        // The eye over the hero: closed/gray = unseen, half/yellow = someone is looking,
+        // open/red = made. States, never numbers.
+        var exposure = gameState.HeroExposure;
+        var eyeColor = exposure switch
+        {
+            AwarenessState.Alert => new SKColor(0xE0, 0x40, 0x38),
+            AwarenessState.Suspicious => new SKColor(0xE8, 0xC2, 0x30),
+            _ => new SKColor(0x90, 0x98, 0xA0)
+        };
+        float eyeY = hy - CellSize * 0.85f;
+        using var eyeStroke = new SKPaint
+        {
+            Color = eyeColor, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 1.6f
+        };
+        // Almond outline: two arcs; the pupil only when someone is at least suspicious.
+        using var eyePath = new SKPath();
+        eyePath.MoveTo(hx - 7f, eyeY);
+        eyePath.QuadTo(hx, eyeY - 5.5f, hx + 7f, eyeY);
+        if (exposure != AwarenessState.Unaware)
+        {
+            eyePath.QuadTo(hx, eyeY + 5.5f, hx - 7f, eyeY);
+            canvas.DrawPath(eyePath, eyeStroke);
+            using var pupil = new SKPaint { Color = eyeColor, IsAntialias = true };
+            canvas.DrawCircle(hx, eyeY, exposure == AwarenessState.Alert ? 2.6f : 1.8f, pupil);
+        }
+        else
+        {
+            canvas.DrawPath(eyePath, eyeStroke); // closed lid: just the upper curve
+        }
+    }
+
+    /// <summary>Occupation → figure color, so a glance at the street reads as trades and
+    /// residents rather than sixty identical dots (note 09 §4's v1 rendering).</summary>
+    private static SKColor NpcColor(NpcOccupation occupation) => occupation switch
+    {
+        NpcOccupation.Smith => new SKColor(0xB0, 0x5C, 0x2A),      // forge orange-brown
+        NpcOccupation.Alchemist => new SKColor(0x7B, 0x4F, 0xA8),  // violet
+        NpcOccupation.Carpenter => new SKColor(0x8B, 0x6F, 0x3C),  // timber
+        NpcOccupation.Priest => new SKColor(0xE8, 0xE0, 0xC8),     // vestment white
+        NpcOccupation.Trainer => new SKColor(0x3C, 0x8B, 0x51),    // field green
+        NpcOccupation.Guard => new SKColor(0x4A, 0x62, 0x9E),      // watch blue
+        NpcOccupation.Tavernkeep => new SKColor(0xA8, 0x3A, 0x4F), // wine red
+        NpcOccupation.Merchant => new SKColor(0xC9, 0xA2, 0x27),   // coin gold
+        NpcOccupation.Child => new SKColor(0x8F, 0xC5, 0xD8),      // pale blue
+        NpcOccupation.Elder => new SKColor(0x9A, 0x93, 0x88),      // grey
+        _ => new SKColor(0x7F, 0x8C, 0x6B)                         // laborer olive
+    };
+
+    /// <summary>
+    /// Townsfolk: a small round-headed figure in occupation color, with a name label when the
+    /// hero is close enough to be face to face. Sleepers indoors at night simply aren't drawn —
+    /// their house holds them. Only regions have townsfolk, so this is a no-op elsewhere.
+    /// </summary>
+    private static void DrawNpcs(SKCanvas canvas, List<Npc> npcs, Maze maze, Hero hero)
+    {
+        if (npcs.Count == 0 || maze.Region == null) return;
+
+        foreach (var npc in npcs)
+        {
+            if (npc.Goal == NpcGoalType.Sleep && npc.Path.Count == 0 &&
+                maze.Region.IsBuildingInterior((int)MathF.Round(npc.X), (int)MathF.Round(npc.Y)))
+                continue; // abed, indoors, lights out
+
+            float px = npc.X * CellSize + CellSize / 2f;
+            float py = npc.Y * CellSize + CellSize / 2f;
+            var color = NpcColor(npc.Occupation);
+            float scale = npc.Occupation == NpcOccupation.Child ? 0.72f : 1f;
+
+            using var body = new SKPaint { Color = color, IsAntialias = true };
+            canvas.DrawRoundRect(px - 4.5f * scale, py - 3f * scale, 9f * scale, 10f * scale,
+                3f * scale, 3f * scale, body);
+            using var head = new SKPaint { Color = color.WithAlpha(0xF0), IsAntialias = true };
+            canvas.DrawCircle(px, py - 6f * scale, 3.6f * scale, head);
+
+            float dx = npc.X - hero.X;
+            float dy = npc.Y - hero.Y;
+            if (dx * dx + dy * dy <= 4f)
+            {
+                using var labelShadow = new SKPaint { Color = SKColors.Black.WithAlpha(0xB0), TextSize = 11, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+                using var label = new SKPaint { Color = new SKColor(0xE8, 0xE8, 0xE0), TextSize = 11, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+                string text = $"{npc.Name} · {npc.Occupation}";
+                canvas.DrawText(text, px + 1f, py - 14f + 1f, labelShadow);
+                canvas.DrawText(text, px, py - 14f, label);
             }
         }
     }
@@ -1701,9 +1874,27 @@ public class MazeRenderer
 
             float px = enemy.X * CellSize + CellSize / 2f;
             float py = enemy.Y * CellSize + CellSize / 2f;
-            
+
             // Size scales with radius (bosses have a larger radius, so they read bigger).
             float sz = 10f * (enemy.Radius / 0.35f);
+
+            // Perception pips (note 11: states, never numbers): "?" while Suspicious — it heard
+            // or half-saw something and is coming to look — and a brief red "!" the moment it
+            // goes Alert (the standing Alert state reads through the existing combat ring).
+            if (enemy.IsAlive && enemy.AlertFlashTicks > 0)
+            {
+                using var pipShadow = new SKPaint { Color = SKColors.Black, TextSize = 18, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+                using var pip = new SKPaint { Color = new SKColor(0xE0, 0x40, 0x38), TextSize = 18, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+                canvas.DrawText("!", px + 1f, py - sz - 7f + 1f, pipShadow);
+                canvas.DrawText("!", px, py - sz - 7f, pip);
+            }
+            else if (enemy.IsAlive && enemy.AwarenessState == AwarenessState.Suspicious)
+            {
+                using var pipShadow = new SKPaint { Color = SKColors.Black, TextSize = 16, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+                using var pip = new SKPaint { Color = new SKColor(0xFF, 0xD5, 0x4A), TextSize = 16, IsAntialias = true, Typeface = GameTypeface, TextAlign = SKTextAlign.Center };
+                canvas.DrawText("?", px + 1f, py - sz - 7f + 1f, pipShadow);
+                canvas.DrawText("?", px, py - sz - 7f, pip);
+            }
 
             // Sprite (resolved race+class -> race -> class in Data/Sprites/sprites.json) replaces
             // the procedural class shape when one exists; unmapped enemies keep their old shape.

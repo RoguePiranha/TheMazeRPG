@@ -13,6 +13,15 @@ public enum EnemyTier
     Boss
 }
 
+/// <summary>How aware of the hero an enemy currently is (Planning note 11). Unaware wanders,
+/// Suspicious investigates the last stimulus, Alert is the existing combat path.</summary>
+public enum AwarenessState
+{
+    Unaware,
+    Suspicious,
+    Alert
+}
+
 /// <summary>
 /// Represents an enemy in the maze
 /// </summary>
@@ -111,4 +120,37 @@ public class Enemy
 
     // Temporary data for AI/movement (e.g., velocity)
     public Dictionary<string, object>? TempData { get; set; }
+
+    // ---- Perception (Planning note 11 §2 — hoisted to the shared actor surface when NPCs
+    // adopt it). Enemies no longer flip straight to combat on a range check: awareness climbs
+    // through sight (facing cone + LOS) and hearing, and only Alert engages. ----
+
+    /// <summary>0–100, fed by sight/sound stimuli, decaying when nothing feeds it.</summary>
+    public float Awareness { get; set; }
+
+    /// <summary>Which way this enemy is looking — set from its movement direction whenever it
+    /// moves; swept side-to-side while investigating a noise.</summary>
+    public float FacingRad { get; set; }
+
+    /// <summary>Where the last heard-but-not-seen stimulus came from. A sound leaks its
+    /// location, not its source's identity.</summary>
+    public (float x, float y)? InvestigateTarget { get; set; }
+
+    /// <summary>Ticks left of standing at the investigated spot, looking around.</summary>
+    public int SweepTicks { get; set; }
+
+    /// <summary>Position at the last awareness pass, for deriving facing from movement.</summary>
+    public float PrevX { get; set; }
+    public float PrevY { get; set; }
+
+    /// <summary>The state the awareness pass last saw, for detecting transitions (the "!" flash,
+    /// the sneak-HUD notice lines) without every Awareness-writing site having to report them.</summary>
+    public int LastSeenState { get; set; }
+
+    /// <summary>Ticks left of the "!" overhead flash after going Alert (render feedback).</summary>
+    public int AlertFlashTicks { get; set; }
+
+    public AwarenessState AwarenessState =>
+        Awareness < 30f ? AwarenessState.Unaware :
+        Awareness < 70f ? AwarenessState.Suspicious : AwarenessState.Alert;
 }

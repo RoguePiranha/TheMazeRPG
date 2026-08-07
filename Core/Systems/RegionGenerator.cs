@@ -98,6 +98,7 @@ public static class RegionGenerator
         var town = LayOutTown(region, frame, localWidth, localHeight, profile, river, random);
         var gates = CarveWallsAndGates(frame, region, town, random);
         CarveRoads(frame, region, town, gates, random);
+        CarveOutboundRoads(frame, town, gates, localWidth, localHeight);
         PlaceBuildings(frame, region, town, profile, random);
         PlacePointsOfInterest(maze, frame, region, town, gates, localHeight, random);
         PlantForest(frame, region, localWidth, localHeight, profile.ForestDepth, town, random);
@@ -275,10 +276,9 @@ public static class RegionGenerator
         region.OutfallX = ox;
         region.OutfallY = oy;
 
-        // One bridge, carried on road tiles so the crossing reads as part of the road network.
-        int bridgeY = localHeight / 2;
-        for (int w = -1; w < RiverWidth + 1; w++)
-            frame.Set(columnAt[bridgeY] + w, bridgeY, TileType.Road);
+        // The bridge is no longer carved here: it belongs to the road network, and roads follow the
+        // gates — CarveOutboundRoads lays the east road straight through the river at the gate's
+        // row, which is what makes the crossing part of a route rather than a plank in the wilds.
 
         return new River(left, right);
     }
@@ -364,14 +364,21 @@ public static class RegionGenerator
                 gateLx = lx;
                 gateLy = ly;
                 var (gx, gy) = frame.ToWorld(lx, ly);
+                // The stored side must be the WORLD side, not the canonical one: the layout frame
+                // rotates with the mountain edge, so canonical 'E' can be world south. Mapping the
+                // canonical outward step through ToWorld gives the true facing wherever the
+                // mountain ended up.
+                var (odx, ody) = side switch { 'E' => (1, 0), 'N' => (0, -1), _ => (0, 1) };
+                var (wx, wy) = frame.ToWorld(lx + odx, ly + ody);
                 region.Gates.Add(new TownGate
                 {
                     X = gx,
                     Y = gy,
-                    Side = side switch
+                    Side = (wx - gx, wy - gy) switch
                     {
-                        'E' => RegionEdge.East,
-                        'N' => RegionEdge.North,
+                        (1, 0) => RegionEdge.East,
+                        (-1, 0) => RegionEdge.West,
+                        (0, -1) => RegionEdge.North,
                         _ => RegionEdge.South
                     }
                 });
@@ -405,6 +412,14 @@ public static class RegionGenerator
         StripeHorizontal(frame, town.Left + 1, town.Right - 1, squareY);
         StripeVertical(frame, town.Top + 1, town.Bottom - 1, squareX);
 
+        // The dungeon avenue. Rule (Starting Region.md, note 08 stage 4): a place people visit
+        // every day gets a road — and nothing in town is visited harder than the dungeon mouth,
+        // with its guard station and its daily divers. The avenue runs from the mountain-side
+        // wall (where PlacePointsOfInterest cuts the mouth through, at the town's centre row)
+        // east to the vertical spine, putting the mouth on the network. Hidden places — the
+        // trapdoor home — deliberately get nothing.
+        StripeHorizontal(frame, town.Left + 1, squareX, town.CenterY);
+
         // Gate access roads: gates are seed-placed along the walls independently of the spines,
         // so each gets its own connecting road to the spine network — the comment above promises
         // "each gate is on the network", and until now nothing actually delivered that (a gate
@@ -437,6 +452,34 @@ public static class RegionGenerator
             StripeVertical(frame, town.Top + 1, town.Bottom - 1, lx);
         for (int lx = squareX + block; lx < town.Right - 4; lx += block)
             StripeVertical(frame, town.Top + 1, town.Bottom - 1, lx);
+    }
+
+    /// <summary>
+    /// Roads out of town: every gate's road continues across the cleared band and through the
+    /// forest to the edge of the region. Starting Region.md: the wilds are untamed *except along
+    /// roads*, which the kingdom patrols — a gate that opened onto trackless grass contradicted
+    /// that sentence. The east road crosses the river on its way out; StripeHorizontal paves
+    /// water like any other non-wall ground, and that paved crossing at the gate's own row IS the
+    /// bridge — a crossing on a route people actually walk, not a plank dropped mid-wilderness.
+    /// </summary>
+    private static void CarveOutboundRoads(
+        Frame frame, TownRect town, List<(int lx, int ly, char side)> gates, int localWidth, int localHeight)
+    {
+        foreach (var gate in gates)
+        {
+            switch (gate.side)
+            {
+                case 'E':
+                    StripeHorizontal(frame, town.Right + 1, localWidth - 2, gate.ly);
+                    break;
+                case 'N':
+                    StripeVertical(frame, 1, town.Top - 1, gate.lx);
+                    break;
+                default: // 'S'
+                    StripeVertical(frame, town.Bottom + 1, localHeight - 2, gate.lx);
+                    break;
+            }
+        }
     }
 
     private static void StripeHorizontal(Frame frame, int fromX, int toX, int centreY)
@@ -642,10 +685,14 @@ public static class RegionGenerator
         int localHeight,
         Random random)
     {
-        // Dungeon mouth: a short passage cut into the mountain face, reached by the spur road.
+        // Dungeon mouth: a forecourt cut into the mountain face at the town's centre row, opening
+        // through the west wall onto the dungeon avenue (carved by CarveRoads). Three tiles wide,
+        // like every road: this is the most-trafficked doorway in the region, and a one-tile slot
+        // read as a crack in the rock rather than the entrance the whole town is built around.
         int mouthY = town.CenterY;
         for (int lx = MountainDepth - 3; lx <= town.Left; lx++)
-            frame.Set(lx, mouthY, TileType.Road);
+            for (int dy = -1; dy <= 1; dy++)
+                frame.Set(lx, mouthY + dy, TileType.Road);
         frame.AddFeature(MountainDepth - 1, mouthY, MazeFeatureType.DungeonEntrance);
 
         // The threshold and its frame are bedrock. The dungeon is a separate dimensional space

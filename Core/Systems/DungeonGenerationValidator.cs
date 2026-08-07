@@ -105,7 +105,12 @@ public static class DungeonGenerationValidator
 
         if (layout.Connections.Count < Math.Max(0, layout.Rooms.Count - 1))
             errors.Add("Room connection graph is incomplete");
-        if (layout.Rooms.Count > 2 && layout.Connections.All(connection => !connection.IsLoop))
+        // Compact maps (the same sub-300-cell threshold PlaceRooms sizes rooms by) are exempt from
+        // the alternate-route requirement: with three rooms packed into a 15x11 grid there is
+        // often no legal ground left for a second corridor, and demanding one made the minimum
+        // size fail generation outright rather than ship a slightly more linear floor.
+        if (maze.Width * maze.Height >= 300 &&
+            layout.Rooms.Count > 2 && layout.Connections.All(connection => !connection.IsLoop))
             errors.Add("Dungeon has no alternate room connection");
         if (!layout.Tiles.Cast<DungeonTileType>().Any(tile =>
                 tile is DungeonTileType.CorridorFloor or DungeonTileType.Doorway))
@@ -115,15 +120,55 @@ public static class DungeonGenerationValidator
         {
             for (int y = 1; y < maze.Height - 1; y++)
             {
-                if (layout.Tiles[x, y] != DungeonTileType.Doorway) continue;
-                bool besideRoom = layout.Tiles[x - 1, y] == DungeonTileType.RoomFloor ||
-                                  layout.Tiles[x + 1, y] == DungeonTileType.RoomFloor ||
-                                  layout.Tiles[x, y - 1] == DungeonTileType.RoomFloor ||
-                                  layout.Tiles[x, y + 1] == DungeonTileType.RoomFloor;
+                var semantic = layout.Tiles[x, y];
+
+                // A corridor cell flush against room floor is a breach — the room reads as having
+                // a chunk of wall missing rather than a doorway. Corridors keep their distance;
+                // rooms are entered through thresholds only.
+                if (semantic == DungeonTileType.CorridorFloor)
+                {
+                    if (CountRoomNeighbours(layout, x, y) > 0)
+                        errors.Add($"Corridor breaches a room wall at ({x},{y})");
+                    continue;
+                }
+
+                if (semantic != DungeonTileType.Doorway) continue;
+
+                int roomNeighbours = CountRoomNeighbours(layout, x, y);
                 // A doorway should hold an actual door (or bare floor, where a door wasn't placed) —
                 // never solid wall.
-                if (!besideRoom || !maze.IsTraversable(x, y))
+                if (roomNeighbours == 0 || !maze.IsTraversable(x, y))
                     errors.Add($"Invalid doorway at ({x},{y})");
+                // One tile, one room: two room floors beside a threshold means a hole shared
+                // between two rooms rather than an entrance to one.
+                if (roomNeighbours > 1)
+                    errors.Add($"Doorway at ({x},{y}) opens into {roomNeighbours} rooms");
+
+                // A door has to lead somewhere: at least one open neighbour that isn't the room
+                // it serves, or it's a door onto solid stone.
+                bool hasOutlet = false;
+                bool doubleDoor = false;
+                foreach (var (dx, dy) in new[] { (0, 1), (1, 0), (0, -1), (-1, 0) })
+                {
+                    var neighbour = layout.Tiles[x + dx, y + dy];
+                    if (neighbour is DungeonTileType.CorridorFloor or DungeonTileType.Doorway)
+                        hasOutlet = true;
+                    if (neighbour == DungeonTileType.Doorway)
+                        doubleDoor = true;
+                }
+                if (!hasOutlet)
+                    errors.Add($"Doorway at ({x},{y}) opens onto solid wall");
+                if (doubleDoor)
+                    errors.Add($"Doorways side by side at ({x},{y})");
+
+                // Jambs: the wall continues on both sides of a threshold. An open cell beside a
+                // door means the door floats at the end of a wall stub.
+                bool eastWest = layout.DoorwayOrientationAt(x, y) == DungeonPassageOrientation.EastWest;
+                var jambs = eastWest
+                    ? new[] { (x, y - 1), (x, y + 1) }
+                    : new[] { (x - 1, y), (x + 1, y) };
+                if (jambs.Any(j => layout.Tiles[j.Item1, j.Item2] != DungeonTileType.Wall))
+                    errors.Add($"Doorway at ({x},{y}) is missing a jamb");
             }
         }
 
@@ -162,5 +207,13 @@ public static class DungeonGenerationValidator
         }
 
         return errors;
+    }
+
+    private static int CountRoomNeighbours(DungeonLayout layout, int x, int y)
+    {
+        int count = 0;
+        foreach (var (dx, dy) in new[] { (0, 1), (1, 0), (0, -1), (-1, 0) })
+            if (layout.Tiles[x + dx, y + dy] == DungeonTileType.RoomFloor) count++;
+        return count;
     }
 }

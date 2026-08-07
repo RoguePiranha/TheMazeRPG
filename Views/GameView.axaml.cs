@@ -182,6 +182,13 @@ public partial class GameView : UserControl
             e.Handled = true;
             _viewModel.GameState.TryDash();
         }
+        else if (e.Key == Key.C && _viewModel != null && !AnyOverlayOpen)
+        {
+            // Sneak toggle (note 11 §3, owner-confirmed toggle). Manual only; the sim refuses
+            // otherwise, so no mode checks needed here.
+            e.Handled = true;
+            _viewModel.GameState.ToggleSneak();
+        }
         else if (_viewModel != null && !AnyOverlayOpen)
         {
             var gs = _viewModel.GameState;

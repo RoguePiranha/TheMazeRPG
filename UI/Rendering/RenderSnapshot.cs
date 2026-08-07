@@ -22,6 +22,7 @@ public sealed class RenderSnapshot
     public required List<Enemy> Enemies { get; init; }
     public required List<Projectile> Projectiles { get; init; }
     public required List<Critter> Critters { get; init; }
+    public required List<Npc> Npcs { get; init; }
     public required List<MazeFeature> Features { get; init; }
     public required List<FloatingText> FloatingTexts { get; init; }
     public required List<HitEffect> HitEffects { get; init; }
@@ -55,6 +56,7 @@ public sealed class RenderSnapshot
             Enemies = new List<Enemy>(gameState.Enemies),
             Projectiles = new List<Projectile>(gameState.Projectiles),
             Critters = new List<Critter>(gameState.Critters),
+            Npcs = new List<Npc>(gameState.Npcs),
             Features = new List<MazeFeature>(maze.Features),
             FloatingTexts = new List<FloatingText>(gameState.FloatingTexts),
             HitEffects = new List<HitEffect>(gameState.HitEffects),

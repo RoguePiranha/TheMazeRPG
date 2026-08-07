@@ -38,6 +38,12 @@ public class CharacterRace
     /// Human/Halfling/Dragonborn no). Consumed by the night-lighting layer.</summary>
     public bool Darkvision { get; set; }
 
+    /// <summary>Creature bulk (owner ruling 2026-08-05: the smaller you are, the easier it is to
+    /// sneak, and vice versa — Planning note 11). Feeds Hero.SizeScale: the stealth footprint —
+    /// step-noise radius and how fast watchers' awareness climbs at the sight of you. A Kobold is
+    /// a natural burglar; a Dragonborn in iron announces themselves.</summary>
+    public float Size { get; set; } = 1f;
+
     // Optional flat pool overrides for testing races: when set, they replace the normally
     // derived max pools (and fill the current value to match). Null = normal derivation.
     public int? HealthOverride { get; set; }

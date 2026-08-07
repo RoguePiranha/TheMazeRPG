@@ -166,6 +166,18 @@ public class Hero
     // GameState.DrainPendingUnlocks — Hero can't build Combinables or log messages itself).
     public List<string> PendingUnlocks { get; } = new();
 
+    // ---- Stealth (Planning note 11 §3) ----
+
+    /// <summary>Sneak mode: toggled by the player (C), Manual control only. Slower, quieter
+    /// steps, and watchers' awareness climbs more slowly — Agility widens that gap, heavy gear
+    /// narrows it. Transient by design: never persisted, a fresh load stands you up.</summary>
+    public bool IsSneaking { get; set; }
+
+    /// <summary>Racial bulk (races.json "size" — owner ruling 2026-08-05: small is sneaky, big
+    /// is seen). Scales the stealth footprint: step-noise radius and sight-gain rate. The same
+    /// knob enemies carry; symmetric consumers arrive with enemy stealth (note 11 v2).</summary>
+    public float SizeScale { get; set; } = 1f;
+
     // Racial darkvision (set by ApplyClassAndRace from races.json) — at night this race sees
     // normally out to its full vision range instead of a torch-or-worse pool of light.
     public bool HasDarkvision { get; set; }

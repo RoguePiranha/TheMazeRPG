@@ -197,6 +197,10 @@ public class CharacterDataService
 
         // Racial darkvision (D&D-mapped, races.json) — drives night visibility in town.
         hero.HasDarkvision = race.Darkvision;
+
+        // Racial bulk (races.json "size") — the stealth footprint (Planning note 11): scales
+        // step-noise radius and how quickly watchers register the hero on sight.
+        hero.SizeScale = race.Size;
     }
 
     // Effectiveness multiplier for a stat, defaulting to 1.0 when the race doesn't specify one.

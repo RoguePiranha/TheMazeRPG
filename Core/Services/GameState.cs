@@ -140,6 +140,10 @@ public class GameState
         _dashDirX = dx / len;
         _dashDirY = dy / len;
         _dashTicksRemaining = _dashTicks;
+        // A burst of footfalls carries further than a walking step (note 11 §1) — and there is
+        // no such thing as a stealthy dash: the lunge breaks the crouch.
+        Hero.IsSneaking = false;
+        EmitSound(Hero.X, Hero.Y, AwarenessService.DashRadius, SoundKind.Step);
         LogMessage("Dodge!", MessageKind.System);
     }
 
@@ -150,6 +154,7 @@ public class GameState
         {
             _manualMoveX = 0;
             _manualMoveY = 0;
+            Hero.IsSneaking = false; // Auto ignores stealth v1 (note 11 §3)
         }
     }
 
@@ -222,6 +227,7 @@ public class GameState
         if (!CurrentMaze.IsWalkable(targetX, targetY))
         {
             if (!CurrentMaze.TryOpenDoor(targetX, targetY)) return false;
+            EmitSound(targetX, targetY, AwarenessService.DoorRadius, SoundKind.Door);
             _lastMoveDirX = dx;
             _lastMoveDirY = dy;
             TacticalTurn.MovementRemaining--;
@@ -697,6 +703,7 @@ public class GameState
     {
         foreach (Enemy enemy in observed.Concat(encounterAlerted))
         {
+            enemy.Awareness = 100f; // tactical observation is decisive; keeps the meter honest across mode switches
             enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
             _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
         }
@@ -714,9 +721,12 @@ public class GameState
             bool hasLineOfSight = HasLineOfSight(enemy.X, enemy.Y, Hero.X, Hero.Y);
             bool persistent = distance < AgroRadius &&
                 enemyPursuitTicks.TryGetValue(enemy, out int pursuit) && pursuit > 0;
-            bool immediateThreat = hasLineOfSight &&
-                distance <= MathF.Max(VisionRange, enemy.AttackRange + 1f);
-            bool seesHero = EnemyCanSeeHero(enemy) || immediateThreat;
+            // Striking distance is noticed regardless of facing — you can't stand unremarked
+            // at someone's shoulder. Beyond that, tactical sight uses the same facing cone the
+            // real-time awareness pass does (was: LOS anywhere within full vision range — the
+            // old 360° sight in a different coat).
+            bool immediateThreat = hasLineOfSight && distance <= enemy.AttackRange + 1f;
+            bool seesHero = EnemySeesHero(enemy) || immediateThreat;
             if (persistent || seesHero) actors.Add(enemy);
             if (seesHero) observed.Add(enemy);
         }
@@ -1178,6 +1188,13 @@ public class GameState
         if (!CanAffordCurrentAttack()) return;
 
         _combatSystem.PerformHeroDirectionalAttack(Hero, dirX, dirY, Projectiles);
+
+        // Deliberately no fire-time combat noise: the awareness pass consumes sounds before
+        // collisions resolve each tick, so a swing-sound here would always wake the target ahead
+        // of its own blow and no stealth strike could ever land. The blow IS the noise —
+        // OnEnemyStruck screams at impact and wakes the neighbourhood (note 11 §3: one free hit,
+        // not a massacre loop). A *missed* attack is silent v1; a whiff-noise needs
+        // impact-located emission from the projectile's end, noted for the behaviors PR.
     }
 
     /// <summary>One pickaxe swing at the adjacent cell the aim points at, when it's workable
@@ -1398,6 +1415,15 @@ public class GameState
     /// EnableAmbience is on; simulated from their own RNG stream so gameplay stays deterministic.</summary>
     public List<Critter> Critters { get; } = new();
 
+    /// <summary>
+    /// The townsfolk (Planning note 09 v1: schedules-first daily life). Rebuilt deterministically
+    /// from the world seed on every town entry — same world, same people, forever — so nothing
+    /// here is persisted. Unlike critters this is simulation, not ambience: it runs headless too
+    /// (TEST_TOWNLIFE), but touches no shared RNG, so demo determinism is unaffected. Only
+    /// updated and rendered in the overworld.
+    /// </summary>
+    public List<Npc> Npcs { get; } = new();
+
     /// <summary>Live-game-only atmosphere: ambient critters + occasional flavor lines in the
     /// message log. Off by default so headless demos keep their exact RNG/log behavior; the
     /// player-facing game turns it on at the ViewModel seam (same pattern as Manual control).</summary>
@@ -1426,6 +1452,61 @@ public class GameState
     /// <summary>How far the hero personally sees at night: darkvision races (D&D-mapped) see
     /// their full vision range; a torch buys a decent pool; bare human eyes, barely arm's reach.</summary>
     public float HeroLightRadius => Hero.HasDarkvision ? VisionRange : HasTorch ? 4.5f : 2.2f;
+
+    // ---- Perception: sounds + awareness (Planning note 11 §1-2) ----
+
+    /// <summary>Noises made this tick, consumed by the awareness pass and then cleared. A sound
+    /// leaks its location to whoever hears it, never its maker's identity.</summary>
+    private readonly List<SoundEvent> _soundsThisTick = new();
+    private float _heroPrevX, _heroPrevY;
+    // Not int.MinValue: "TickCount - last" would overflow negative and mute footsteps forever.
+    private int _lastStepSoundTick = -1000;
+
+    /// <summary>Emit a transient noise for this tick's awareness pass.</summary>
+    public void EmitSound(float x, float y, float radius, SoundKind kind, bool fromHero = true) =>
+        _soundsThisTick.Add(new SoundEvent(x, y, radius, kind, fromHero));
+
+    /// <summary>How far the hero's next footstep will carry: sneak or walk base × gear weight ×
+    /// racial bulk. The sim emits at exactly this radius, and the sneak overlay's noise ring
+    /// draws it — one number, both consumers.</summary>
+    public float CurrentStepNoiseRadius =>
+        (Hero.IsSneaking ? AwarenessService.SneakStepRadius : AwarenessService.StepRadius) *
+        AwarenessService.GearNoiseMultiplier(Hero.Loadout) * Hero.SizeScale;
+
+    /// <summary>Tick of the most recent footstep sound — the overlay pulses its ring off this.</summary>
+    public int LastStepSoundTick => _lastStepSoundTick;
+
+    /// <summary>The worst any living enemy currently thinks of the hero's presence — the sneak
+    /// HUD's eye: Unaware = unseen, Suspicious = something's looking, Alert = made.</summary>
+    public AwarenessState HeroExposure
+    {
+        get
+        {
+            var worst = AwarenessState.Unaware;
+            foreach (var enemy in Enemies)
+            {
+                if (!enemy.IsAlive) continue;
+                if (enemy.AwarenessState > worst) worst = enemy.AwarenessState;
+            }
+            return worst;
+        }
+    }
+
+    /// <summary>
+    /// Toggle sneaking (owner ruling 2026-08-05: a confirmed toggle on C). Manual control only —
+    /// Auto ignores stealth v1 — and dashing breaks it (see TryDash).
+    /// </summary>
+    public void ToggleSneak()
+    {
+        if (ControlMode != ControlMode.Manual || IsHeroDead || !IsRunning) return;
+        Hero.IsSneaking = !Hero.IsSneaking;
+        LogMessage(Hero.IsSneaking
+            ? "You sink into a crouch, moving quiet and slow."
+            : "You rise and walk openly.", MessageKind.System);
+    }
+
+    // Throttle for the sneak notice lines so a room of enemies doesn't spam the log.
+    private int _stealthNoticeCooldownTicks;
 
     // Track enemy pursuit persistence
     private Dictionary<Enemy, int> enemyPursuitTicks = new();
@@ -1684,6 +1765,10 @@ public class GameState
         // Live-game atmosphere: ambient critters + occasional flavor lines (no-op in headless demos).
         if (EnableAmbience) UpdateAmbience();
 
+        // The town lives its day while the hero is there to see it. (While they're in the dungeon
+        // it simply pauses — offscreen town simulation is note 17's event framework, not this.)
+        if (IsInOverworld) NpcService.Update(this);
+
         // Regenerate hero resources using fractional accumulation.
         // Per-second rates: Constitution/8 stamina, Intelligence/8 mana, Wisdom/8 faith.
         // Divide by ticks/sec so the real-time rate is correct at any tick rate.
@@ -1789,13 +1874,38 @@ public class GameState
             }
         }
         
+        // Perception before movement: awareness meters climb/decay on this tick's sights and
+        // sounds, so a Suspicious enemy walks toward a fresh stimulus, not last tick's.
+        UpdateEnemyAwareness();
+
         // Move enemies
         foreach (var enemy in Enemies.Where(e => e.IsAlive))
         {
             if (!enemy.InCombat)
             {
+                if (enemy.AwarenessState == AwarenessState.Suspicious && enemy.InvestigateTarget is { } noise)
+                {
+                    // Something was heard: walk to the spot, stand looking around for a few
+                    // seconds, then let the meter decay back into an ordinary wander.
+                    float idx = noise.x - enemy.X;
+                    float idy = noise.y - enemy.Y;
+                    if (idx * idx + idy * idy > 0.6f * 0.6f)
+                    {
+                        _movementSystem.MoveEnemyTowardTarget(enemy, noise.x, noise.y, CurrentMaze);
+                    }
+                    else if (enemy.SweepTicks > 0)
+                    {
+                        enemy.SweepTicks--;
+                        enemy.FacingRad += 0.05f; // the look-around: facing sweeps while standing
+                        if (enemy.SweepTicks == 0) enemy.InvestigateTarget = null;
+                    }
+                    else
+                    {
+                        enemy.SweepTicks = AwarenessService.InvestigateSweepTicks;
+                    }
+                }
                 // Idle wander (BFS waypoint) when not in combat, throttled for a calmer pace
-                if (TickCount % 2 == 0)
+                else if (TickCount % 2 == 0)
                 {
                     _movementSystem.MoveEnemyIdle(enemy, CurrentMaze);
                 }
@@ -1803,18 +1913,19 @@ public class GameState
             else
             {
                 // Chase: head for the hero if in sight, otherwise for the last place they were
-                // seen (so enemies pursue around corners until the pursuit window expires).
-                float tx = Hero.X, ty = Hero.Y;
+                // seen (so enemies pursue around corners until the pursuit window expires). An
+                // alert enemy with NO line of sight and NO last-known position — woken by a
+                // scream that carried no bearing — holds its ground instead of homing on the
+                // hero's true coordinates: what an enemy knows is only what its senses gave it.
                 if (HasLineOfSight(enemy.X, enemy.Y, Hero.X, Hero.Y))
                 {
                     _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+                    _movementSystem.MoveEnemyTowardTarget(enemy, Hero.X, Hero.Y, CurrentMaze);
                 }
                 else if (_enemyLastKnownHeroPos.TryGetValue(enemy, out var lastKnown))
                 {
-                    tx = lastKnown.x;
-                    ty = lastKnown.y;
+                    _movementSystem.MoveEnemyTowardTarget(enemy, lastKnown.x, lastKnown.y, CurrentMaze);
                 }
-                _movementSystem.MoveEnemyTowardTarget(enemy, tx, ty, CurrentMaze);
             }
         }
 
@@ -1956,11 +2067,15 @@ public class GameState
             bool overlappingBodies = MathF.Sqrt((Hero.X - enemy.X) * (Hero.X - enemy.X) + (Hero.Y - enemy.Y) * (Hero.Y - enemy.Y))
                                       <= (Hero.Radius + enemy.Radius + 0.05f);
             bool heroSeesEnemy = heroSeesInConeCells || (heroHitboxCone && (overlappingBodies || HasLineOfSight(Hero.X, Hero.Y, enemy.X, enemy.Y)));
-            
-            // Also check if enemy can see hero (scanning in all directions)
-            bool enemySeesHero = EnemyCanSeeHero(enemy);
-            
-            if (heroSeesEnemy || enemySeesHero)
+
+            // The hero spotting an enemy no longer wakes it: an enemy joins the fight only when
+            // its own senses (facing cone + LOS, hearing, being struck — see UpdateEnemyAwareness)
+            // have driven it to Alert. Auto mode still opens hostilities on anything the hero can
+            // see — auto-play fights what it finds, and the first swing's noise makes it mutual.
+            bool enemyEngages = enemy.AwarenessState == AwarenessState.Alert ||
+                                (heroSeesEnemy && ControlMode == ControlMode.Auto);
+
+            if (enemyEngages)
             {
                 float dx = Hero.X - enemy.X;
                 float dy = Hero.Y - enemy.Y;
@@ -2036,6 +2151,7 @@ public class GameState
                 if (distance > 12f) continue;
 
                 engagedEnemies.Add(enemy);
+                enemy.Awareness = 100f;
                 enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
                 _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
                 if (distance < closestDistance)
@@ -2050,6 +2166,20 @@ public class GameState
         {
             if (enemyPursuitTicks.ContainsKey(enemy) && enemyPursuitTicks[enemy] > 0)
                 enemyPursuitTicks[enemy]--;
+        }
+
+        // Stand down enemies that fell out of the engagement (awareness decayed, pursuit ran
+        // out) even while others fight on — and hand them their last known hero position to go
+        // look at, so a lost chase degrades into a search rather than snapping back to a wander.
+        foreach (var enemy in Enemies.Where(e => e.IsAlive && e.InCombat && !engagedEnemies.Contains(e)))
+        {
+            enemy.InCombat = false;
+            if (_enemyLastKnownHeroPos.TryGetValue(enemy, out var lastKnown))
+            {
+                enemy.InvestigateTarget = (lastKnown.x, lastKnown.y);
+                enemy.SweepTicks = 0;
+                enemy.Awareness = MathF.Min(enemy.Awareness, AwarenessService.HearingCap);
+            }
         }
         if (engagedEnemies.Count == 0)
         {
@@ -2076,6 +2206,9 @@ public class GameState
             if (!e.InCombat)
             {
                 e.InCombat = true;
+                // Anything fighting is by definition fully aware — keeps the meter honest when
+                // Auto mode opened hostilities on a target that hadn't noticed the hero yet.
+                e.Awareness = 100f;
                 // Give them a small initial delay similar to StartCombat, but don't reset hero
                 e.AttackCooldown = Math.Max(e.AttackCooldown, e.AttackSpeed / 2);
                 CodexService.Instance.RecordEncounter(e, CurrentFloor);
@@ -2374,7 +2507,12 @@ public class GameState
                         // Dodge check: an agile enemy may evade the hit entirely. For an AoE,
                         // the dodger alone is exempted — the effect keeps going for everyone
                         // else rather than being consumed by one nimble target.
-                        if (RollDodge(enemy.Agility, p.Accuracy))
+                        // A target that never noticed you neither dodges nor braces: the stealth
+                        // strike (note 11 §3) is note 07's backstab with the auto-crit on top —
+                        // one devastating opening. Checked before OnEnemyStruck flips them Alert.
+                        bool stealthStrike = enemy.AwarenessState == AwarenessState.Unaware;
+
+                        if (!stealthStrike && RollDodge(enemy.Agility, p.Accuracy))
                         {
                             LogMessage($"The {enemy.Race} {enemy.Class} dodges!", MessageKind.Combat);
                             AddFloatingText("Dodge", enemy.X, enemy.Y - 0.4f, FloatingTextKind.Dodge);
@@ -2393,7 +2531,16 @@ public class GameState
                         int applied = p.StatDamage > 0
                             ? ResolveStatDamage(p.StatDamage, enemy, p.IsMagic, p.Element)
                             : Math.Max(1, p.Damage);
+                        if (stealthStrike)
+                        {
+                            applied = Math.Max(1,
+                                (int)MathF.Round(applied * AwarenessService.StealthStrikeMultiplier));
+                            LogMessage($"Stealth strike! The {enemy.Race} {enemy.Class} never saw it coming.",
+                                MessageKind.Combat);
+                            AddFloatingText("Stealth strike!", enemy.X, enemy.Y - 0.8f, FloatingTextKind.LevelUp);
+                        }
                         enemy.Hp -= applied;
+                        OnEnemyStruck(enemy);
                         AddFloatingText(applied.ToString(), enemy.X, enemy.Y - 0.4f, FloatingTextKind.EnemyDamage);
                         // Spawn tiny on-hit flash
                         HitEffects.Add(new HitEffect
@@ -3138,6 +3285,9 @@ public class GameState
         });
         GameLog.Debug($"Trap triggered! {damage} damage.");
         LogMessage($"A trap springs! -{damage} HP", MessageKind.Warning);
+        // The snap of the mechanism and the cry that follows carry (note 11 §1) — an Alarm
+        // alerts everything in earshot to the spot.
+        EmitSound(trap.X, trap.Y, AwarenessService.TrapRadius, SoundKind.Alarm);
     }
 
     private void UpdateDungeonThemeFeatures()
@@ -3223,6 +3373,7 @@ public class GameState
             foreach (var enemy in Enemies.Where(enemy =>
                          enemy.IsAlive && enemy.EncounterId == roomEncounter.Id))
             {
+                enemy.Awareness = 100f; // an alarm is exactly the thing awareness can't ignore
                 enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
                 _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
             }
@@ -3559,6 +3710,7 @@ public class GameState
         Boss.Y = CurrentMaze.Height / 2;
         Boss.TargetX = Boss.X;
         Boss.TargetY = Boss.Y;
+        Boss.Awareness = 100f; // the Guardian spawns Alert (note 11): a set-piece, not an ambush target
         Enemies.Add(Boss);
         GameLog.Debug($"Guardian spawned: {Boss.Race} {Boss.Class} (Level {Boss.Level})");
         LogMessage($"Floor {CurrentFloor}: the Guardian chamber. {Boss.Race} {Boss.Class}, level {Boss.Level}, bars the way!", MessageKind.Warning);
@@ -3672,6 +3824,7 @@ public class GameState
         ControlMode = ControlMode.Manual; // the town is player-driven (WASD + Press-E)
         CurrentMaze = BuildTownMap();
         PlaceHeroAtOverworldArrival();
+        NpcService.PopulateTown(this);
     }
 
     /// <summary>
@@ -3989,13 +4142,13 @@ public class GameState
             float dx = enemy.X - x;
             float dy = enemy.Y - y;
             if (dx * dx + dy * dy > radiusSquared) continue;
-
-            // The same pursuit machinery LOS uses, but triggered by sound: they head for the noise
-            // rather than for you, which is what makes digging a decision rather than a free action.
-            enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
-            _enemyLastKnownHeroPos[enemy] = (x, y);
             roused++;
         }
+
+        // Work noise, into the awareness pass: listeners come to investigate the dig site rather
+        // than snapping straight into pursuit — digging is still a decision, but what it draws is
+        // curiosity first and violence only if they then find you.
+        EmitSound(x, y, radius, SoundKind.Work);
 
         if (inDungeon && _miningNoiseWarnings < 1)
         {
@@ -4084,26 +4237,184 @@ public class GameState
         _random = new Random(Seed);
         _mazeGenerator = new MazeGenerator(Seed);
         _movementSystem = new MovementSystem(Seed);
+        // Hero-opened doors are noisy (note 11 §1); the callback keeps MovementSystem ignorant
+        // of GameState while still feeding the awareness pass.
+        _movementSystem.OnHeroOpenedDoor = (x, y) =>
+            EmitSound(x, y, AwarenessService.DoorRadius, SoundKind.Door);
         _combatSystem = new CombatSystem(Seed);
 
         StartNewFloor();
     }
 
     /// <summary>
-    /// Returns true if the enemy can see the hero by scanning multiple facing angles
+    /// Can this enemy see the hero right now? Facing cone + range + line of sight (Planning note
+    /// 11). This replaced an effectively-360° check (range + LOS, facing ignored) — which is why
+    /// enemies used to lock on the moment the hero got anywhere close, even approaching from
+    /// behind. Backs, walls, and where an enemy is actually looking all matter now.
     /// </summary>
-    private bool EnemyCanSeeHero(Enemy enemy)
+    private bool EnemySeesHero(Enemy enemy)
     {
-        // Enemies watch all around (this used to scan 8 overlapping 90° sight cones — a full
-        // circle), so "can see" reduces to: hero's cell within vision range of the enemy's
-        // position, with line of sight to that cell center. Same answer as the cone union, but
-        // one Bresenham walk instead of ~8 × range² of them per enemy per tick.
-        int heroCellX = (int)MathF.Round(Hero.X);
-        int heroCellY = (int)MathF.Round(Hero.Y);
-        float dx = heroCellX - enemy.X;
-        float dy = heroCellY - enemy.Y;
+        float dx = Hero.X - enemy.X;
+        float dy = Hero.Y - enemy.Y;
         if (dx * dx + dy * dy > VisionRange * VisionRange) return false;
-        return HasLineOfSight(enemy.X, enemy.Y, heroCellX, heroCellY);
+        if (!AwarenessService.InVisionCone(enemy.FacingRad, enemy.X, enemy.Y, Hero.X, Hero.Y)) return false;
+        return HasLineOfSight(enemy.X, enemy.Y, Hero.X, Hero.Y);
+    }
+
+    /// <summary>
+    /// The per-tick perception pass (note 11 §2): every living enemy's awareness climbs on sight
+    /// of the hero (facing cone, LOS, distance-scaled) and on this tick's sounds (360°, walls
+    /// muffling), and decays without stimulus. Combat noise alerts outright — and wakes the whole
+    /// encounter pack, one scream waking the room — while lesser noises only ever make a listener
+    /// suspicious enough to come and look. Engagement itself stays in CheckCombat: it now keys off
+    /// AwarenessState.Alert instead of a bare range check.
+    /// </summary>
+    private void UpdateEnemyAwareness()
+    {
+        // The hero's footsteps: a moving hero is audible a few tiles out, every few ticks —
+        // sneaking steps are quieter and rarer, heavy gear and bulk carry further either way.
+        bool heroMoved = MathF.Abs(Hero.X - _heroPrevX) + MathF.Abs(Hero.Y - _heroPrevY) > 0.02f;
+        int stepInterval = Hero.IsSneaking
+            ? AwarenessService.SneakStepIntervalTicks
+            : AwarenessService.StepIntervalTicks;
+        if (heroMoved && TickCount - _lastStepSoundTick >= stepInterval)
+        {
+            EmitSound(Hero.X, Hero.Y, CurrentStepNoiseRadius, SoundKind.Step);
+            _lastStepSoundTick = TickCount;
+        }
+        _heroPrevX = Hero.X;
+        _heroPrevY = Hero.Y;
+
+        // How hidden the hero currently is to eyes (0 = fully visible; sneak + Agility hide,
+        // clanking gear gives some back). Computed once — it's the same for every watcher.
+        float stealthFactor = AwarenessService.StealthFactor(
+            Hero.IsSneaking, Hero.EffectiveAgility, AwarenessService.GearNoiseMultiplier(Hero.Loadout));
+
+        if (_stealthNoticeCooldownTicks > 0) _stealthNoticeCooldownTicks--;
+
+        var packsWokenAt = new List<(int encounterId, float x, float y)>();
+
+        foreach (var enemy in Enemies)
+        {
+            if (!enemy.IsAlive) continue;
+
+            // Facing follows movement; a standing enemy keeps looking where it last walked
+            // (or where its investigation sweep pointed it).
+            float movedX = enemy.X - enemy.PrevX;
+            float movedY = enemy.Y - enemy.PrevY;
+            if (movedX * movedX + movedY * movedY > 0.000001f)
+                enemy.FacingRad = MathF.Atan2(movedY, movedX);
+            enemy.PrevX = enemy.X;
+            enemy.PrevY = enemy.Y;
+
+            bool stimulus = false;
+            float dx = Hero.X - enemy.X;
+            float dy = Hero.Y - enemy.Y;
+            float distance = MathF.Sqrt(dx * dx + dy * dy);
+
+            // SIGHT — and touch: nobody stays unaware of someone brushing against them.
+            if (distance <= AwarenessService.BumpRange && HasLineOfSight(enemy.X, enemy.Y, Hero.X, Hero.Y))
+            {
+                enemy.Awareness = 100f;
+                stimulus = true;
+            }
+            else if (EnemySeesHero(enemy))
+            {
+                enemy.Awareness = MathF.Min(100f, enemy.Awareness + AwarenessService.SightGainPerTick(
+                    distance, VisionRange, enemy.Wisdom, Hero.SizeScale, stealthFactor, _ticksPerSecond));
+                stimulus = true;
+                if (enemy.AwarenessState == AwarenessState.Suspicious)
+                    enemy.InvestigateTarget = (Hero.X, Hero.Y); // half-seen: worth walking over
+            }
+
+            // HEARING — 360°, walls muffling to a fraction of the radius.
+            foreach (var sound in _soundsThisTick)
+            {
+                float sdx = sound.X - enemy.X;
+                float sdy = sound.Y - enemy.Y;
+                float effectiveRadius = HasLineOfSight(enemy.X, enemy.Y, sound.X, sound.Y)
+                    ? sound.Radius
+                    : sound.Radius * AwarenessService.WallMuffle;
+                if (sdx * sdx + sdy * sdy > effectiveRadius * effectiveRadius) continue;
+
+                if (sound.Kind is SoundKind.Combat or SoundKind.Alarm)
+                {
+                    enemy.Awareness = 100f;
+                    _enemyLastKnownHeroPos[enemy] = (sound.X, sound.Y);
+                    enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+                    if (enemy.EncounterId >= 0)
+                        packsWokenAt.Add((enemy.EncounterId, sound.X, sound.Y));
+                }
+                else
+                {
+                    enemy.Awareness = MathF.Max(enemy.Awareness,
+                        MathF.Min(AwarenessService.HearingCap, enemy.Awareness + AwarenessService.HearingGain));
+                }
+                enemy.InvestigateTarget = (sound.X, sound.Y);
+                enemy.SweepTicks = 0;
+                stimulus = true;
+            }
+
+            // DECAY, and Alert enemies tracking the hero refresh their last-known position via
+            // the existing pursuit machinery in CheckCombat — not here.
+            if (!stimulus)
+                enemy.Awareness = MathF.Max(0f, enemy.Awareness - AwarenessService.DecayPerSecond / _ticksPerSecond);
+            if (enemy.AwarenessState == AwarenessState.Unaware)
+            {
+                enemy.InvestigateTarget = null;
+                enemy.SweepTicks = 0;
+            }
+
+            // Transition feedback (note 11: states, never numbers): "!" flash on going Alert,
+            // and — while sneaking, throttled — the log learns what the world just learned.
+            if (enemy.AlertFlashTicks > 0) enemy.AlertFlashTicks--;
+            int nowState = (int)enemy.AwarenessState;
+            if (nowState != enemy.LastSeenState)
+            {
+                if (enemy.AwarenessState == AwarenessState.Alert)
+                {
+                    enemy.AlertFlashTicks = 36;
+                    if (Hero.IsSneaking && _stealthNoticeCooldownTicks == 0)
+                    {
+                        LogMessage("You've been spotted!", MessageKind.Warning);
+                        _stealthNoticeCooldownTicks = _ticksPerSecond * 4;
+                    }
+                }
+                else if (enemy.AwarenessState == AwarenessState.Suspicious &&
+                         enemy.LastSeenState < (int)AwarenessState.Suspicious &&
+                         Hero.IsSneaking && _stealthNoticeCooldownTicks == 0)
+                {
+                    LogMessage("Something heard you.", MessageKind.Warning);
+                    _stealthNoticeCooldownTicks = _ticksPerSecond * 4;
+                }
+                enemy.LastSeenState = nowState;
+            }
+        }
+
+        // One scream wakes the room: combat noise heard by any pack member alerts the pack.
+        foreach (var (encounterId, x, y) in packsWokenAt)
+        {
+            foreach (var enemy in Enemies)
+            {
+                if (!enemy.IsAlive || enemy.EncounterId != encounterId) continue;
+                if (enemy.Awareness >= 100f) continue;
+                enemy.Awareness = 100f;
+                _enemyLastKnownHeroPos[enemy] = (x, y);
+                enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+            }
+        }
+
+        _soundsThisTick.Clear();
+    }
+
+    /// <summary>An enemy just took a hit: no meter, no doubt — it is Alert, it knows roughly
+    /// where the shot came from, and its cry carries to everything nearby.</summary>
+    private void OnEnemyStruck(Enemy enemy)
+    {
+        enemy.Awareness = 100f;
+        _enemyLastKnownHeroPos[enemy] = (Hero.X, Hero.Y);
+        enemyPursuitTicks[enemy] = _pursuitTimeoutTicks;
+        EmitSound(enemy.X, enemy.Y, AwarenessService.StruckScreamRadius, SoundKind.Combat, fromHero: false);
     }
     
     private bool HasLineOfSight(float x1, float y1, float x2, float y2) =>
@@ -4795,6 +5106,10 @@ public class GameState
         _random = new Random(Seed);
         _mazeGenerator = new MazeGenerator(Seed);
         _movementSystem = new MovementSystem(Seed);
+        // Hero-opened doors are noisy (note 11 §1); the callback keeps MovementSystem ignorant
+        // of GameState while still feeding the awareness pass.
+        _movementSystem.OnHeroOpenedDoor = (x, y) =>
+            EmitSound(x, y, AwarenessService.DoorRadius, SoundKind.Door);
         _combatSystem = new CombatSystem(Seed);
 
         // Recreate hero with same class/race
@@ -4896,6 +5211,7 @@ public class GameState
         Enemies.Clear();
         enemyPursuitTicks.Clear();       // drop pursuit state tied to the old floor's enemies
         _enemyLastKnownHeroPos.Clear();
+        _soundsThisTick.Clear();         // noises don't carry between floors
         Projectiles.Clear();   // don't let a lingering projectile carry into the new floor
         HitEffects.Clear();
         Boss = null;
@@ -5081,6 +5397,11 @@ public class GameState
         enemy.HomeRoomId = homeRoomId;
         enemy.PatrolRoomIds = new List<int>(patrolRoute);
         enemy.PatrolRouteIndex = patrolRoute.Count > 1 ? 1 : 0;
+        // Initial facing: a positional hash rather than a draw from the shared RNG stream, which
+        // would shift every roll after it and quietly reshuffle loot/spawns on existing seeds.
+        enemy.FacingRad = (cell.x * 31 + cell.y * 17) % 628 / 100f;
+        enemy.PrevX = enemy.X;
+        enemy.PrevY = enemy.Y;
         Enemies.Add(enemy);
     }
 

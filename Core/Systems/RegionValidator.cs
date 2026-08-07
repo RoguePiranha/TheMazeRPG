@@ -67,6 +67,43 @@ public static class RegionValidator
                 errors.Add($"Gate at ({gate.X},{gate.Y}) is not reachable from the dungeon entrance");
         }
 
+        // --- Roads go where people go (Starting Region.md; note 08 stage 4) ---
+        // The wilds are untamed *except along roads*, so every gate's road must actually leave:
+        // through the gate into town on one side, and all the way out to this gate's edge of the
+        // region on the other. For the river-side gate that out-reach is only satisfiable over a
+        // paved crossing, so this check is also what guarantees the bridge.
+        foreach (var gate in region.Gates)
+        {
+            var (dx, dy) = gate.Side switch
+            {
+                RegionEdge.North => (0, -1),
+                RegionEdge.South => (0, 1),
+                RegionEdge.East => (1, 0),
+                _ => (-1, 0)
+            };
+            if (maze.TileAt(gate.X - dx, gate.Y - dy) != TileType.Road)
+                errors.Add($"Gate at ({gate.X},{gate.Y}) has no road on the town side");
+            if (maze.TileAt(gate.X + dx, gate.Y + dy) != TileType.Road)
+                errors.Add($"Gate at ({gate.X},{gate.Y}) has no road leaving town");
+
+            var network = RoadNetworkFrom(maze, gate.X, gate.Y);
+            bool reachesOwnEdge = network.Any(cell => gate.Side switch
+            {
+                RegionEdge.North => cell.y <= 2,
+                RegionEdge.South => cell.y >= maze.Height - 3,
+                RegionEdge.East => cell.x >= maze.Width - 3,
+                _ => cell.x <= 2
+            });
+            if (!reachesOwnEdge)
+                errors.Add($"The {gate.Side} gate's road does not reach the region edge");
+        }
+
+        // The dungeon mouth is the most-visited doorway in the region (guard station, daily
+        // divers), so it is on the road network — a contiguous paved route to the town square.
+        // Hidden places (the trapdoor home) get no such connection, by the same rule.
+        if (!RoadNetworkFrom(maze, entrance.X, entrance.Y).Contains((region.SquareX, region.SquareY)))
+            errors.Add("The dungeon mouth is not connected to the town square by road");
+
         // --- The mine is outside the walls (Starting Region.md) ---
         if (mine != null && region.InsideWalls(mine.X, mine.Y))
             errors.Add("The mine is inside the town walls");
@@ -123,6 +160,33 @@ public static class RegionValidator
         }
 
         return errors;
+    }
+
+    /// <summary>Every road tile connected to this one — flood fill over Road only, since the
+    /// claim under test is "there is a paved route", not "you could cut across the grass".</summary>
+    private static HashSet<(int x, int y)> RoadNetworkFrom(Maze maze, int startX, int startY)
+    {
+        var seen = new HashSet<(int x, int y)>();
+        if (!maze.InBounds(startX, startY) || maze.Tiles[startX, startY] != TileType.Road)
+            return seen;
+
+        var queue = new Queue<(int x, int y)>();
+        seen.Add((startX, startY));
+        queue.Enqueue((startX, startY));
+        while (queue.Count > 0)
+        {
+            var (x, y) = queue.Dequeue();
+            foreach (var (dx, dy) in new[] { (0, 1), (1, 0), (0, -1), (-1, 0) })
+            {
+                var next = (x + dx, y + dy);
+                if (seen.Contains(next)) continue;
+                if (!maze.InBounds(next.Item1, next.Item2)) continue;
+                if (maze.Tiles[next.Item1, next.Item2] != TileType.Road) continue;
+                seen.Add(next);
+                queue.Enqueue(next);
+            }
+        }
+        return seen;
     }
 
     private static int IntakeCoordinate(RegionLayout region) =>

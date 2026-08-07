@@ -75,7 +75,9 @@ public partial class DungeonView : Node2D
         DrawTacticalPathPreview(State);
         DrawDungeonDetails(maze, palette);
         DrawMazeFeatures(maze, palette);
+        DrawSneakOverlay(State);
         DrawCritters(State);
+        DrawNpcs(State);
         DrawProjectiles(State, palette);
         DrawHitEffects(State);
         DrawEnemies(State, palette);
@@ -785,6 +787,19 @@ public partial class DungeonView : Node2D
             Vector2 center = WorldToPixel(enemy.X + enemy.AnimationOffsetX, enemy.Y + enemy.AnimationOffsetY);
             Color body = enemy.IsAlive ? palette.Enemy : palette.Corpse;
             float radius = enemy.IsBoss ? 17f : enemy.IsElite ? 14f : 12f;
+
+            // Perception pips (note 11: states, never numbers): "?" while Suspicious, a brief
+            // red "!" the moment it goes Alert.
+            if (enemy.IsAlive && enemy.AlertFlashTicks > 0)
+            {
+                DrawString(ThemeDB.FallbackFont, center + new Vector2(-5f, -radius - 8f), "!",
+                    HorizontalAlignment.Center, 12, 18, new Color(0.88f, 0.25f, 0.22f));
+            }
+            else if (enemy.IsAlive && enemy.AwarenessState == AwarenessState.Suspicious)
+            {
+                DrawString(ThemeDB.FallbackFont, center + new Vector2(-5f, -radius - 8f), "?",
+                    HorizontalAlignment.Center, 12, 16, new Color(1f, 0.84f, 0.29f));
+            }
             if (!enemy.IsAlive && ReferenceEquals(enemy, HoveredCorpse))
                 DrawInteractionGlow(center, radius + 2f);
             DrawCircle(center, radius, body);
@@ -838,6 +853,128 @@ public partial class DungeonView : Node2D
                     DrawCircle(center + new Vector2(4.5f, 1f), 2.2f, catBody);
                     DrawLine(center + new Vector2(-4.5f, 1.5f), center + new Vector2(-7.5f, -2f), catBody, 1.2f);
                     break;
+            }
+        }
+    }
+
+    // The sneak overlay (note 11 §3, owner ruling: "sneaking should show enemy vision and show
+    // visually how much sound the player is making"): LOS-clipped vision cones tinted by each
+    // enemy's awareness (gray → yellow → red), the hero's noise ring at the exact radius the next
+    // footstep will carry (pulsing on each step), and an eye over the hero — closed = unseen,
+    // half = someone's looking, open red = made. Render-only; vanishes when sneak ends. Colors
+    // match the Avalonia renderer, which is the behavioral spec.
+    private void DrawSneakOverlay(GameState state)
+    {
+        Hero hero = state.Hero;
+        if (!hero.IsSneaking) return;
+        Maze maze = state.CurrentMaze;
+
+        const int rayCount = 26;
+        foreach (Enemy enemy in state.Enemies)
+        {
+            if (!enemy.IsAlive) continue;
+            // Same visibility rule as DrawEnemies: no cones for enemies the hero can't see.
+            if (!IsCellVisibleCached((int)MathF.Round(enemy.X), (int)MathF.Round(enemy.Y)))
+                continue;
+
+            Color tint = enemy.AwarenessState switch
+            {
+                AwarenessState.Alert => new Color(0.88f, 0.25f, 0.22f),
+                AwarenessState.Suspicious => new Color(0.91f, 0.76f, 0.19f),
+                _ => new Color(0.63f, 0.66f, 0.69f)
+            };
+
+            var points = new Vector2[rayCount + 1];
+            points[0] = WorldToPixel(enemy.X, enemy.Y);
+            for (int i = 0; i < rayCount; i++)
+            {
+                float angle = enemy.FacingRad - AwarenessService.VisionConeRad / 2f +
+                              AwarenessService.VisionConeRad * i / (rayCount - 1);
+                float cos = MathF.Cos(angle);
+                float sin = MathF.Sin(angle);
+                float reach = state.VisionRange;
+                for (float t = 0.6f; t <= state.VisionRange; t += 0.25f)
+                {
+                    if (!maze.BlocksSight((int)MathF.Round(enemy.X + cos * t), (int)MathF.Round(enemy.Y + sin * t)))
+                        continue;
+                    reach = t;
+                    break;
+                }
+                points[i + 1] = WorldToPixel(enemy.X + cos * reach, enemy.Y + sin * reach);
+            }
+            DrawColoredPolygon(points, new Color(tint, 0.13f));
+        }
+
+        // Noise ring: pulses brighter just after a step — heavy armor is visibly loud.
+        Vector2 heroCenter = WorldToPixel(hero.X, hero.Y);
+        float ringRadius = state.CurrentStepNoiseRadius * CellSize;
+        int stepAge = Math.Max(0, (int)(state.TickCount - state.LastStepSoundTick));
+        float ringAlpha = stepAge < 10 ? 0.5f - stepAge * 0.03f : 0.18f;
+        DrawArc(heroCenter, ringRadius, 0f, Mathf.Tau, 48,
+            new Color(0.56f, 0.77f, 0.91f, ringAlpha), stepAge < 10 ? 2.4f : 1.4f);
+
+        // The eye: states, never numbers.
+        var exposure = state.HeroExposure;
+        Color eyeColor = exposure switch
+        {
+            AwarenessState.Alert => new Color(0.88f, 0.25f, 0.22f),
+            AwarenessState.Suspicious => new Color(0.91f, 0.76f, 0.19f),
+            _ => new Color(0.56f, 0.6f, 0.63f)
+        };
+        Vector2 eye = heroCenter + new Vector2(0f, -CellSize * 0.85f);
+        DrawArc(eye, 8f, MathF.PI + 0.5f, MathF.Tau - 0.5f, 16, eyeColor, 2f); // upper lid
+        if (exposure != AwarenessState.Unaware)
+        {
+            DrawArc(eye, 8f, 0.5f, MathF.PI - 0.5f, 16, eyeColor, 2f);          // lower lid: open
+            DrawCircle(eye, exposure == AwarenessState.Alert ? 3.2f : 2.2f, eyeColor);
+        }
+    }
+
+    // Townsfolk living their day (note 09 v1: schedules-first NPCs, Core-simulated in the
+    // overworld). A small round-headed figure in occupation color — colors match the Avalonia
+    // renderer, which is the behavioral spec — with a name label when the hero is close enough
+    // to be face to face. Sleepers indoors aren't drawn; their house holds them.
+    private void DrawNpcs(GameState state)
+    {
+        var region = state.CurrentMaze?.Region;
+        if (region == null || state.Npcs.Count == 0) return;
+
+        foreach (Npc npc in state.Npcs)
+        {
+            if (npc.Goal == NpcGoalType.Sleep && npc.Path.Count == 0 &&
+                region.IsBuildingInterior((int)MathF.Round(npc.X), (int)MathF.Round(npc.Y)))
+                continue;
+
+            Vector2 center = WorldToPixel(npc.X, npc.Y);
+            Color color = npc.Occupation switch
+            {
+                NpcOccupation.Smith => new Color(0.69f, 0.36f, 0.16f),
+                NpcOccupation.Alchemist => new Color(0.48f, 0.31f, 0.66f),
+                NpcOccupation.Carpenter => new Color(0.55f, 0.44f, 0.24f),
+                NpcOccupation.Priest => new Color(0.91f, 0.88f, 0.78f),
+                NpcOccupation.Trainer => new Color(0.24f, 0.55f, 0.32f),
+                NpcOccupation.Guard => new Color(0.29f, 0.38f, 0.62f),
+                NpcOccupation.Tavernkeep => new Color(0.66f, 0.23f, 0.31f),
+                NpcOccupation.Merchant => new Color(0.79f, 0.64f, 0.15f),
+                NpcOccupation.Child => new Color(0.56f, 0.77f, 0.85f),
+                NpcOccupation.Elder => new Color(0.60f, 0.58f, 0.53f),
+                _ => new Color(0.50f, 0.55f, 0.42f)
+            };
+            float scale = npc.Occupation == NpcOccupation.Child ? 0.72f : 1f;
+
+            DrawRect(new Rect2(center + new Vector2(-6f * scale, -4f * scale),
+                new Vector2(12f * scale, 14f * scale)), color);
+            DrawCircle(center + new Vector2(0f, -8.5f * scale), 5f * scale, color);
+
+            float dx = npc.X - state.Hero.X;
+            float dy = npc.Y - state.Hero.Y;
+            if (dx * dx + dy * dy <= 4f)
+            {
+                string label = $"{npc.Name} · {npc.Occupation}";
+                DrawString(ThemeDB.FallbackFont, center + new Vector2(-59f, -19f), label,
+                    HorizontalAlignment.Center, 120, 12, new Color(0f, 0f, 0f, 0.7f));
+                DrawString(ThemeDB.FallbackFont, center + new Vector2(-60f, -20f), label,
+                    HorizontalAlignment.Center, 120, 12, new Color(0.91f, 0.91f, 0.88f));
             }
         }
     }

@@ -261,6 +261,11 @@ public partial class GameHost : Node
             if (Input.IsActionJustPressed("dash"))
                 _gameState.TryDash();
 
+            // Sneak toggle (note 11 §3, owner-confirmed toggle). Manual only; the sim refuses
+            // otherwise, so no mode checks needed here.
+            if (Input.IsActionJustPressed("sneak"))
+                _gameState.ToggleSneak();
+
             AdvanceRealTime(delta);
         }
         else
@@ -1229,6 +1234,7 @@ public partial class GameHost : Node
         BindKey("move_right", Key.D);
         BindKey("move_right", Key.Right);
         BindKey("dash", Key.Space);
+        BindKey("sneak", Key.C);
         BindKey("interact", Key.E);
         BindKey("toggle_turn_mode", Key.Equal);
         BindKey("end_turn", Key.Enter);

@@ -11,7 +11,10 @@ namespace TheMazeRPG.Core.Systems;
 /// </summary>
 public sealed class MazeGenerator
 {
-    private const int MaxGenerationAttempts = 20;
+    // Tight maps (15x11, 21x15) reject most attempts — packing three walled rooms plus clean
+    // corridors into so few cells often needs several rolls. Attempts are sub-millisecond, so a
+    // deep retry budget is cheaper than shipping either a crash or a malformed floor.
+    private const int MaxGenerationAttempts = 60;
     private readonly int _seed;
 
     public MazeGenerator(int seed)
@@ -58,6 +61,7 @@ public sealed class MazeGenerator
         PlaceRooms(maze, layout, random);
         ConnectRooms(maze, layout, random);
         SealRoomBreaches(maze, layout);
+        CleanDeadDoors(maze, layout);
         AssignRoomRoles(maze, layout, random);
         AssignRoomArchetypes(layout, random);
         // After roles: which thresholds deserve a door depends on what the room is for.
@@ -239,6 +243,13 @@ public sealed class MazeGenerator
     /// single threshold tile punched through its wall ring on the side facing its neighbour, and the
     /// corridor joins those two thresholds from outside. Rooms keep their walls; entrances are one
     /// tile wide.
+    ///
+    /// The route between the two thresholds is cost-based rather than a blind elbow. The old
+    /// two-elbow carve ran corridors flush along room walls constantly, and the breach-sealing
+    /// pass then walled up the tile outside many legitimate doors — most floors shipped with at
+    /// least one door that opened onto solid stone. Weighting room-adjacent tiles out of the route
+    /// keeps corridors off the masonry in the first place, so sealing (and the artifacts it left)
+    /// becomes the rare case instead of the norm.
     /// </summary>
     private static bool CarveBestCorridor(
         Maze maze,
@@ -256,22 +267,30 @@ public sealed class MazeGenerator
         var (fromDoor, fromOutside) = fromPort.Value;
         var (toDoor, toOutside) = toPort.Value;
 
-        var horizontalFirst = BuildCorridorPath(fromOutside.x, fromOutside.y, toOutside.x, toOutside.y, true);
-        var verticalFirst = BuildCorridorPath(fromOutside.x, fromOutside.y, toOutside.x, toOutside.y, false);
+        // The jambs beside each threshold stay solid: a corridor sliding through one would leave
+        // the new door flapping at the end of a wall stub.
+        var blocked = new HashSet<(int x, int y)>();
+        foreach (var (door, outside) in new[] { (fromDoor, fromOutside), (toDoor, toOutside) })
+        {
+            bool horizontal = outside.x != door.x;
+            blocked.Add(horizontal ? (door.x, door.y - 1) : (door.x - 1, door.y));
+            blocked.Add(horizontal ? (door.x, door.y + 1) : (door.x + 1, door.y));
+        }
+        blocked.Remove(fromOutside);
+        blocked.Remove(toOutside);
 
-        // Prefer the elbow that hugs rooms least. Running flush along a room's outside wall is what
-        // produced multi-tile contacts before; scoring it down keeps corridors off the masonry.
-        int horizontalHug = CountRoomHugs(layout, horizontalFirst);
-        int verticalHug = CountRoomHugs(layout, verticalFirst);
+        var path = RouteCorridor(layout, fromOutside, toOutside, blocked);
+        if (path == null)
+            return false;
 
-        List<(int x, int y)> path;
-        if (horizontalHug != verticalHug)
-            path = horizontalHug < verticalHug ? horizontalFirst : verticalFirst;
-        else
-            path = random.Next(2) == 0 ? horizontalFirst : verticalFirst;
-
-        // A loop edge only earns its place if it opens genuinely new ground.
-        if (preferNewGround && path.Count(cell => maze.Walls[cell.x, cell.y]) < 2)
+        // A loop edge only earns its place if it opens genuinely new ground. Compact maps accept a
+        // single fresh cell — one new link between two existing corridors is still a real
+        // alternate route, and tiny floors rarely have room for more.
+        int width = layout.Tiles.GetLength(0);
+        int height = layout.Tiles.GetLength(1);
+        int freshGroundNeeded = width * height < 300 ? 1 : 2;
+        if (preferNewGround &&
+            path.Count(cell => layout.Tiles[cell.x, cell.y] == DungeonTileType.Wall) < freshGroundNeeded)
             return false;
 
         foreach (var (x, y) in path)
@@ -284,6 +303,147 @@ public sealed class MazeGenerator
         CarveThreshold(maze, layout, fromDoor);
         CarveThreshold(maze, layout, toDoor);
         return true;
+    }
+
+    // Route costs. Base movement is 10 so the modifiers below can stay integers.
+    private const int StepCost = 10;
+    private const int RingCost = 200;      // cell flush against a room's floor: a wall breach if carved
+    private const int PinchCost = 30;      // cell touching a room only diagonally: rounds its corner tight
+    private const int DoorGrazeCost = 80;  // cell in front of someone else's doorway: corridors shouldn't crowd doors
+    private const int ReuseDiscount = 6;   // existing corridor: joining the network beats parallel trenches
+    private const int TurnCost = 3;        // straight halls with clean elbows over staircase wiggles
+
+    /// <summary>
+    /// Cheapest corridor between two port cells: Dijkstra over the map interior, never through room
+    /// floor or an existing threshold, with costs that keep corridors clear of room walls (see
+    /// constants above). The state includes the incoming direction so turning costs something —
+    /// otherwise equal-cost staircase paths beat straight halls.
+    /// </summary>
+    private static List<(int x, int y)>? RouteCorridor(
+        DungeonLayout layout,
+        (int x, int y) start,
+        (int x, int y) goal,
+        HashSet<(int x, int y)> blocked)
+    {
+        int width = layout.Tiles.GetLength(0);
+        int height = layout.Tiles.GetLength(1);
+        var directions = new (int dx, int dy)[] { (0, 1), (1, 0), (0, -1), (-1, 0) };
+
+        // Jambs of doors that already exist are as untouchable as the current pair's: carving
+        // through one leaves that earlier door flapping at the end of a wall stub.
+        bool IsExistingJamb(int x, int y)
+        {
+            foreach (var (dx, dy) in new (int, int)[] { (0, 1), (1, 0), (0, -1), (-1, 0) })
+            {
+                int nx = x + dx;
+                int ny = y + dy;
+                if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+                if (layout.Tiles[nx, ny] != DungeonTileType.Doorway) continue;
+                bool doorRunsEastWest =
+                    layout.DoorwayOrientationAt(nx, ny) == DungeonPassageOrientation.EastWest;
+                // A jamb sits perpendicular to the door's passage; a cell in line with the
+                // passage is the door's own approach and stays routable.
+                if (doorRunsEastWest ? dy != 0 : dx != 0) return true;
+            }
+            return false;
+        }
+
+        bool Routable(int x, int y) =>
+            x >= 1 && y >= 1 && x <= width - 2 && y <= height - 2 &&
+            layout.Tiles[x, y] != DungeonTileType.RoomFloor &&
+            layout.Tiles[x, y] != DungeonTileType.Doorway &&
+            !blocked.Contains((x, y)) &&
+            ((x, y) == start || (x, y) == goal || !IsExistingJamb(x, y));
+
+        int EnterCost(int x, int y)
+        {
+            int cost = StepCost;
+            if (IsBesideRoomFloor(layout, x, y)) cost += RingCost;
+            else if (IsDiagonalToRoomFloor(layout, x, y)) cost += PinchCost;
+            if ((x, y) != start && (x, y) != goal && IsBesideDoorway(layout, x, y)) cost += DoorGrazeCost;
+            if (layout.Tiles[x, y] == DungeonTileType.CorridorFloor) cost -= ReuseDiscount;
+            return cost;
+        }
+
+        var best = new Dictionary<(int x, int y, int dir), int>();
+        var parents = new Dictionary<(int x, int y, int dir), (int x, int y, int dir)>();
+        var queue = new PriorityQueue<(int x, int y, int dir), int>();
+        for (int dir = 0; dir < 4; dir++)
+        {
+            best[(start.x, start.y, dir)] = 0;
+            queue.Enqueue((start.x, start.y, dir), 0);
+        }
+
+        while (queue.TryDequeue(out var state, out int cost))
+        {
+            if (cost > best.GetValueOrDefault(state, int.MaxValue)) continue;
+            if ((state.x, state.y) == goal)
+                return ReconstructRoute(parents, state, start);
+
+            for (int dir = 0; dir < 4; dir++)
+            {
+                int nx = state.x + directions[dir].dx;
+                int ny = state.y + directions[dir].dy;
+                if (!Routable(nx, ny)) continue;
+
+                int next = cost + EnterCost(nx, ny) + (dir == state.dir ? 0 : TurnCost);
+                var key = (nx, ny, dir);
+                if (next >= best.GetValueOrDefault(key, int.MaxValue)) continue;
+                best[key] = next;
+                parents[key] = state;
+                queue.Enqueue(key, next);
+            }
+        }
+
+        return null; // walled off (rooms partition the interior) — caller drops the edge
+    }
+
+    private static List<(int x, int y)> ReconstructRoute(
+        Dictionary<(int x, int y, int dir), (int x, int y, int dir)> parents,
+        (int x, int y, int dir) end,
+        (int x, int y) start)
+    {
+        var path = new List<(int x, int y)> { (end.x, end.y) };
+        var cursor = end;
+        while ((cursor.x, cursor.y) != start && parents.TryGetValue(cursor, out var parent))
+        {
+            cursor = parent;
+            if (path[^1] != (cursor.x, cursor.y))
+                path.Add((cursor.x, cursor.y));
+        }
+        path.Reverse();
+        return path;
+    }
+
+    private static bool IsBesideRoomFloor(DungeonLayout layout, int x, int y) =>
+        CountRoomFloorNeighbours(layout, x, y) > 0;
+
+    private static bool IsDiagonalToRoomFloor(DungeonLayout layout, int x, int y)
+    {
+        int width = layout.Tiles.GetLength(0);
+        int height = layout.Tiles.GetLength(1);
+        foreach (var (dx, dy) in new[] { (1, 1), (1, -1), (-1, 1), (-1, -1) })
+        {
+            int nx = x + dx;
+            int ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+            if (layout.Tiles[nx, ny] == DungeonTileType.RoomFloor) return true;
+        }
+        return false;
+    }
+
+    private static bool IsBesideDoorway(DungeonLayout layout, int x, int y)
+    {
+        int width = layout.Tiles.GetLength(0);
+        int height = layout.Tiles.GetLength(1);
+        foreach (var (dx, dy) in new[] { (0, 1), (1, 0), (0, -1), (-1, 0) })
+        {
+            int nx = x + dx;
+            int ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+            if (layout.Tiles[nx, ny] == DungeonTileType.Doorway) return true;
+        }
+        return false;
     }
 
     /// <summary>Punch a one-tile entrance through a room's wall ring and mark it as a doorway.</summary>
@@ -351,30 +511,55 @@ public sealed class MazeGenerator
         return count;
     }
 
-    /// <summary>How many cells of this path sit directly against a room's floor — corridors that
-    /// graze room walls, which is what we want to avoid.</summary>
-    private static int CountRoomHugs(DungeonLayout layout, List<(int x, int y)> path)
+    /// <summary>
+    /// A doorway is only a doorway while something is on the other side. Breach sealing (above) can
+    /// wall up the corridor a threshold opened onto, leaving a door that opens onto solid stone —
+    /// the single most common artifact of the old carve, and what made rooms read as sealed-off.
+    /// Such a threshold contributes nothing to connectivity (it leads nowhere), so it reverts to
+    /// wall. Sealing one can orphan a neighbour in turn, so the pass runs to a fixpoint.
+    /// </summary>
+    private static void CleanDeadDoors(Maze maze, DungeonLayout layout)
     {
         int width = layout.Tiles.GetLength(0);
         int height = layout.Tiles.GetLength(1);
-        int hugs = 0;
-        foreach (var (x, y) in path)
+        bool changed = true;
+        while (changed)
         {
-            foreach (var (dx, dy) in new[] { (0, 1), (1, 0), (0, -1), (-1, 0) })
+            changed = false;
+            for (int x = 1; x < width - 1; x++)
             {
-                int nx = x + dx;
-                int ny = y + dy;
-                if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-                if (layout.Tiles[nx, ny] == DungeonTileType.RoomFloor) hugs++;
+                for (int y = 1; y < height - 1; y++)
+                {
+                    if (layout.Tiles[x, y] != DungeonTileType.Doorway) continue;
+
+                    bool hasOutlet = false;
+                    foreach (var (dx, dy) in new[] { (0, 1), (1, 0), (0, -1), (-1, 0) })
+                    {
+                        var neighbour = layout.Tiles[x + dx, y + dy];
+                        if (neighbour != DungeonTileType.Wall && neighbour != DungeonTileType.RoomFloor)
+                        {
+                            hasOutlet = true;
+                            break;
+                        }
+                    }
+
+                    if (hasOutlet) continue;
+                    maze.Tiles[x, y] = TileType.Wall;
+                    layout.Tiles[x, y] = DungeonTileType.Wall;
+                    changed = true;
+                }
             }
         }
-        return hugs;
     }
 
     /// <summary>
     /// Pick where <paramref name="room"/> opens toward <paramref name="toward"/>: the threshold tile
-    /// in its wall ring, plus the corridor tile just beyond it. Sides are tried facing-first, and any
-    /// side that would breach the map boundary is skipped — the outer wall has to stay solid.
+    /// in its wall ring, plus the corridor tile just beyond it. Every position along every side is a
+    /// candidate, scored by how directly it faces the neighbour and how well it aligns with it — but
+    /// a position only qualifies if it makes a *clean* door: jambs (the two wall cells beside the
+    /// threshold) still solid, no second doorway beside it, and open ground beyond that isn't flush
+    /// against someone's room floor. An existing doorway on a suitable side is reused outright, so
+    /// rooms collect a few well-made entrances instead of a riddling of one-off holes.
     /// </summary>
     private static ((int x, int y) door, (int x, int y) outside)? ChoosePort(
         DungeonRoom room,
@@ -388,7 +573,7 @@ public sealed class MazeGenerator
         int dx = toward.CenterX - room.CenterX;
         int dy = toward.CenterY - room.CenterY;
 
-        // Face the neighbour first; fall back to the remaining sides if that one can't be used.
+        // Facing side first, its perpendicular next, the far side last.
         var sides = new List<char>();
         if (Math.Abs(dx) >= Math.Abs(dy))
         {
@@ -403,84 +588,78 @@ public sealed class MazeGenerator
         foreach (char side in new[] { 'E', 'W', 'S', 'N' })
             if (!sides.Contains(side)) sides.Add(side);
 
-        foreach (char side in sides)
+        ((int x, int y) door, (int x, int y) outside)? bestPort = null;
+        int bestScore = int.MaxValue;
+
+        for (int sideIndex = 0; sideIndex < sides.Count; sideIndex++)
         {
-            // Align the opening with the neighbour where possible, so corridors run short and
-            // straight instead of doubling back along the wall.
-            int doorX, doorY, outX, outY;
-            switch (side)
+            char side = sides[sideIndex];
+            bool horizontal = side is 'E' or 'W';
+            int ideal = horizontal
+                ? Math.Clamp(toward.CenterY, room.Y, room.Bottom)
+                : Math.Clamp(toward.CenterX, room.X, room.Right);
+            int from = horizontal ? room.Y : room.X;
+            int to = horizontal ? room.Bottom : room.Right;
+
+            for (int along = from; along <= to; along++)
             {
-                case 'E':
-                    doorX = room.Right + 1; outX = doorX + 1;
-                    doorY = outY = Math.Clamp(toward.CenterY, room.Y, room.Bottom);
-                    break;
-                case 'W':
-                    doorX = room.X - 1; outX = doorX - 1;
-                    doorY = outY = Math.Clamp(toward.CenterY, room.Y, room.Bottom);
-                    break;
-                case 'S':
-                    doorY = room.Bottom + 1; outY = doorY + 1;
-                    doorX = outX = Math.Clamp(toward.CenterX, room.X, room.Right);
-                    break;
-                default:
-                    doorY = room.Y - 1; outY = doorY - 1;
-                    doorX = outX = Math.Clamp(toward.CenterX, room.X, room.Right);
-                    break;
+                (int x, int y) door = side switch
+                {
+                    'E' => (room.Right + 1, along),
+                    'W' => (room.X - 1, along),
+                    'S' => (along, room.Bottom + 1),
+                    _ => (along, room.Y - 1)
+                };
+                (int x, int y) outside = side switch
+                {
+                    'E' => (door.x + 1, door.y),
+                    'W' => (door.x - 1, door.y),
+                    'S' => (door.x, door.y + 1),
+                    _ => (door.x, door.y - 1)
+                };
+
+                // Both the threshold and the tile beyond it must sit inside the boundary wall.
+                if (door.x < 1 || door.y < 1 || door.x >= width - 1 || door.y >= height - 1) continue;
+                if (outside.x < 1 || outside.y < 1 || outside.x >= width - 1 || outside.y >= height - 1) continue;
+
+                bool reused = layout.Tiles[door.x, door.y] == DungeonTileType.Doorway;
+                if (reused)
+                {
+                    // A door this room already has, still leading somewhere: route from it again.
+                    if (layout.Tiles[outside.x, outside.y] == DungeonTileType.Wall) continue;
+                    if (layout.Tiles[outside.x, outside.y] == DungeonTileType.RoomFloor) continue;
+                }
+                else
+                {
+                    // Only virgin wall becomes a new threshold. A ring cell some corridor already
+                    // runs through is a breach, not a door site.
+                    if (layout.Tiles[door.x, door.y] != DungeonTileType.Wall) continue;
+                    // One room only — a cell shared between two rooms' rings would be a hole
+                    // joining them into one space.
+                    if (CountRoomFloorNeighbours(layout, door.x, door.y) != 1) continue;
+                    // Jambs: the wall must continue on both sides of the threshold, or the door
+                    // floats at the end of a stub and reads as a broken corner.
+                    var jambs = horizontal
+                        ? new[] { (door.x, door.y - 1), (door.x, door.y + 1) }
+                        : new[] { (door.x - 1, door.y), (door.x + 1, door.y) };
+                    if (jambs.Any(j => layout.Tiles[j.Item1, j.Item2] != DungeonTileType.Wall)) continue;
+                    // Never two doorways side by side — that's a double-wide hole.
+                    if (IsBesideDoorway(layout, door.x, door.y)) continue;
+                    // The landing beyond must be usable corridor ground: not room floor, not flush
+                    // against anyone's room floor, not crowding another door.
+                    if (layout.Tiles[outside.x, outside.y] is DungeonTileType.RoomFloor or DungeonTileType.Doorway) continue;
+                    if (CountRoomFloorNeighbours(layout, outside.x, outside.y) != 0) continue;
+                    if (IsBesideDoorway(layout, outside.x, outside.y)) continue;
+                }
+
+                int score = sideIndex * 4 + Math.Abs(along - ideal) + (reused ? -8 : 0) + random.Next(2);
+                if (score >= bestScore) continue;
+                bestScore = score;
+                bestPort = (door, outside);
             }
-
-            // Both the threshold and the tile beyond it must sit inside the boundary wall.
-            if (doorX < 1 || doorY < 1 || doorX >= width - 1 || doorY >= height - 1) continue;
-            if (outX < 1 || outY < 1 || outX >= width - 1 || outY >= height - 1) continue;
-            // Never open into another room's floor — that would merge two rooms into one space.
-            if (layout.Tiles[doorX, doorY] == DungeonTileType.RoomFloor) continue;
-            if (layout.Tiles[outX, outY] == DungeonTileType.RoomFloor) continue;
-            // Rooms may sit a single tile apart, in which case the wall cell between them touches
-            // both. Opening it would be a shared hole rather than a doorway into one room.
-            if (CountRoomFloorNeighbours(layout, doorX, doorY) != 1) continue;
-
-            return ((doorX, doorY), (outX, outY));
         }
 
-        _ = random; // side choice is deterministic given the geometry; kept for signature symmetry
-        return null;
-    }
-
-    private static List<(int x, int y)> BuildCorridorPath(
-        int startX,
-        int startY,
-        int endX,
-        int endY,
-        bool horizontalFirst)
-    {
-        var path = new List<(int x, int y)>();
-        if (horizontalFirst)
-        {
-            AddLine(path, startX, startY, endX, startY);
-            AddLine(path, endX, startY, endX, endY);
-        }
-        else
-        {
-            AddLine(path, startX, startY, startX, endY);
-            AddLine(path, startX, endY, endX, endY);
-        }
-
-        return path.Distinct().ToList();
-    }
-
-    private static void AddLine(List<(int x, int y)> path, int startX, int startY, int endX, int endY)
-    {
-        int dx = Math.Sign(endX - startX);
-        int dy = Math.Sign(endY - startY);
-        int x = startX;
-        int y = startY;
-        path.Add((x, y));
-
-        while (x != endX || y != endY)
-        {
-            x += dx;
-            y += dy;
-            path.Add((x, y));
-        }
+        return bestPort;
     }
 
     /// <summary>Share of ordinary thresholds that get a door hung in them. Most openings in a ruin

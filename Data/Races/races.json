@@ -46,7 +46,8 @@
     "affinities": {
       "Earth": 10,
       "Fire": 5
-    }
+    },
+    "size": 0.95
   },
   "Halfling": {
     "description": "Small, nimble, and charming, but lacking raw physical power.",
@@ -59,7 +60,8 @@
       "Intelligence": 1.0,
       "Wisdom": 1.0,
       "Charisma": 1.2
-    }
+    },
+    "size": 0.8
   },
   "Goblin": {
     "darkvision": true,
@@ -73,7 +75,8 @@
       "Intelligence": 0.7,
       "Wisdom": 0.8,
       "Charisma": 0.4
-    }
+    },
+    "size": 0.85
   },
   "Kobold": {
     "darkvision": true,
@@ -87,7 +90,8 @@
       "Intelligence": 1.1,
       "Wisdom": 0.9,
       "Charisma": 0.8
-    }
+    },
+    "size": 0.8
   },
   "Dragonborn": {
     "description": "Dragon-blooded warriors with natural might and presence.",
@@ -103,7 +107,8 @@
     },
     "affinities": {
       "Fire": 12
-    }
+    },
+    "size": 1.2
   },
   "Orc": {
     "darkvision": true,
@@ -117,7 +122,8 @@
       "Intelligence": 0.7,
       "Wisdom": 0.8,
       "Charisma": 0.6
-    }
+    },
+    "size": 1.15
   },
   "Tiefling": {
     "darkvision": true,

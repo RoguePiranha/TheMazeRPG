@@ -13,6 +13,11 @@ public class MovementSystem
 {
     private readonly PerlinNoise _noise;
     private readonly Random _random;
+
+    /// <summary>Fired when the HERO shoulders a door open (never for enemy movers): doors are
+    /// noisy, and GameState turns this into a sound event for the awareness pass (note 11 §1).
+    /// A callback because this system deliberately knows nothing about GameState.</summary>
+    public Action<int, int>? OnHeroOpenedDoor { get; set; }
     
     public MovementSystem(int seed)
     {
@@ -233,6 +238,7 @@ public class MovementSystem
                 // Bump-to-open: shoulder a closed door on the route open and hold this tick.
                 if (maze.TryOpenDoor(target.x, target.y))
                 {
+                    OnHeroOpenedDoor?.Invoke(target.x, target.y);
                     maze.Explored[hero.GridX, hero.GridY] = true;
                     return;
                 }
@@ -323,6 +329,9 @@ public class MovementSystem
         // Normal control speed scales with Agility; a dash passes a fixed higher speed override.
         float baseSpeed = 0.09f; // a touch snappier than auto-explore for responsive control
         float speed = speedOverride ?? baseSpeed * (1.0f + 0.05f * (hero.EffectiveAgility - 4));
+        // Sneaking is slow on purpose (note 11 §3): quiet is a trade, not a free upgrade. A dash
+        // override never coexists with sneaking — the dash broke the crouch before it got here.
+        if (speedOverride == null && hero.IsSneaking) speed *= AwarenessService.SneakSpeedMultiplier;
         float dx = dirX * speed;
         float dy = dirY * speed;
 
@@ -357,6 +366,7 @@ public class MovementSystem
             // it open on arrival and hold this tick — the same bump-to-open every mover gets.
             if (maze.TryOpenDoor(nextStep.x, nextStep.y))
             {
+                OnHeroOpenedDoor?.Invoke(nextStep.x, nextStep.y);
                 maze.Explored[hero.GridX, hero.GridY] = true;
                 return;
             }
@@ -509,6 +519,7 @@ public class MovementSystem
             // Bump-to-open: a closed door on the route is opened in place of this tick's step.
             if (maze.TryOpenDoor(target.x, target.y))
             {
+                OnHeroOpenedDoor?.Invoke(target.x, target.y);
                 maze.Explored[hero.GridX, hero.GridY] = true;
                 return;
             }
@@ -682,7 +693,7 @@ public class MovementSystem
     private bool TryStep(Maze maze, int x, int y)
     {
         if (IsWalkable(maze, x, y)) return true;
-        maze.TryOpenDoor(x, y);
+        if (maze.TryOpenDoor(x, y)) OnHeroOpenedDoor?.Invoke(x, y);
         return false;
     }
     
