@@ -671,7 +671,6 @@ public partial class GameUi : Control
                 MazeFeatureType.Chest => nearby.IsOpened ? "LOOT CHEST" : "CHEST",
                 MazeFeatureType.GuardianDoor => $"CHALLENGE FLOOR {state.CurrentFloor + 1} GUARDIAN",
                 MazeFeatureType.Shrine => "RETURN TO TOWN",
-                MazeFeatureType.MineEntrance => "MINE",
                 MazeFeatureType.Smithy => "SMITHY",
                 MazeFeatureType.Stall => "MARKET STALL",
                 MazeFeatureType.DungeonEntrance => "ENTER THE DUNGEON",
@@ -681,8 +680,8 @@ public partial class GameUi : Control
         }
         else if (state.NearbyMinableRock != null)
         {
-            // The workable rock face: E digs, and simply striking it does too.
-            _interactionLabel.Text = "PRESS E   MINE THE ROCK FACE (OR HIT IT)";
+            // Hint only — mining is swinging the held pickaxe at the face, not a button.
+            _interactionLabel.Text = "SWING YOUR PICKAXE AT THE ROCK FACE TO MINE";
         }
         RefreshHotbar(state);
     }
@@ -1858,21 +1857,6 @@ public partial class GameUi : Control
         _consolePanel.Visible = false;
         _consoleInput.ReleaseFocus();
         ConsoleToggled?.Invoke(false);
-    }
-
-    /// <summary>Mine entrance menu: start a mining activity (the modal closes so the sim runs).</summary>
-    public void ShowMineActions(GameState state)
-    {
-        var body = ModalBody("MINE", Gold, new Vector2(360, 0));
-        int ore = state.Hero.Resources.GetValueOrDefault("iron-ore", 0);
-        body.AddChild(LabelOf($"IRON ORE CARRIED: {ore}", 14, Text, HorizontalAlignment.Center));
-        var mine = CommandButton("MINE IRON ORE", Blue, 280);
-        mine.Pressed += () => { CloseModal(); state.MineOre(); };
-        body.AddChild(mine);
-        var leave = CommandButton("LEAVE", Muted, 280);
-        leave.Pressed += () => CloseModal();
-        body.AddChild(leave);
-        ShowModal(body, new Vector2(430, 300));
     }
 
     /// <summary>Smithy menu: one entry per crafting recipe, disabled with its needs when inputs

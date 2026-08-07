@@ -90,16 +90,16 @@ public partial class GameView : UserControl
         overlay.IsVisible = show;
         if (show)
         {
+            // The rock line is a hint, not a button: mining is swinging the held pickaxe.
             text.Text = near != null
                 ? $"Press [E] — {StructureName(near.Type)}"
-                : "Press [E] — Mine the rock face (or just hit it)";
+                : "Swing your pickaxe at the rock face to mine";
         }
     }
 
     /// <summary>Friendly label for a town structure.</summary>
     private string StructureName(MazeFeatureType t) => t switch
     {
-        MazeFeatureType.MineEntrance => "Mine",
         MazeFeatureType.Smithy => "Smithy",
         MazeFeatureType.Stall => "Stall",
         MazeFeatureType.DungeonEntrance => "Dungeon Entrance",
@@ -176,13 +176,6 @@ public partial class GameView : UserControl
             // Overworld: use the town structure the hero is standing next to.
             e.Handled = true;
             OpenStructureMenu(structure);
-        }
-        else if (e.Key == Key.E && !AnyOverlayOpen && _viewModel?.GameState.NearbyMinableRock is { } rock)
-        {
-            // No structure in range but a workable rock face is: start digging straight away —
-            // no confirmation menu, per the ruling that mining is destruction, not a button.
-            e.Handled = true;
-            _viewModel.GameState.StartMining(rock.x, rock.y);
         }
         else if (e.Key == Key.Space && _viewModel != null && !AnyOverlayOpen)
         {
@@ -473,9 +466,6 @@ public partial class GameView : UserControl
 
         switch (feature.Type)
         {
-            case MazeFeatureType.MineEntrance:
-                AddMenuItem(panel, "Mine Iron Ore (~5s)", () => { gs.MineOre(); CloseContextMenu(); });
-                break;
             case MazeFeatureType.Smithy:
                 foreach (var recipe in RecipeDataService.Instance.Recipes.Values)
                 {

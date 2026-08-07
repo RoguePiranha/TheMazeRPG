@@ -31,11 +31,11 @@ public sealed class MiningYield
 /// </summary>
 public static class MiningService
 {
-    /// <summary>Base work, in ticks, to break one tile of each kind. Masonry is slower than natural
-    /// rock: it was cut and fitted to stay put.</summary>
-    private const int StoneTicks = 90;
-    private const int VeinTicks = 120;
-    private const int MasonryTicks = 200;
+    /// <summary>Rock toughness in hit points. Masonry is tougher than natural rock: it was cut
+    /// and fitted to stay put.</summary>
+    private const int StoneHp = 30;
+    private const int VeinHp = 42;
+    private const int MasonryHp = 70;
 
     /// <summary>Chance a plain stone tile happens to hold a little ore anyway.</summary>
     private const double StrayOreChance = 0.08;
@@ -53,22 +53,22 @@ public static class MiningService
         maze.InBounds(x, y) && CanMine(maze.Tiles[x, y]);
 
     /// <summary>
-    /// How long breaking this tile takes. Strength does the work and the mining skill supplies the
-    /// technique, so both shorten it; nothing makes it instant.
+    /// The block's hit points (owner ruling 2026-08-06, second pass: no captive timer — rock is
+    /// whittled down swing by swing, like killing an enemy; the player is free between swings).
     /// </summary>
-    public static int WorkTicks(TileType tile, float effectiveStrength, int miningSkillLevel)
+    public static int RockHp(TileType tile) => tile switch
     {
-        int baseTicks = tile switch
-        {
-            TileType.OreVein => VeinTicks,
-            TileType.Wall => MasonryTicks,
-            _ => StoneTicks
-        };
+        TileType.OreVein => VeinHp,
+        TileType.Wall => MasonryHp,
+        _ => StoneHp
+    };
 
-        float strengthFactor = 1f / (1f + effectiveStrength * 0.05f);
-        float skillFactor = 1f / (1f + miningSkillLevel * 0.08f);
-        return Math.Max(12, (int)MathF.Round(baseTicks * strengthFactor * skillFactor));
-    }
+    /// <summary>
+    /// Damage one pickaxe swing deals to rock. Strength does the work and the mining skill
+    /// supplies the technique, so both speed it up; nothing makes it one swing.
+    /// </summary>
+    public static int SwingDamage(float effectiveStrength, int miningSkillLevel) =>
+        Math.Max(1, (int)MathF.Round(8f + effectiveStrength * 0.8f + miningSkillLevel * 1.5f));
 
     /// <summary>
     /// What the broken tile leaves behind. Plain rock is mostly rubble; a vein pays in ore and

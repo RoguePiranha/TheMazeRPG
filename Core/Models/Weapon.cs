@@ -12,7 +12,11 @@ public enum WeaponType
     Axe,
     Mace,
     Spear,
-    Staff
+    Staff,
+    // Appended (never reordered): WeaponTraining serializes these values into saves.
+    /// <summary>The miner's tool — the only thing that actually bites into rock (owner ruling
+    /// 2026-08-06: mining is swinging a pickaxe at the block, and nothing else mines).</summary>
+    Pickaxe
 }
 
 /// <summary>

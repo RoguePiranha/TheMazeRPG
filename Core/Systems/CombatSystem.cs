@@ -305,7 +305,8 @@ public class CombatSystem
         float targetX, float targetY, int damage, bool isStatDamage, List<Projectile> projectiles,
         bool spawnAtTarget = false)
     {
-        var visual = AttackVisuals.For(attack);
+        // Hero-aware: the generic basic attack renders as the weapon actually in hand.
+        var visual = AttackVisuals.ForHero(hero, attack);
         var element = MagicElements.For(attack);
         WeaponUseProfile weaponUse = WeaponProficiencyService.Evaluate(hero, attack);
 

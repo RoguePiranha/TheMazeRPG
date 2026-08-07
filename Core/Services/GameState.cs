@@ -77,9 +77,9 @@ public class GameState
     /// <summary>The nearby chest or town structure available through the Press-E interaction.</summary>
     public MazeFeature? NearbyInteractable { get; private set; }
 
-    /// <summary>The adjacent workable rock face offered by the Press-E prompt when no feature
-    /// interactable is in range (see UpdateNearbyInteractable). Swinging at the face mines it
-    /// too — this is the discoverable path, not the only one.</summary>
+    /// <summary>The adjacent workable rock face, surfaced as a hint while a pickaxe is in hand
+    /// (see UpdateNearbyInteractable). Swinging the pickaxe at the face is the mining action —
+    /// there is no button-press mining (owner ruling 2026-08-06, second pass).</summary>
     public (int x, int y)? NearbyMinableRock { get; private set; }
 
     // Player movement intent for Manual mode, set by the UI from held keys (each component in
@@ -397,13 +397,14 @@ public class GameState
 
     public bool TryTacticalAttackAt(int targetX, int targetY)
     {
-        // A turn-based swing at an adjacent rock face spends the action working the stone;
-        // the dig itself advances through the world-upkeep ticks between turns.
-        if (CanTakeTacticalPlayerAction() && TacticalTurn.ActionAvailable &&
+        // A turn-based pickaxe swing at an adjacent rock face spends the action chipping the
+        // block — same whittle-it-down model as real time, one swing per action.
+        if (CanTakeTacticalPlayerAction() && TacticalTurn.ActionAvailable && HeroHoldsPickaxe &&
             Math.Max(Math.Abs(targetX - Hero.GridX), Math.Abs(targetY - Hero.GridY)) == 1 &&
-            MiningService.CanMine(CurrentMaze, targetX, targetY) &&
-            StartMining(targetX, targetY))
+            MiningService.CanMine(CurrentMaze, targetX, targetY))
         {
+            ChipRock(targetX, targetY);
+            SpawnPickaxeSwingVisual(targetX - Hero.GridX, targetY - Hero.GridY);
             TacticalTurn.ActionAvailable = false;
             EndTacticalTurnIfSpent();
             return true;
@@ -1166,35 +1167,56 @@ public class GameState
     public void FireManualAttack(float dirX, float dirY)
     {
         if (ControlMode != ControlMode.Manual || IsHeroDead || !IsRunning) return;
-
-        // Swinging at a rock face IS mining (owner ruling 2026-08-06: you destroy the stone,
-        // you don't push a button — and hitting it is how you destroy it). When the strike
-        // points at an adjacent minable tile, work the stone instead of bouncing a projectile
-        // off it. Checked before the cooldown so digging can begin even mid-swing-recovery.
-        if (TryMineTowards(dirX, dirY)) return;
-
         if (Hero.AttackCooldown > 0) return;
+
+        // A pickaxe swing at an adjacent rock face chips the block (owner ruling 2026-08-06,
+        // second pass: whittle it down like an enemy — no captive timer, and only a pickaxe
+        // mines). Without a pickaxe in hand this falls through and the swing below simply hits
+        // the wall, because that's all it is.
+        if (TryPickaxeChip(dirX, dirY)) return;
 
         if (!CanAffordCurrentAttack()) return;
 
         _combatSystem.PerformHeroDirectionalAttack(Hero, dirX, dirY, Projectiles);
     }
 
-    /// <summary>Start mining the adjacent cell the aim points at, if it's workable rock — the
-    /// tile one step along the aim from the hero, exactly what a melee swing in that direction
-    /// would strike. Returns false (fire the attack instead) for anything unminable.</summary>
-    private bool TryMineTowards(float dirX, float dirY)
+    /// <summary>One pickaxe swing at the adjacent cell the aim points at, when it's workable
+    /// rock and a pickaxe is in hand. Chips the block, plays the swing, and applies the same
+    /// cadence a combat swing would — each strike is a free action, never a lock-in.</summary>
+    private bool TryPickaxeChip(float dirX, float dirY)
     {
-        // In combat a swing is a swing — never silently trade an attack for a multi-second dig
-        // because the aim grazed a wall (mining is also loud, which is the last thing a fight
-        // needs by accident).
-        if (CurrentActivity != null || Hero.InCombat) return false;
+        // In combat a swing is a swing — never silently trade an attack for chipping stone
+        // because the aim grazed a wall (mining is also loud, the last thing a fight needs).
+        if (CurrentActivity != null || Hero.InCombat || !HeroHoldsPickaxe) return false;
         float len = MathF.Sqrt(dirX * dirX + dirY * dirY);
         if (len < 0.001f) return false;
         int targetX = (int)MathF.Round(Hero.X + dirX / len);
         int targetY = (int)MathF.Round(Hero.Y + dirY / len);
         if (!MiningService.CanMine(CurrentMaze, targetX, targetY)) return false;
-        return StartMining(targetX, targetY);
+        if (Math.Max(Math.Abs(targetX - Hero.GridX), Math.Abs(targetY - Hero.GridY)) > 1) return false;
+
+        ChipRock(targetX, targetY);
+        SpawnPickaxeSwingVisual(dirX / len, dirY / len);
+        Hero.AttackCooldown = Math.Max(8,
+            CombinableCatalog.Pickaxe().Cooldown - (int)(Hero.EffectiveDexterity * 0.7f));
+        return true;
+    }
+
+    /// <summary>The swing itself, as a cosmetic neutral projectile: collisions ignore team
+    /// Neutral, so it's pure animation — the pickaxe arc playing on the hero toward the rock.</summary>
+    private void SpawnPickaxeSwingVisual(float dirX, float dirY)
+    {
+        Projectiles.Add(new Projectile
+        {
+            StartX = Hero.X, StartY = Hero.Y,
+            CurrentX = Hero.X, CurrentY = Hero.Y,
+            TargetX = Hero.X + dirX, TargetY = Hero.Y + dirY,
+            Speed = 0f,
+            Team = ProjectileTeam.Neutral,
+            Visual = VisualStyle.PickaxeSwing,
+            Type = AttackAnimation.Melee,
+            MaxLifeTime = 12
+        });
     }
 
     /// <summary>Select the attack assigned to a hotbar slot (0-based). Empty slots no-op, so a
@@ -1570,6 +1592,9 @@ public class GameState
         // Every adventurer starts with a torch in their pack — at night, bare eyes without
         // darkvision see barely past arm's reach (owner ruling 2026-08-05: night means night).
         Hero.Inventory.Add(CombinableCatalog.Torch());
+        // And a pickaxe — rock only yields to one (owner ruling 2026-08-06), so mining is a
+        // choice of what to hold, not a locked-out feature.
+        Hero.Inventory.Add(CombinableCatalog.Pickaxe());
 
         StartNewFloor();
 
@@ -2901,16 +2926,10 @@ public class GameState
             if (d2 <= nearestSq) { nearestSq = d2; nearest = f; }
         }
         NearbyInteractable = nearest;
-        // A workable rock face is the fallback Press-E offer — features take precedence so the
-        // prompt never flickers between two meanings while standing at the adit mouth.
-        NearbyMinableRock = nearest == null ? MinableRockNearby() : null;
-    }
-
-    /// <summary>Mine ore at the Mine (starts a MineOreActivity). No-op if already busy.</summary>
-    public void MineOre()
-    {
-        if (CurrentActivity != null) return;
-        StartActivity(new MineOreActivity("iron-ore", 3, GameSettings.Current.SecondsToTicks(5f)));
+        // A workable rock face is surfaced as a HINT only while a pickaxe is actually in hand
+        // (swinging is the action — there is no Press-E mining). Features take precedence so
+        // the prompt never flickers between two meanings.
+        NearbyMinableRock = nearest == null && HeroHoldsPickaxe ? MinableRockNearby() : null;
     }
 
     /// <summary>Whether the hero currently holds every input a recipe needs.</summary>
@@ -3869,23 +3888,48 @@ public class GameState
         return best;
     }
 
+    // Accumulated swing damage per rock tile, per maze (transient: partial damage doesn't
+    // persist — only a broken tile is world truth, via RecordTerrainChange).
+    private Maze? _rockDamageMaze;
+    private readonly Dictionary<(int x, int y), int> _rockDamage = new();
+
+    /// <summary>Is a pickaxe in either hand? Rock only yields to one (owner ruling 2026-08-06):
+    /// swinging anything else at a wall is just hitting a wall.</summary>
+    public bool HeroHoldsPickaxe =>
+        (Hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) as Weapon)?.WeaponType == WeaponType.Pickaxe ||
+        (Hero.Equipment.GetValueOrDefault(EquipmentSlot.OffHand) as Weapon)?.WeaponType == WeaponType.Pickaxe;
+
     /// <summary>
-    /// Begin digging out an adjacent tile of rock. Fails quietly if the hero is already busy or
-    /// there's nothing workable there — bedrock included, which never yields (the map's rim and the
-    /// dungeon's threshold).
+    /// One pickaxe swing against a rock tile: chip it, and break it when its hit points run out
+    /// (owner ruling 2026-08-06, second pass — the block is whittled down like an enemy; there
+    /// is no captive mining timer, and the player is free to walk away between swings).
+    /// Returns true when this swing broke the block.
     /// </summary>
-    public bool StartMining(int x, int y)
+    public bool ChipRock(int x, int y)
     {
-        if (CurrentActivity != null || IsHeroDead) return false;
         if (!MiningService.CanMine(CurrentMaze, x, y)) return false;
 
-        int distance = Math.Max(Math.Abs(x - Hero.GridX), Math.Abs(y - Hero.GridY));
-        if (distance > 1) return false;
+        if (!ReferenceEquals(_rockDamageMaze, CurrentMaze))
+        {
+            _rockDamageMaze = CurrentMaze;
+            _rockDamage.Clear();
+        }
 
         var tile = CurrentMaze.Tiles[x, y];
         int miningLevel = Hero.Progression.Skills.TryGetValue("mining", out var skill) ? skill.Level : 0;
-        int ticks = MiningService.WorkTicks(tile, Hero.EffectiveStrength, miningLevel);
-        StartActivity(new MineRockActivity(x, y, tile, ticks));
+        int damage = MiningService.SwingDamage(Hero.EffectiveStrength, miningLevel);
+        int dealt = _rockDamage.GetValueOrDefault((x, y)) + damage;
+
+        if (dealt < MiningService.RockHp(tile))
+        {
+            _rockDamage[(x, y)] = dealt;
+            AddFloatingText(damage.ToString(), x, y - 0.2f, FloatingTextKind.EnemyDamage);
+            RaiseMiningNoise(x, y, tile);
+            return false;
+        }
+
+        _rockDamage.Remove((x, y));
+        CompleteRockMining(x, y, tile); // raises the (louder) breaking noise itself
         return true;
     }
 
@@ -4013,9 +4057,11 @@ public class GameState
 
     /// <summary>The town structures the hero can interact with via Press-E (proximity-detected in
     /// UpdateNearbyInteractable).</summary>
+    // The MineEntrance is deliberately absent: the adit is a landmark, not a button — mining is
+    // swinging a pickaxe at its rock face (owner ruling 2026-08-06, second pass).
     private static bool IsOverworldInteractable(MazeFeatureType t) => t switch
     {
-        MazeFeatureType.MineEntrance or MazeFeatureType.Smithy or
+        MazeFeatureType.Smithy or
         MazeFeatureType.Stall or MazeFeatureType.DungeonEntrance => true,
         _ => false
     };
@@ -4413,8 +4459,9 @@ public class GameState
 
             case "mine":
             {
-                // mine — dig out the adjacent rock, wherever you're standing. The player-facing
-                // action is Press-E on a rock face; this is the same call for testing.
+                // mine — break the nearest adjacent rock instantly (debug: swings the whole
+                // block down in one command, no pickaxe required). The player-facing action is
+                // swinging a held pickaxe at the face.
                 var rock = MinableRockNearby();
                 if (rock == null)
                 {
@@ -4422,9 +4469,9 @@ public class GameState
                     break;
                 }
                 var kind = CurrentMaze.Tiles[rock.Value.x, rock.Value.y];
-                result = StartMining(rock.Value.x, rock.Value.y)
-                    ? $"Working the {kind} at ({rock.Value.x},{rock.Value.y})"
-                    : "Can't mine right now";
+                int swings = 1;
+                while (!ChipRock(rock.Value.x, rock.Value.y) && swings < 100) swings++;
+                result = $"Broke the {kind} at ({rock.Value.x},{rock.Value.y}) in {swings} swing(s)";
                 break;
             }
 
@@ -4494,6 +4541,16 @@ public class GameState
                 }
                 else
                     result = $"Town size set to {_townWidth}x{_townHeight}; takes effect on arrival";
+                break;
+            }
+
+            case "addres":
+            {
+                // addres <material-id> [amount] — grant a raw resource (debug).
+                string materialId = Arg(1);
+                int amount = Math.Max(1, IntArg(2, 1));
+                AddHeroResource(materialId, amount);
+                result = $"{materialId} +{amount} (now {Hero.Resources.GetValueOrDefault(materialId, 0)})";
                 break;
             }
 
@@ -4770,10 +4827,12 @@ public class GameState
             Hero.Loadout = new List<Combinable>();
             Hero.Equipment = AttackFactory.GetStartingEquipment(_className);
         }
-        // Same starting torch the constructor grants — without it a restarted non-darkvision
-        // character is stuck at bare-eyes light radius with no way to get the guaranteed torch.
+        // Same starting torch and pickaxe the constructor grants — without them a restarted
+        // character is stuck at bare-eyes light radius and unable to mine at all.
         if (!Hero.Inventory.Concat(Hero.Loadout).Any(c => c.Id == "torch"))
             Hero.Inventory.Add(CombinableCatalog.Torch());
+        if (!Hero.Inventory.Concat(Hero.Loadout).Any(c => c.Id == "pickaxe"))
+            Hero.Inventory.Add(CombinableCatalog.Pickaxe());
         ProgressionService.Instance.Normalize(Hero);
         
         // Update resource pools based on attributes

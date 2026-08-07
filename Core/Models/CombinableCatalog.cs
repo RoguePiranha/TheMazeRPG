@@ -151,6 +151,17 @@ public static class CombinableCatalog
         Description = "A burning brand. Carried, it pushes the night back a few paces."
     };
 
+    /// <summary>Every adventurer starts with one, like the torch: rock only yields to a pickaxe
+    /// (owner ruling 2026-08-06), so without it the mountain is scenery.</summary>
+    public static Weapon Pickaxe() => new()
+    {
+        Id = "pickaxe", Name = "Pickaxe", Rarity = Rarity.Common,
+        WeaponType = WeaponType.Pickaxe,
+        BaseDamage = 5, Range = 1.1f, Cooldown = 24,
+        Animation = AttackAnimation.Heavy, CritChance = 0.04f,
+        Description = "A miner's pick. Swing it at rock to chip the block down; it fights, badly."
+    };
+
     public static Ability NightSight() => new()
     {
         Id = "night-sight", Name = "Night Sight", Rarity = Rarity.Rare,

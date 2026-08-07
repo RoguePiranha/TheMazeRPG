@@ -265,39 +265,55 @@ sealed class Program
         Expect(maze.Tiles[rock!.Value.x, rock.Value.y].IsNaturalRock(),
             $"and it is natural rock ({maze.Tiles[rock.Value.x, rock.Value.y]})");
 
-        // --- Digging a tile out ---
-        Console.WriteLine("\n-- Digging --");
+        // --- Digging: swing by swing, pickaxe in hand (owner ruling 2026-08-06, second pass:
+        // whittle the block down like an enemy — no captive timer, and only a pickaxe mines) ---
+        Console.WriteLine("\n-- Digging, swing by swing --");
+        game.SetControlMode(ControlMode.Manual);
+        var pick = game.Hero.Inventory.First(c => c.Id == "pickaxe");
+        Expect(game.EquipFromInventory(pick), "the starting pickaxe equips into a hand");
         int oreBefore = game.Hero.Resources.GetValueOrDefault("iron-ore");
         int stoneBefore = game.Hero.Resources.GetValueOrDefault("stone");
         var target = rock.Value;
         var targetTile = maze.Tiles[target.x, target.y];
 
-        Expect(game.StartMining(target.x, target.y), "mining starts on adjacent rock");
-        Expect(!maze.IsWalkable(target.x, target.y), "the rock still blocks while being worked");
-        for (int tick = 0; tick < 2000 && game.CurrentActivity != null; tick++) game.Tick();
+        int swings = 0;
+        while (maze.Tiles[target.x, target.y] != TileType.Floor && swings < 20)
+        {
+            game.FireManualAttack(target.x - game.Hero.X, target.y - game.Hero.Y);
+            swings++;
+            for (int tick = 0; tick < 60 && game.Hero.AttackCooldown > 0; tick++) game.Tick();
+        }
 
+        Expect(game.CurrentActivity == null,
+            "no captive mining timer — every swing is a free action");
         Expect(maze.Tiles[target.x, target.y] == TileType.Floor,
             $"the rock is gone, leaving open ground ({maze.Tiles[target.x, target.y]})");
+        Expect(swings is >= 2 and <= 12, $"whittled down over real swings ({swings}), never one tap");
         Expect(maze.IsWalkable(target.x, target.y), "and you can walk into the space it left");
         int gained = game.Hero.Resources.GetValueOrDefault("stone") - stoneBefore
                      + game.Hero.Resources.GetValueOrDefault("iron-ore") - oreBefore;
         Expect(gained > 0, $"breaking it yielded materials ({gained})");
-        Console.WriteLine($"     dug a {targetTile}; stone {stoneBefore}->{game.Hero.Resources.GetValueOrDefault("stone")}, " +
+        Console.WriteLine($"     dug a {targetTile} in {swings} swings; stone {stoneBefore}->{game.Hero.Resources.GetValueOrDefault("stone")}, " +
                           $"iron-ore {oreBefore}->{game.Hero.Resources.GetValueOrDefault("iron-ore")}");
+        game.UpdateNearbyInteractable();
+        Expect(game.NearbyMinableRock != null,
+            "with the pickaxe in hand, the prompt hints at the next workable face");
 
-        // --- Hitting the rock IS mining (owner request 2026-08-06: swing at it, no menus) ---
-        Console.WriteLine("\n-- Swing to dig --");
-        game.SetControlMode(ControlMode.Manual);
+        // --- A sword is not a pickaxe: without one, hitting a wall is just hitting a wall ---
+        Console.WriteLine("\n-- A sword is not a pickaxe --");
+        Expect(game.UnequipToInventory(pick), "the pickaxe unequips");
         var face = game.MinableRockNearby();
         Expect(face != null, "another workable face is within reach");
-        game.FireManualAttack(face!.Value.x - game.Hero.X, face.Value.y - game.Hero.Y);
-        Expect(game.CurrentActivity != null, "a swing aimed at the face starts the dig — no menu");
-        for (int tick = 0; tick < 2000 && game.CurrentActivity != null; tick++) game.Tick();
-        Expect(maze.Tiles[face.Value.x, face.Value.y] == TileType.Floor,
-            $"and the struck tile is dug out ({maze.Tiles[face.Value.x, face.Value.y]})");
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            game.FireManualAttack(face!.Value.x - game.Hero.X, face.Value.y - game.Hero.Y);
+            for (int tick = 0; tick < 60 && game.Hero.AttackCooldown > 0; tick++) game.Tick();
+        }
+        Expect(maze.Tiles[face!.Value.x, face.Value.y] != TileType.Floor,
+            "bare-hand/sword swings never mine the block");
         game.UpdateNearbyInteractable();
-        Expect(game.NearbyMinableRock != null || game.NearbyInteractable != null,
-            "the Press-E prompt offers the rock face (or a nearer structure)");
+        Expect(game.NearbyMinableRock == null, "and no mining hint shows without a pickaxe in hand");
+        Expect(game.EquipFromInventory(pick), "re-equipping the pickaxe for the rest of the run");
 
         // --- There is enough ore in the mountain to be worth prospecting, and not so much that
         // every swing hits a seam ---
@@ -367,13 +383,13 @@ sealed class Program
         Expect(liveRockAtThreshold == 0,
             "the rock framing it is bedrock too — a doorway to another space, not a seam to chase");
 
-        // --- Masonry is minable but slower ---
+        // --- Masonry is minable but tougher ---
         Console.WriteLine("\n-- Masonry --");
-        int stoneWork = MiningService.WorkTicks(TileType.Stone, 10f, 0);
-        int wallWork = MiningService.WorkTicks(TileType.Wall, 10f, 0);
+        int stoneHp = MiningService.RockHp(TileType.Stone);
+        int wallHp = MiningService.RockHp(TileType.Wall);
         Expect(MiningService.CanMine(TileType.Wall), "town and dungeon walls can be broken");
-        Expect(wallWork > stoneWork, $"but masonry is slower than rock ({wallWork} vs {stoneWork} ticks)");
-        Expect(MiningService.WorkTicks(TileType.Stone, 40f, 8) < stoneWork,
+        Expect(wallHp > stoneHp, $"but masonry is tougher than rock ({wallHp} vs {stoneHp} hp)");
+        Expect(MiningService.SwingDamage(40f, 8) > MiningService.SwingDamage(10f, 0),
             "Strength and the mining skill both speed the work");
 
         // --- Noise: hammering the dungeon carries ---
@@ -2577,15 +2593,15 @@ sealed class Program
         Require(!withoutMiner.Success && hero.Progression.Skills.Count == 0 &&
             hero.Progression.UnallocatedXp == sharedBeforeProfession,
             "Mining without Miner incorrectly granted profession, skill, or shared XP.");
-        new MineOreActivity("iron-ore", 3, 1).OnFinish(game);
+        GrantMiningAction(game);
         Require(hero.Resources.GetValueOrDefault("iron-ore") == 3 && hero.Progression.Skills.Count == 0,
             "Baseline mining should produce ore without granting profession progression.");
         Require(game.TryActivateProfession("miner", out string professionError), professionError);
 
         int overallBeforeProfession = hero.Progression.CharacterLevel;
         int minerStrengthBefore = hero.Strength;
-        new MineOreActivity("iron-ore", 3, 1).OnFinish(game);
-        new MineOreActivity("iron-ore", 3, 1).OnFinish(game);
+        GrantMiningAction(game);
+        GrantMiningAction(game);
         ProgressionInstance miner = hero.Progression.ProfessionSlots[0].Instance!;
         Require(miner.Level == 2 && hero.Progression.Skills["mining"].Level == 2,
             "Miner and Mining did not advance together from direct action XP.");
@@ -2796,7 +2812,7 @@ sealed class Program
         var minerGame = new GameState(912, loadouts.SelectionFromKit("Worker", "Dwarf", "traveler"));
         ProgressionSlot professionSlot = minerGame.Hero.Progression.ProfessionSlots[0];
         int sharedBeforeMining = minerGame.Hero.Progression.UnallocatedXp;
-        new MineOreActivity("iron-ore", 3, 1).OnFinish(minerGame);
+        GrantMiningAction(minerGame);
         IReadOnlyList<ProgressionOffer> professionOffers = minerGame.GenerateProgressionOffers(
             ProgressionDomain.Profession, professionSlot.SlotId);
         Require(professionOffers.Any(offer => offer.ResultDefinitionId == "miner") &&
@@ -2804,7 +2820,7 @@ sealed class Program
             "Baseline mining did not reveal Miner or incorrectly granted a skill.");
         ProgressionOffer minerOffer = professionOffers.First(offer => offer.ResultDefinitionId == "miner");
         Require(minerGame.AcceptProgressionOffer(professionSlot.SlotId, minerOffer, out string minerError), minerError);
-        new MineOreActivity("iron-ore", 3, 1).OnFinish(minerGame);
+        GrantMiningAction(minerGame);
         Require(professionSlot.Instance is { DefinitionId: "miner", CurrentXp: 25 } &&
             minerGame.Hero.Progression.Skills["mining"].CurrentXp == 25 &&
             minerGame.Hero.Progression.UnallocatedXp == sharedBeforeMining,
@@ -2895,32 +2911,39 @@ sealed class Program
         gs.Enemies.Clear();
         gs.Projectiles.Clear();
 
-        var cells = new (VisualStyle style, AttackAnimation type, MagicElement element)[]
+        // Row 0: the SAME swing at four headings — the rotation-to-aim proof. Rows 1-3: every
+        // other style at its default rightward heading.
+        var cells = new (VisualStyle style, AttackAnimation type, MagicElement element, float dx, float dy)[]
         {
-            (VisualStyle.SwordArc, AttackAnimation.Melee, MagicElement.None),
-            (VisualStyle.HeavyArc, AttackAnimation.Heavy, MagicElement.None),
-            (VisualStyle.QuickSlash, AttackAnimation.Quick, MagicElement.None),
-            (VisualStyle.Backstab, AttackAnimation.Melee, MagicElement.None),
-            (VisualStyle.Arrow, AttackAnimation.Ranged, MagicElement.None),
-            (VisualStyle.PoisonDart, AttackAnimation.Ranged, MagicElement.Poison),
-            (VisualStyle.MagicComet, AttackAnimation.Magic, MagicElement.Fire),
-            (VisualStyle.MagicMissile, AttackAnimation.Magic, MagicElement.Arcane),
-            (VisualStyle.ArcaneRing, AttackAnimation.Magic, MagicElement.Arcane),
-            (VisualStyle.Sonic, AttackAnimation.Magic, MagicElement.Sonic),
-            (VisualStyle.HolyStrike, AttackAnimation.Magic, MagicElement.Holy),
-            (VisualStyle.ImpactBurst, AttackAnimation.Melee, MagicElement.None),
+            (VisualStyle.SwordArc, AttackAnimation.Melee, MagicElement.None, 2f, 0f),   // right
+            (VisualStyle.SwordArc, AttackAnimation.Melee, MagicElement.None, 0f, 2f),   // down
+            (VisualStyle.SwordArc, AttackAnimation.Melee, MagicElement.None, -2f, 0f),  // left
+            (VisualStyle.SwordArc, AttackAnimation.Melee, MagicElement.None, 0f, -2f),  // up
+            (VisualStyle.HeavyArc, AttackAnimation.Heavy, MagicElement.None, 2f, 0f),
+            (VisualStyle.StaffThrust, AttackAnimation.Melee, MagicElement.None, 2f, 0f),
+            (VisualStyle.PickaxeSwing, AttackAnimation.Heavy, MagicElement.None, 2f, 0f),
+            (VisualStyle.QuickSlash, AttackAnimation.Quick, MagicElement.None, 2f, 0f),
+            (VisualStyle.Arrow, AttackAnimation.Ranged, MagicElement.None, 2f, 0f),
+            (VisualStyle.PoisonDart, AttackAnimation.Ranged, MagicElement.Poison, 2f, 0f),
+            (VisualStyle.MagicComet, AttackAnimation.Magic, MagicElement.Fire, 2f, 0f),
+            (VisualStyle.MagicMissile, AttackAnimation.Magic, MagicElement.Arcane, 2f, 0f),
+            (VisualStyle.ArcaneRing, AttackAnimation.Magic, MagicElement.Arcane, 2f, 0f),
+            (VisualStyle.Sonic, AttackAnimation.Magic, MagicElement.Sonic, 2f, 0f),
+            (VisualStyle.HolyStrike, AttackAnimation.Magic, MagicElement.Holy, 2f, 0f),
+            (VisualStyle.ImpactBurst, AttackAnimation.Melee, MagicElement.None, 2f, 0f),
         };
 
         for (int i = 0; i < cells.Length; i++)
         {
-            float x = 2.5f + (i % 4) * 4.8f;
-            float y = 1.5f + (i / 4) * 3.2f;
-            var (style, type, element) = cells[i];
+            float x = 4.6f + (i % 4) * 4.5f; // clear of the HUD panel on the left
+            float y = 1.4f + (i / 4) * 2.9f;
+            var (style, type, element, dx, dy) = cells[i];
+            float len = MathF.Sqrt(dx * dx + dy * dy);
             gs.Projectiles.Add(new Projectile
             {
                 StartX = x, StartY = y,
-                CurrentX = x + 0.9f, CurrentY = y,
-                TargetX = x + 2f, TargetY = y,
+                CurrentX = x + dx / len * 0.9f, CurrentY = y + dy / len * 0.9f,
+                TargetX = x + dx, TargetY = y + dy,
                 Visual = style, Type = type, Element = element,
                 Team = ProjectileTeam.Hero,
                 MaxLifeTime = 30,
@@ -3477,20 +3500,25 @@ sealed class Program
         Console.WriteLine("\n=== Step 3: Town is player-driven (Manual control, no auto-walk script) ===");
         Console.WriteLine($"ControlMode after entering town: {gs.ControlMode} (expect Manual)");
 
-        Console.WriteLine("\n=== Step 4: Mining (player action) ===");
+        Console.WriteLine("\n=== Step 4: Mining (player action — break rock at the mountainside) ===");
         int oreBefore = gs.Hero.Resources.GetValueOrDefault("iron-ore", 0);
-        gs.MineOre();
-        for (int t = 0; t < 300 && gs.CurrentActivity != null; t++) gs.Tick();
+        // Break blocks at the adit face until the mountain pays 3 ore (the debug 'mine' command
+        // swings a whole block down per call; the real swing-by-swing path is TEST_MINING's).
+        gs.ExecuteDebugCommand("gotomine");
+        int blocks = 0;
+        while (gs.Hero.Resources.GetValueOrDefault("iron-ore", 0) < 3 && blocks++ < 120)
+            gs.ExecuteDebugCommand("mine");
         int oreAfter = gs.Hero.Resources.GetValueOrDefault("iron-ore", 0);
-        Console.WriteLine($"iron-ore {oreBefore}->{oreAfter} (expect 3), CurrentActivity null: {gs.CurrentActivity == null}");
+        Console.WriteLine($"iron-ore {oreBefore}->{oreAfter} (expect >= 3, took {blocks} blocks), " +
+                          $"CurrentActivity null: {gs.CurrentActivity == null} (expect True — no mining timer)");
 
         Console.WriteLine("\n=== Step 5: Smelt + craft at the Smithy (player actions) ===");
         var smelt = RecipeDataService.Instance.Get("smelt-iron")!;
         var craftSword = RecipeDataService.Instance.Get("craft-iron-sword")!;
-        Console.WriteLine($"CanCraft smelt-iron: {gs.CanCraft(smelt)} (expect True with 3 ore)");
+        Console.WriteLine($"CanCraft smelt-iron: {gs.CanCraft(smelt)} (expect True with >= 3 ore)");
         gs.Craft(smelt);
         for (int t = 0; t < 2000 && gs.CurrentActivity != null; t++) gs.Tick();
-        Console.WriteLine($"After smelt: iron-ore={gs.Hero.Resources.GetValueOrDefault("iron-ore", 0)} (expect 1), iron-ingot={gs.Hero.Resources.GetValueOrDefault("iron-ingot", 0)} (expect 1)");
+        Console.WriteLine($"After smelt: iron-ore={gs.Hero.Resources.GetValueOrDefault("iron-ore", 0)} (expect {oreAfter - 2}), iron-ingot={gs.Hero.Resources.GetValueOrDefault("iron-ingot", 0)} (expect 1)");
         gs.Craft(craftSword);
         for (int t = 0; t < 2000 && gs.CurrentActivity != null; t++) gs.Tick();
         var sword = gs.Hero.Inventory.Concat(gs.Hero.Loadout).OfType<Weapon>().FirstOrDefault(w => w.Id == "iron-sword");
@@ -3621,6 +3649,16 @@ sealed class Program
         // Cleanup all slots created by this demo.
         SaveService.Delete(gs3.SaveId);
         SaveService.Delete(newGameVm.GameState.SaveId);
+    }
+
+    /// <summary>Stand-in for the removed MineOreActivity in the progression demos: what one
+    /// completed ore-mining action grants — the ore, the practice fact, and one Miner
+    /// profession action. The swing mechanics themselves are TEST_MINING's subject.</summary>
+    private static void GrantMiningAction(GameState state)
+    {
+        state.ExecuteDebugCommand("addres iron-ore 3");
+        state.RecordProgressionFact("practice.mining-actions");
+        state.RecordProfessionAction("miner");
     }
 
     // Avalonia configuration, don't remove; also used by visual designer.

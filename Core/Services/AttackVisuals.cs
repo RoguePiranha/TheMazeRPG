@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using TheMazeRPG.Core.Models;
 
 namespace TheMazeRPG.Core.Services;
@@ -22,8 +23,38 @@ public static class AttackVisuals
         "sound-wave" or "sonic-boom" => VisualStyle.Sonic,
         "holy-touch" => VisualStyle.HolyStrike,
         "light-punch" => VisualStyle.ImpactBurst,
+        "pickaxe" => VisualStyle.PickaxeSwing,
         _ => FallbackFor(attack.Animation)
     };
+
+    /// <summary>
+    /// Hero-aware style: the universal basic attack reads as whatever is actually in hand
+    /// (owner ruling 2026-08-06) — the staff thrusts, the axe cleaves, the pick swings, and
+    /// bare hands punch. Named techniques keep their authored visuals; ranged/magic weapons
+    /// keep their animation-derived effects.
+    /// </summary>
+    public static VisualStyle ForHero(Hero hero, Attack attack)
+    {
+        if (attack.Id != "basic-attack") return For(attack);
+
+        Weapon? weapon = hero.Equipment.GetValueOrDefault(EquipmentSlot.MainHand) as Weapon ??
+            hero.Equipment.GetValueOrDefault(EquipmentSlot.OffHand) as Weapon;
+        if (weapon == null) return VisualStyle.ImpactBurst; // bare fists
+
+        if (weapon.Animation is AttackAnimation.Melee or AttackAnimation.Heavy or AttackAnimation.Quick)
+        {
+            return weapon.WeaponType switch
+            {
+                WeaponType.Sword => VisualStyle.SwordArc,
+                WeaponType.Dagger => VisualStyle.QuickSlash,
+                WeaponType.Axe or WeaponType.Mace => VisualStyle.HeavyArc,
+                WeaponType.Spear or WeaponType.Staff => VisualStyle.StaffThrust,
+                WeaponType.Pickaxe => VisualStyle.PickaxeSwing,
+                _ => VisualStyle.Blade
+            };
+        }
+        return For(attack);
+    }
 
     // Any unmapped attack (including future/merged ones) still gets a sensible effect.
     private static VisualStyle FallbackFor(AttackAnimation animation) => animation switch

@@ -133,5 +133,7 @@ public enum VisualStyle
     Sonic,        // concentric sound-wave rings
     HolyStrike,   // radiant golden strike
     ImpactBurst,  // unarmed impact burst
-    Parry         // defensive arc flash (not yet produced by any attack)
+    Parry,        // defensive arc flash (not yet produced by any attack)
+    StaffThrust,  // pole thrust (staff/spear held weapons)
+    PickaxeSwing  // the miner's pick — combat swings and rock-chipping alike
 }

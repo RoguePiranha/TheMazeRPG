@@ -17,6 +17,8 @@
     "QuickSlash": { "kind": "swing", "asset": "fx/sword-swing.png", "frameSize": 80, "columns": 9, "row": 0, "baseAngleDeg": 90 },
     "Backstab":   { "kind": "swing", "asset": "fx/sword-swing.png", "frameSize": 80, "columns": 9, "row": 0, "baseAngleDeg": 90 },
     "HeavyArc":   { "kind": "swing", "asset": "fx/axe-swing.png", "frameSize": 80, "columns": 10, "row": 0, "baseAngleDeg": 90 },
+    "StaffThrust":  { "kind": "swing", "asset": "fx/staff-thrust.png", "frameSize": 80, "columns": 6, "row": 0, "baseAngleDeg": 90 },
+    "PickaxeSwing": { "kind": "swing", "asset": "fx/pickaxe-swing.png", "frameSize": 80, "columns": 10, "row": 0, "baseAngleDeg": 90 },
     "Arrow":      { "kind": "projectile", "asset": "fx/arrow.png", "frameSize": 16, "baseAngleDeg": 90,
                     "impactAsset": "fx/arrow-hit.png", "impactFrameSize": 48, "impactColumns": 4 },
     "PoisonDart": { "kind": "projectile", "asset": "fx/dart.png", "frameSize": 16, "baseAngleDeg": 90,

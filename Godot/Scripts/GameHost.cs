@@ -366,21 +366,14 @@ public partial class GameHost : Node
                 _ui.ShowSafeRoomChoice(_gameState, challengeGuardian: true);
             else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Shrine })
                 _ui.ShowSafeRoomChoice(_gameState, challengeGuardian: false);
-            else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.MineEntrance })
-                _ui.ShowMineActions(_gameState);
             else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Smithy })
                 _ui.ShowSmithyActions(_gameState);
             else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.Stall })
                 _ui.ShowStallActions(_gameState);
             else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.DungeonEntrance })
                 _ui.ShowDungeonEntranceActions(_gameState);
-            else if (_gameState.NearbyMinableRock is { } rock)
-            {
-                // Start digging straight away — no confirmation menu, per the ruling that
-                // mining is destruction, not a button. (Striking the face mines it too.)
-                _gameState.StartMining(rock.x, rock.y);
-                _ui.RefreshGame(_gameState);
-            }
+            // No mine interaction: the adit is a landmark, and mining is swinging the held
+            // pickaxe at the rock face (owner ruling 2026-08-06, second pass).
             GetViewport().SetInputAsHandled();
             return;
         }
