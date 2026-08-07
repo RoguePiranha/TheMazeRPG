@@ -82,12 +82,18 @@ public partial class GameView : UserControl
         var text = this.FindControl<TextBlock>("InteractPromptText");
         if (overlay == null || text == null || _viewModel == null) return;
 
-        // Show only while a structure is in range and no blocking overlay/menu is up.
+        // Show only while a structure or workable rock face is in range and no blocking
+        // overlay/menu is up.
         var near = _viewModel.GameState.NearbyInteractable;
-        bool show = near != null && !IsPauseMenuOpen && !IsInventoryOpen && !IsLootOpen
-                    && !IsSellOpen && !IsStatsOpen && !IsContextMenuOpen && !IsConsoleOpen;
+        var rock = _viewModel.GameState.NearbyMinableRock;
+        bool show = (near != null || rock != null) && !AnyOverlayOpen;
         overlay.IsVisible = show;
-        if (show) text.Text = $"Press [E] — {StructureName(near!.Type)}";
+        if (show)
+        {
+            text.Text = near != null
+                ? $"Press [E] — {StructureName(near.Type)}"
+                : "Press [E] — Mine the rock face (or just hit it)";
+        }
     }
 
     /// <summary>Friendly label for a town structure.</summary>
@@ -170,6 +176,13 @@ public partial class GameView : UserControl
             // Overworld: use the town structure the hero is standing next to.
             e.Handled = true;
             OpenStructureMenu(structure);
+        }
+        else if (e.Key == Key.E && !AnyOverlayOpen && _viewModel?.GameState.NearbyMinableRock is { } rock)
+        {
+            // No structure in range but a workable rock face is: start digging straight away —
+            // no confirmation menu, per the ruling that mining is destruction, not a button.
+            e.Handled = true;
+            _viewModel.GameState.StartMining(rock.x, rock.y);
         }
         else if (e.Key == Key.Space && _viewModel != null && !AnyOverlayOpen)
         {

@@ -374,6 +374,13 @@ public partial class GameHost : Node
                 _ui.ShowStallActions(_gameState);
             else if (_gameState.NearbyInteractable is { Type: MazeFeatureType.DungeonEntrance })
                 _ui.ShowDungeonEntranceActions(_gameState);
+            else if (_gameState.NearbyMinableRock is { } rock)
+            {
+                // Start digging straight away — no confirmation menu, per the ruling that
+                // mining is destruction, not a button. (Striking the face mines it too.)
+                _gameState.StartMining(rock.x, rock.y);
+                _ui.RefreshGame(_gameState);
+            }
             GetViewport().SetInputAsHandled();
             return;
         }

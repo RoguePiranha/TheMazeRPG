@@ -77,6 +77,11 @@ public class GameState
     /// <summary>The nearby chest or town structure available through the Press-E interaction.</summary>
     public MazeFeature? NearbyInteractable { get; private set; }
 
+    /// <summary>The adjacent workable rock face offered by the Press-E prompt when no feature
+    /// interactable is in range (see UpdateNearbyInteractable). Swinging at the face mines it
+    /// too — this is the discoverable path, not the only one.</summary>
+    public (int x, int y)? NearbyMinableRock { get; private set; }
+
     // Player movement intent for Manual mode, set by the UI from held keys (each component in
     // [-1,1]); consumed once per Tick. Ignored entirely in Auto mode.
     private float _manualMoveX;
@@ -392,6 +397,18 @@ public class GameState
 
     public bool TryTacticalAttackAt(int targetX, int targetY)
     {
+        // A turn-based swing at an adjacent rock face spends the action working the stone;
+        // the dig itself advances through the world-upkeep ticks between turns.
+        if (CanTakeTacticalPlayerAction() && TacticalTurn.ActionAvailable &&
+            Math.Max(Math.Abs(targetX - Hero.GridX), Math.Abs(targetY - Hero.GridY)) == 1 &&
+            MiningService.CanMine(CurrentMaze, targetX, targetY) &&
+            StartMining(targetX, targetY))
+        {
+            TacticalTurn.ActionAvailable = false;
+            EndTacticalTurnIfSpent();
+            return true;
+        }
+
         TacticalAttackPreview preview = GetTacticalAttackPreview(targetX, targetY);
         if (!preview.CanCommit) return false;
 
@@ -1149,11 +1166,35 @@ public class GameState
     public void FireManualAttack(float dirX, float dirY)
     {
         if (ControlMode != ControlMode.Manual || IsHeroDead || !IsRunning) return;
+
+        // Swinging at a rock face IS mining (owner ruling 2026-08-06: you destroy the stone,
+        // you don't push a button — and hitting it is how you destroy it). When the strike
+        // points at an adjacent minable tile, work the stone instead of bouncing a projectile
+        // off it. Checked before the cooldown so digging can begin even mid-swing-recovery.
+        if (TryMineTowards(dirX, dirY)) return;
+
         if (Hero.AttackCooldown > 0) return;
 
         if (!CanAffordCurrentAttack()) return;
 
         _combatSystem.PerformHeroDirectionalAttack(Hero, dirX, dirY, Projectiles);
+    }
+
+    /// <summary>Start mining the adjacent cell the aim points at, if it's workable rock — the
+    /// tile one step along the aim from the hero, exactly what a melee swing in that direction
+    /// would strike. Returns false (fire the attack instead) for anything unminable.</summary>
+    private bool TryMineTowards(float dirX, float dirY)
+    {
+        // In combat a swing is a swing — never silently trade an attack for a multi-second dig
+        // because the aim grazed a wall (mining is also loud, which is the last thing a fight
+        // needs by accident).
+        if (CurrentActivity != null || Hero.InCombat) return false;
+        float len = MathF.Sqrt(dirX * dirX + dirY * dirY);
+        if (len < 0.001f) return false;
+        int targetX = (int)MathF.Round(Hero.X + dirX / len);
+        int targetY = (int)MathF.Round(Hero.Y + dirY / len);
+        if (!MiningService.CanMine(CurrentMaze, targetX, targetY)) return false;
+        return StartMining(targetX, targetY);
     }
 
     /// <summary>Select the attack assigned to a hotbar slot (0-based). Empty slots no-op, so a
@@ -2337,7 +2378,8 @@ public class GameState
                             LifeTime = 0,
                             MaxLifeTime = 8,
                             Type = HitEffectType.Impact,
-                            Team = ProjectileTeam.Hero
+                            Team = ProjectileTeam.Hero,
+                            Visual = p.Visual
                         });
 
                         // Handle the kill — but only stand the hero down when no other engaged
@@ -2410,7 +2452,8 @@ public class GameState
                         LifeTime = 0,
                         MaxLifeTime = 8,
                         Type = HitEffectType.Impact,
-                        Team = ProjectileTeam.Enemy
+                        Team = ProjectileTeam.Enemy,
+                        Visual = p.Visual
                     });
 
                     if (!Hero.IsAlive)
@@ -2836,7 +2879,12 @@ public class GameState
     /// <summary>Refresh the nearest in-range chest or town structure for the contextual prompt.</summary>
     public void UpdateNearbyInteractable()
     {
-        if (CurrentActivity != null || Hero.InCombat) { NearbyInteractable = null; return; }
+        if (CurrentActivity != null || Hero.InCombat)
+        {
+            NearbyInteractable = null;
+            NearbyMinableRock = null;
+            return;
+        }
 
         MazeFeature? nearest = null;
         float nearestSq = InteractRadius * InteractRadius;
@@ -2853,6 +2901,9 @@ public class GameState
             if (d2 <= nearestSq) { nearestSq = d2; nearest = f; }
         }
         NearbyInteractable = nearest;
+        // A workable rock face is the fallback Press-E offer — features take precedence so the
+        // prompt never flickers between two meanings while standing at the adit mouth.
+        NearbyMinableRock = nearest == null ? MinableRockNearby() : null;
     }
 
     /// <summary>Mine ore at the Mine (starts a MineOreActivity). No-op if already busy.</summary>

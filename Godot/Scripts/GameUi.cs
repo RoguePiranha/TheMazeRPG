@@ -663,7 +663,7 @@ public partial class GameUi : Control
             ? ""
             : $"{state.CurrentActivity.Name.ToUpperInvariant()}   {state.CurrentActivity.TicksRemaining}";
         MazeFeature? nearby = state.NearbyInteractable;
-        _interactionToast.Visible = nearby != null;
+        _interactionToast.Visible = nearby != null || state.NearbyMinableRock != null;
         if (nearby != null)
         {
             string action = nearby.Type switch
@@ -678,6 +678,11 @@ public partial class GameUi : Control
                 _ => nearby.Type.ToString().ToUpperInvariant()
             };
             _interactionLabel.Text = $"PRESS E   {action}";
+        }
+        else if (state.NearbyMinableRock != null)
+        {
+            // The workable rock face: E digs, and simply striking it does too.
+            _interactionLabel.Text = "PRESS E   MINE THE ROCK FACE (OR HIT IT)";
         }
         RefreshHotbar(state);
     }

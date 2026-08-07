@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Godot;
 using TheMazeRPG.Core.Models;
@@ -11,6 +12,15 @@ public partial class DungeonView : Node2D
 {
     public const int CellSize = 48;
     private const float FogMemoryAlpha = 0.3f;
+
+    // Attack-effect art is authored at 16 px per world tile (AttackFxCatalog).
+    private const float FxArtPixelsPerTile = 16f;
+
+    public override void _Ready()
+    {
+        // Pixel art scales crisp, never smeared — applies to every texture this node draws.
+        TextureFilter = TextureFilterEnum.Nearest;
+    }
 
     private Maze? _visibilityMaze;
     private readonly HashSet<(int x, int y)> _visibleFloors = new();
@@ -67,6 +77,7 @@ public partial class DungeonView : Node2D
         DrawMazeFeatures(maze, palette);
         DrawCritters(State);
         DrawProjectiles(State, palette);
+        DrawHitEffects(State);
         DrawEnemies(State, palette);
         DrawHero(State, palette);
         DrawFloatingTexts(State);
@@ -865,7 +876,209 @@ public partial class DungeonView : Node2D
             if (!projectile.IsActive ||
                 !IsCellVisibleCached((int)MathF.Round(projectile.CurrentX), (int)MathF.Round(projectile.CurrentY)))
                 continue;
+
+            float t = Math.Clamp((float)projectile.LifeTime / projectile.MaxLifeTime, 0f, 1f);
+            float heading = MathF.Atan2(projectile.TargetY - projectile.StartY,
+                projectile.TargetX - projectile.StartX);
+
+            // Sprite-based effect when the style is mapped (Data/Sprites/attackfx.json — the
+            // same manifest the Avalonia renderer reads).
+            if (AttackFxCatalog.TryGet(projectile.Visual, out var fx))
+            {
+                bool drawn = fx.Kind switch
+                {
+                    "swing" => DrawFxSwing(fx,
+                        WorldToPixel(projectile.StartX, projectile.StartY), heading, t),
+                    "projectile" => DrawFxProjectile(fx,
+                        WorldToPixel(projectile.CurrentX, projectile.CurrentY), heading),
+                    _ => false
+                };
+                if (drawn) continue;
+            }
+
+            // Magic reads as spellcraft, not a dot: element-tinted glow, core, and trail.
+            if (projectile.Type == AttackAnimation.Magic)
+            {
+                DrawMagicProjectile(projectile, t);
+                continue;
+            }
+
+            // Unmapped physical styles keep the simple marker.
             DrawCircle(WorldToPixel(projectile.CurrentX, projectile.CurrentY), 5f, palette.Projectile);
+        }
+    }
+
+    // --- Attack effects (sprite-based; shared manifest via AttackFxCatalog) ---
+
+    private static readonly Dictionary<string, ImageTexture?> FxTextures = new();
+
+    private static ImageTexture? FxTexture(string asset)
+    {
+        if (FxTextures.TryGetValue(asset, out var cached)) return cached;
+        ImageTexture? texture = null;
+        try
+        {
+            // The fx sheets live outside the Godot res:// root (curated under Assets/Sprites),
+            // so they load from the configured content root at runtime.
+            string path = Path.Combine(GamePaths.ContentRoot, "Assets", "Sprites",
+                asset.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(path))
+            {
+                var image = Image.LoadFromFile(path);
+                if (image != null) texture = ImageTexture.CreateFromImage(image);
+            }
+            if (texture == null) GameLog.Debug($"DungeonView: could not load attack fx '{asset}'.");
+        }
+        catch (Exception ex)
+        {
+            GameLog.Debug($"DungeonView: attack fx '{asset}' failed ({ex.Message}).");
+        }
+        FxTextures[asset] = texture;
+        return texture;
+    }
+
+    /// <summary>Weapon swing anchored on the attacker: the sheet's screen-south row rotated so
+    /// its authored facing lands on the aim.</summary>
+    private bool DrawFxSwing(AttackFxDef fx, Vector2 anchor, float aimAngleRad, float t)
+    {
+        var texture = FxTexture(fx.Asset);
+        if (texture == null) return false;
+
+        int frame = Math.Clamp((int)(t * fx.Columns), 0, fx.Columns - 1);
+        float zoom = CellSize / FxArtPixelsPerTile;
+        float size = fx.FrameSize * zoom;
+        var src = new Rect2(frame * fx.FrameSize, fx.Row * fx.FrameSize, fx.FrameSize, fx.FrameSize);
+
+        DrawSetTransform(anchor, aimAngleRad - fx.BaseAngleDeg * MathF.PI / 180f, Vector2.One);
+        DrawTextureRectRegion(texture, new Rect2(-size / 2f, -size / 2f, size, size), src);
+        DrawSetTransform(Vector2.Zero, 0f, Vector2.One);
+        return true;
+    }
+
+    /// <summary>Projectile sprite at its current position, rotated to its heading.</summary>
+    private bool DrawFxProjectile(AttackFxDef fx, Vector2 position, float headingRad)
+    {
+        var texture = FxTexture(fx.Asset);
+        if (texture == null) return false;
+
+        float zoom = CellSize / FxArtPixelsPerTile;
+        float size = fx.FrameSize * zoom;
+        var src = new Rect2(0, 0, fx.FrameSize, fx.FrameSize);
+
+        DrawSetTransform(position, headingRad - fx.BaseAngleDeg * MathF.PI / 180f, Vector2.One);
+        DrawTextureRectRegion(texture, new Rect2(-size / 2f, -size / 2f, size, size), src);
+        DrawSetTransform(Vector2.Zero, 0f, Vector2.One);
+        return true;
+    }
+
+    // --- Magic (procedural: the packs carry no spell art; glow does the work instead) ---
+
+    /// <summary>Element glow/core tints, mirroring the Avalonia renderer's MagicColors table so
+    /// a Fire bolt is the same fire in both clients.</summary>
+    private static (Color glow, Color core) MagicTint(MagicElement element, Color defGlow, Color defCore) => element switch
+    {
+        MagicElement.Mana => (Color.Color8(150, 190, 255), Color.Color8(210, 230, 255)),
+        MagicElement.Arcane => (Color.Color8(170, 100, 255), Color.Color8(215, 170, 255)),
+        MagicElement.Fire => (Color.Color8(255, 110, 40), Color.Color8(255, 200, 130)),
+        MagicElement.Ice => (Color.Color8(150, 220, 255), Color.Color8(225, 248, 255)),
+        MagicElement.Poison => (Color.Color8(120, 255, 60), Color.Color8(205, 255, 150)),
+        MagicElement.Water => (Color.Color8(60, 130, 255), Color.Color8(150, 195, 255)),
+        MagicElement.Lightning => (Color.Color8(255, 230, 60), Color.Color8(255, 255, 190)),
+        MagicElement.Life => (Color.Color8(89, 214, 111), Color.Color8(216, 255, 210)),
+        MagicElement.Light => (Color.Color8(255, 243, 166), Color.Color8(255, 255, 255)),
+        MagicElement.Void => (Color.Color8(59, 49, 90), Color.Color8(0, 0, 0)),
+        MagicElement.Holy => (Color.Color8(255, 210, 90), Color.Color8(255, 242, 185)),
+        MagicElement.Death => (Color.Color8(120, 120, 120), Color.Color8(0, 0, 0)),
+        MagicElement.Shadow => (Color.Color8(150, 90, 200), Color.Color8(0, 0, 0)),
+        MagicElement.Earth => (Color.Color8(170, 120, 60), Color.Color8(215, 185, 130)),
+        MagicElement.Air => (Color.Color8(225, 225, 220), Color.Color8(248, 248, 245)),
+        MagicElement.Sonic => (Color.Color8(100, 200, 255), Color.Color8(205, 238, 255)),
+        _ => (defGlow, defCore)
+    };
+
+    private void DrawMagicProjectile(Projectile projectile, float t)
+    {
+        Vector2 position = WorldToPixel(projectile.CurrentX, projectile.CurrentY);
+        Vector2 start = WorldToPixel(projectile.StartX, projectile.StartY);
+        float alpha = Math.Clamp(1f - t, 0.3f, 1f);
+
+        if (projectile.Visual == VisualStyle.ArcaneRing)
+        {
+            // Expanding shockwave ring, matching the collision radius the sim actually uses.
+            var (glow, _) = MagicTint(projectile.Element, Color.Color8(100, 255, 220), Colors.White);
+            float radius = (0.25f + projectile.LifeTime * 0.05f) * CellSize;
+            DrawArc(position, radius, 0f, MathF.Tau, 48, glow with { A = alpha }, 3f, antialiased: true);
+            DrawArc(position, radius * 0.8f, 0f, MathF.Tau, 48, glow with { A = alpha * 0.35f }, 6f, antialiased: true);
+            return;
+        }
+
+        if (projectile.Visual == VisualStyle.Sonic)
+        {
+            // Concentric sound waves rippling outward from the source.
+            var (glow, _) = MagicTint(projectile.Element, Color.Color8(100, 200, 255), Colors.White);
+            for (int ring = 0; ring < 3; ring++)
+            {
+                float radius = (0.2f + t * 0.9f + ring * 0.18f) * CellSize;
+                DrawArc(position, radius, 0f, MathF.Tau, 40,
+                    glow with { A = alpha * (0.9f - ring * 0.25f) }, 2f, antialiased: true);
+            }
+            return;
+        }
+
+        // Bolt-style magic (comet, missile, holy strike): layered glow, bright core, and a
+        // tapered trail back toward the caster.
+        var (boltGlow, boltCore) = projectile.Visual switch
+        {
+            VisualStyle.MagicMissile => MagicTint(projectile.Element, Color.Color8(138, 43, 226), Color.Color8(255, 105, 255)),
+            VisualStyle.HolyStrike => MagicTint(projectile.Element, Color.Color8(255, 210, 90), Color.Color8(255, 242, 185)),
+            _ => MagicTint(projectile.Element, Color.Color8(100, 255, 255), Color.Color8(180, 255, 255))
+        };
+
+        Vector2 heading = (position - start).Normalized();
+        for (int i = 1; i <= 4; i++)
+        {
+            Vector2 trail = position - heading * (i * 0.16f * CellSize);
+            DrawCircle(trail, (0.09f - i * 0.015f) * CellSize,
+                boltGlow with { A = alpha * (0.5f - i * 0.1f) });
+        }
+        DrawCircle(position, 0.2f * CellSize, boltGlow with { A = alpha * 0.35f });
+        DrawCircle(position, 0.13f * CellSize, boltGlow with { A = alpha * 0.6f });
+        DrawCircle(position, 0.065f * CellSize, boltCore with { A = alpha });
+    }
+
+    // --- Impacts ---
+
+    private void DrawHitEffects(GameState state)
+    {
+        foreach (HitEffect hit in state.HitEffects)
+        {
+            if (!hit.IsActive) continue;
+            Vector2 position = WorldToPixel(hit.X, hit.Y);
+            float t = Math.Clamp((float)hit.LifeTime / hit.MaxLifeTime, 0f, 1f);
+
+            // Authored impact burst (arrow shatter, dart burst) when the style carries one.
+            if (AttackFxCatalog.TryGet(hit.Visual, out var fx) && fx.ImpactAsset != null &&
+                FxTexture(fx.ImpactAsset) is { } burst)
+            {
+                int frame = Math.Clamp((int)(t * fx.ImpactColumns), 0, fx.ImpactColumns - 1);
+                float size = fx.ImpactFrameSize * (CellSize / FxArtPixelsPerTile) / 2f;
+                var src = new Rect2(frame * fx.ImpactFrameSize, 0, fx.ImpactFrameSize, fx.ImpactFrameSize);
+                DrawTextureRectRegion(burst,
+                    new Rect2(position.X - size / 2f, position.Y - size / 2f, size, size), src);
+                continue;
+            }
+
+            // Generic flash: expanding team-tinted glow with a hot core (mirrors Avalonia).
+            float glowAlpha = (1f - t) * 0.7f;
+            float radius = (0.1f + 0.14f * t) * CellSize;
+            Color glow = hit.Team == ProjectileTeam.Hero
+                ? Color.Color8(180, 255, 255)
+                : Color.Color8(255, 170, 100);
+            Color core = hit.Team == ProjectileTeam.Hero
+                ? Color.Color8(230, 255, 255)
+                : Color.Color8(255, 200, 150);
+            DrawCircle(position, radius, glow with { A = glowAlpha });
+            DrawCircle(position, MathF.Max(2f, radius * 0.35f), core with { A = 1f - t });
         }
     }
 

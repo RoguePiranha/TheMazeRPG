@@ -703,6 +703,11 @@ public class MazeRenderer
             float px = fx.X * CellSize + CellSize / 2f;
             float py = fx.Y * CellSize + CellSize / 2f;
             float t = Math.Clamp((float)fx.LifeTime / fx.MaxLifeTime, 0f, 1f);
+
+            // A style with an authored impact burst (arrow shatter, dart burst) plays it in
+            // place of the generic flash.
+            if (AttackFxService.DrawImpact(canvas, fx.Visual, px, py, t, CellSize)) continue;
+
             byte alpha = (byte)(255 * (1f - t));
             float radius = 6f + 8f * t;
 
@@ -1865,7 +1870,24 @@ public class MazeRenderer
             float alpha = 1.0f - ((float)projectile.LifeTime / projectile.MaxLifeTime);
             alpha = Math.Clamp(alpha, 0.3f, 1.0f);
             byte alphaVal = (byte)(alpha * 255);
-            
+
+            // Sprite-based effect when the style is mapped (Data/Sprites/attackfx.json):
+            // weapon swings play rotated on the attacker, arrows/darts fly as rotated sprites.
+            // Anything unmapped (all magic, deliberately) falls through to procedural drawing.
+            if (AttackFxService.TryGet(projectile.Visual, out var fx))
+            {
+                float fxT = Math.Clamp((float)projectile.LifeTime / projectile.MaxLifeTime, 0f, 1f);
+                float heading = MathF.Atan2(projectile.TargetY - projectile.StartY,
+                    projectile.TargetX - projectile.StartX);
+                bool drawn = fx.Kind switch
+                {
+                    "swing" => AttackFxService.DrawSwing(canvas, fx, startPx, startPy, heading, fxT, CellSize),
+                    "projectile" => AttackFxService.DrawProjectile(canvas, fx, px, py, heading, CellSize),
+                    _ => false
+                };
+                if (drawn) continue;
+            }
+
             switch (projectile.Type)
             {
                 case AttackAnimation.Melee:

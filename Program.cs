@@ -206,6 +206,14 @@ sealed class Program
             return;
         }
 
+        // If TEST_FXRENDER is set, render every attack-effect style at three lifetime stages
+        // to obj/attack-fx-preview.png (owner-eyeball check for the sprite/glow work) and exit
+        if (Environment.GetEnvironmentVariable("TEST_FXRENDER") == "1")
+        {
+            RunAttackFxPreview();
+            return;
+        }
+
         // If TEST_MINING is set, verify destructible rock — digging, yields, protected tiles,
         // dungeon noise, and that tunnels persist in the world
         if (Environment.GetEnvironmentVariable("TEST_MINING") == "1")
@@ -276,6 +284,20 @@ sealed class Program
         Expect(gained > 0, $"breaking it yielded materials ({gained})");
         Console.WriteLine($"     dug a {targetTile}; stone {stoneBefore}->{game.Hero.Resources.GetValueOrDefault("stone")}, " +
                           $"iron-ore {oreBefore}->{game.Hero.Resources.GetValueOrDefault("iron-ore")}");
+
+        // --- Hitting the rock IS mining (owner request 2026-08-06: swing at it, no menus) ---
+        Console.WriteLine("\n-- Swing to dig --");
+        game.SetControlMode(ControlMode.Manual);
+        var face = game.MinableRockNearby();
+        Expect(face != null, "another workable face is within reach");
+        game.FireManualAttack(face!.Value.x - game.Hero.X, face.Value.y - game.Hero.Y);
+        Expect(game.CurrentActivity != null, "a swing aimed at the face starts the dig — no menu");
+        for (int tick = 0; tick < 2000 && game.CurrentActivity != null; tick++) game.Tick();
+        Expect(maze.Tiles[face.Value.x, face.Value.y] == TileType.Floor,
+            $"and the struck tile is dug out ({maze.Tiles[face.Value.x, face.Value.y]})");
+        game.UpdateNearbyInteractable();
+        Expect(game.NearbyMinableRock != null || game.NearbyInteractable != null,
+            "the Press-E prompt offers the rock face (or a nearer structure)");
 
         // --- There is enough ore in the mountain to be worth prospecting, and not so much that
         // every swing hits a seam ---
@@ -1755,6 +1777,41 @@ sealed class Program
         }
         Console.WriteLine($"Terrain mapping failures: {terrainFailures} (expect 0)");
 
+        // Attack effects (attackfx.json via the shared AttackFxCatalog both clients read):
+        // every mapped asset exists and its declared frame geometry fits inside the sheet.
+        int attackFxFailures = 0;
+        foreach (var (style, fxDef) in AttackFxCatalog.All)
+        {
+            foreach (var (asset, frameSize, columns, rows) in new[]
+            {
+                (fxDef.Asset, fxDef.FrameSize, Math.Max(1, fxDef.Columns), fxDef.Row + 1),
+                (fxDef.ImpactAsset ?? "", fxDef.ImpactFrameSize, fxDef.ImpactColumns, 1)
+            })
+            {
+                if (string.IsNullOrEmpty(asset)) continue;
+                string fxPath = spriteRoot + asset;
+                if (!System.IO.File.Exists(fxPath))
+                {
+                    Console.WriteLine($"  MISSING ATTACK FX {style} -> {asset}");
+                    attackFxFailures++;
+                    continue;
+                }
+                var (fxW, fxH) = PngSize(fxPath);
+                if (frameSize <= 0 || frameSize * columns > fxW || frameSize * rows > fxH)
+                {
+                    Console.WriteLine($"  INVALID ATTACK FX GEOMETRY {style} -> {asset} " +
+                                      $"({columns}x{rows} frames of {frameSize} in {fxW}x{fxH})");
+                    attackFxFailures++;
+                }
+            }
+            if (fxDef.Kind is not ("swing" or "projectile"))
+            {
+                Console.WriteLine($"  UNKNOWN ATTACK FX KIND {style} -> '{fxDef.Kind}'");
+                attackFxFailures++;
+            }
+        }
+        Console.WriteLine($"Attack fx mappings: {AttackFxCatalog.All.Count}; failures: {attackFxFailures} (expect > 0 mappings, 0 failures)");
+
         // (b) Every hero class resolves (hero:{Class}).
         var cds = new CharacterDataService();
         var unmappedHeroes = cds.Classes.Keys.Where(c => !map.ContainsKey($"hero:{c}")).ToList();
@@ -2823,6 +2880,84 @@ sealed class Program
         using var stream = System.IO.File.Open(outputPath, System.IO.FileMode.Create, System.IO.FileAccess.Write);
         data.SaveTo(stream);
         Console.WriteLine($"Rendered six-theme preview: {System.IO.Path.GetFullPath(outputPath)}");
+    }
+
+    /// <summary>
+    /// TEST_FXRENDER: draw every attack-effect style (sprite-mapped and procedural magic) at a
+    /// readable spacing into obj/attack-fx-preview.png — the owner-eyeball artifact for the
+    /// 2026-08-06 "attacks should read as real effects" request. The impact bursts render along
+    /// the bottom row.
+    /// </summary>
+    public static void RunAttackFxPreview()
+    {
+        Console.WriteLine("=== Attack FX preview ===");
+        var gs = new GameState(7, "FX Tester", "Warrior", "Human");
+        gs.Enemies.Clear();
+        gs.Projectiles.Clear();
+
+        var cells = new (VisualStyle style, AttackAnimation type, MagicElement element)[]
+        {
+            (VisualStyle.SwordArc, AttackAnimation.Melee, MagicElement.None),
+            (VisualStyle.HeavyArc, AttackAnimation.Heavy, MagicElement.None),
+            (VisualStyle.QuickSlash, AttackAnimation.Quick, MagicElement.None),
+            (VisualStyle.Backstab, AttackAnimation.Melee, MagicElement.None),
+            (VisualStyle.Arrow, AttackAnimation.Ranged, MagicElement.None),
+            (VisualStyle.PoisonDart, AttackAnimation.Ranged, MagicElement.Poison),
+            (VisualStyle.MagicComet, AttackAnimation.Magic, MagicElement.Fire),
+            (VisualStyle.MagicMissile, AttackAnimation.Magic, MagicElement.Arcane),
+            (VisualStyle.ArcaneRing, AttackAnimation.Magic, MagicElement.Arcane),
+            (VisualStyle.Sonic, AttackAnimation.Magic, MagicElement.Sonic),
+            (VisualStyle.HolyStrike, AttackAnimation.Magic, MagicElement.Holy),
+            (VisualStyle.ImpactBurst, AttackAnimation.Melee, MagicElement.None),
+        };
+
+        for (int i = 0; i < cells.Length; i++)
+        {
+            float x = 2.5f + (i % 4) * 4.8f;
+            float y = 1.5f + (i / 4) * 3.2f;
+            var (style, type, element) = cells[i];
+            gs.Projectiles.Add(new Projectile
+            {
+                StartX = x, StartY = y,
+                CurrentX = x + 0.9f, CurrentY = y,
+                TargetX = x + 2f, TargetY = y,
+                Visual = style, Type = type, Element = element,
+                Team = ProjectileTeam.Hero,
+                MaxLifeTime = 30,
+                LifeTime = 16, // mid-flight/mid-swing, where the effect reads strongest
+            });
+        }
+
+        // Impact bursts along the bottom: the arrow shatter at three stages + a generic flash.
+        for (int stage = 0; stage < 3; stage++)
+        {
+            gs.HitEffects.Add(new HitEffect
+            {
+                X = 2.5f + stage * 1.8f, Y = 10.6f,
+                LifeTime = stage * 3, MaxLifeTime = 8,
+                Team = ProjectileTeam.Hero,
+                Visual = stage == 2 ? VisualStyle.MagicComet : VisualStyle.Arrow
+            });
+        }
+
+        const int width = 1280, height = 720;
+        // Enough Avalonia to serve the embedded avares:// fx sheets to the renderer.
+        BuildAvaloniaApp().SetupWithoutStarting();
+        using var surface = SkiaSharp.SKSurface.Create(new SkiaSharp.SKImageInfo(width, height));
+        var renderer = new TheMazeRPG.UI.Rendering.MazeRenderer();
+        var snapshot = TheMazeRPG.UI.Rendering.RenderSnapshot.Capture(gs)!;
+        for (int frame = 0; frame < 48; frame++)
+            renderer.Render(surface.Canvas, gs, snapshot, width, height);
+
+        System.IO.Directory.CreateDirectory("obj");
+        const string outputPath = "obj/attack-fx-preview.png";
+        using (var image = surface.Snapshot())
+        using (var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100))
+        using (var stream = System.IO.File.Open(outputPath, System.IO.FileMode.Create, System.IO.FileAccess.Write))
+        {
+            data.SaveTo(stream);
+        }
+        Console.WriteLine($"Rendered {cells.Length} styles + impacts: {System.IO.Path.GetFullPath(outputPath)}");
     }
 
     /// <summary>
